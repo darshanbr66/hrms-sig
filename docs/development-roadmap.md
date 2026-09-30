@@ -18,7 +18,7 @@ Nothing user-facing beyond sign-in, MFA and the app shell, but everything else d
 1. **Repository and CI:** lint, types, tests, import boundaries, secret scan, dependency audit, OpenAPI contract check, single-Alembic-head check, vendored Procrastinate SQL checksum check, banned-words check.
 2. **Local environment** via Docker Compose: PostgreSQL 18, Redis (configured per `architecture.md` §3.1), S3-compatible storage emulator (including an object-lock bucket for audit anchors), ClamAV, mail catcher.
 3. **Backend platform:** typed settings, DB session/unit of work, RFC 9457 errors, structured logging with redaction, clock abstraction, Procrastinate wiring, health endpoints, security headers, Redis rate limiter with the defined fail-closed/fail-open behaviour.
-4. **Migrations** (`database-design.md` §11): Alembic setup; revision applying the pinned Procrastinate base schema; database roles, grants, default privileges, `statement_timeout`/`transaction_timeout`; migration job as a one-off task; expand/contract checklist in the PR template.
+4. **Migrations** (`database-design.md` §11): Alembic setup; revision applying the pinned Procrastinate base schema; database roles, grants, default privileges, `statement_timeout`/`transaction_timeout`; migration job as a one-off task; expand/contract migration notes in the commit message (`engineering-principles.md` §8).
 5. **Identity:** users, invites with password + mandatory TOTP enrolment + recovery codes, login (always two steps), enrolment-only sessions, sessions with access/refresh rotation and reuse detection, step-up (TOTP only), password reset (keeps MFA), admin MFA reset with re-enrolment link, own sessions and login history, PostgreSQL account lockout plus Redis per-IP throttling.
 6. **Access:** permission catalog in code (synced by data migration), system roles, role assignments with constraints and validity windows, derived roles, per-request permission resolution, authz engine (`require`, `scope_filter`, SoD rules 1–10, step-up), role grant requests (elevation, super admin assignment, break-glass, acknowledgement), route-coverage test, authorization matrix test harness.
 7. **Audit:** `audit_log` and `security_events` partitioned on `recorded_at`, append-only grants and triggers, sealer job, `chain_links`, signed checkpoints (daily and partition-final), write-once anchoring, daily and monthly verification, retention job with tombstones (exercised against test partitions), tamper test suite.
@@ -94,7 +94,7 @@ Ordered by expected value; to be re-prioritized with Sigvitas after MVP launch.
 | Audit integrity design complexity | Built and tamper-tested in M1, before any business module depends on it |
 | Data import quality | Import tooling with validation report; HR owns corrections |
 | Security review finds structural issues late | M1 builds the security core first; external test booked early for M6 |
-| Single-engineer bus factor on auth/payroll code | CODEOWNERS with two reviewers; runbooks |
+| Single-engineer bus factor on auth/payroll code | Second-engineer review before push, recorded in the commit (`engineering-principles.md` §8); runbooks |
 
 ## 6. Decisions needing Sigvitas input
 

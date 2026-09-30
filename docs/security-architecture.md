@@ -281,7 +281,7 @@ The same design applies to both streams, so security events are protected like b
 - Redis runs on the private network with TLS, an ACL-restricted user, no persistence, and TTL on every key (`architecture.md` §3.1).
 - Containers run as non-root with read-only root filesystems; images pinned by digest; base images scanned in CI.
 - Production access by engineers via SSO + MFA to the cloud console; direct database access is exceptional, logged, and time-bound.
-- Dependency updates weekly via automated PRs; `pip-audit` and `pnpm audit` fail CI on known high/critical vulnerabilities.
+- Dependency updates weekly, reviewed and committed to `main` like any other change; `pip-audit` and `pnpm audit` fail CI on known high/critical vulnerabilities.
 
 ## 11. Privacy
 
@@ -302,7 +302,7 @@ The same design applies to both streams, so security events are protected like b
 | Dependency and container scanning | Every commit + weekly |
 | Secret scanning | Pre-commit + every commit |
 | DAST: OWASP ZAP baseline against staging | Every release |
-| Manual review of auth, authz, payroll and document code | Every PR touching them (CODEOWNERS) |
+| Manual review of auth, authz, payroll, document and audit code by a second engineer | Before every push that touches them (`Reviewed-by:` trailer, `engineering-principles.md` §8) |
 | External penetration test | Before production launch, then annually |
 | Restore test from backup | Quarterly |
 | Audit chain verification (recent partitions) | Daily job, alert on mismatch |

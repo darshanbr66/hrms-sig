@@ -7,9 +7,9 @@ Status: Draft v0.1. These rules apply to every change, human- or AI-written.
 1. Authorization is enforced in the backend service layer for every operation. The frontend is never a control.
 2. No secrets, credentials, API keys or environment-specific URLs in source code. Configuration comes from environment variables validated at startup.
 3. No fake implementations: no stubbed endpoints returning canned data, no dead buttons, no placeholder routes, no "coming soon" pages. A feature ships complete or it does not ship.
-4. No `TODO`/`FIXME` in merged code for completed features. Deferred work is a tracked issue, referenced by ID in a comment only when the code is intentionally partial and guarded.
+4. No `TODO`/`FIXME` in code on `main` for completed features. Deferred work is a tracked issue, referenced by ID in a comment only when the code is intentionally partial and guarded.
 5. No `console.log`/`print` debugging left in code. Use the logger.
-6. Every change to authentication, authorization, payroll, documents or audit requires review by a second engineer (CODEOWNERS).
+6. Every change to authentication, authorization, payroll, documents or audit is reviewed by a second engineer before it is pushed to `main` (§8).
 7. Data history is preserved: no destructive updates of attendance events, ledger entries, job history, compensation history or audit records.
 8. No invented business data in the product.
 9. No Sigvitas HR policy value in code, migrations or seed data (ADR-026). Grace periods, thresholds, weekly offs, leave types, accrual amounts, leave year start, identifier types and retention periods are configuration. Tests that need values use fixtures named `TEST – …`.
@@ -47,7 +47,7 @@ Local services (PostgreSQL, Redis, object storage emulator, ClamAV, mail catcher
 
 ## 4. Dependencies
 
-- Add a dependency only when it removes meaningful complexity or risk that we would otherwise own. Write the reason in the PR.
+- Add a dependency only when it removes meaningful complexity or risk that we would otherwise own. Write the reason in the commit message.
 - Prefer the standard library and platform features (PostgreSQL features over new services; CSS over animation libraries; `Intl` over date formatting libraries where sufficient).
 - Before adding: check maintenance activity, licence (permissive only), transitive dependency count, and known vulnerabilities.
 - One library per concern. No second component library, no second date library, no second HTTP client.
@@ -102,11 +102,13 @@ Tests never use production data. Fixtures use obviously fake data.
 
 ## 8. Git and review
 
-- Trunk-based: short-lived branches, PRs into `main`, squash merge.
+- One branch: all work is committed directly to `main`. There are no feature branches and no pull requests. Deployment runs from `main`.
 - Conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`, `security:`).
-- PR template includes: what changed, why, permissions affected, data classification affected, migration notes (expand/contract step, lock impact, staging duration), policy parameters added or changed, screenshots for UI (desktop + mobile), test evidence.
-- CI must pass: lint, types, tests, import boundaries, OpenAPI contract, secret scan, dependency audit, banned-words check on UI copy.
-- `main` is always deployable to staging.
+- The commit message body states what changed, why, permissions affected, data classification affected, migration notes (expand/contract step, lock impact, staging duration), policy parameters added or changed, and test evidence. UI changes are checked at desktop and mobile widths before pushing.
+- Before pushing, run the same checks CI runs and push only when they pass.
+- Changes to authentication, authorization, payroll, documents or audit are reviewed by a second engineer before they are pushed. The commit records that engineer in a `Reviewed-by:` trailer. The trailer names only the person who actually did the review; it is never added for a review that has not happened.
+- CI runs on every push to `main`: lint, types, tests, import boundaries, OpenAPI contract, secret scan, dependency audit, banned-words check on UI copy. A commit is deployed only after its CI has passed.
+- `main` is always deployable to staging. A commit that breaks CI is fixed or reverted with a new commit straight away. History on `main` is never rewritten (no force push).
 
 ## 9. Definition of done (per feature)
 

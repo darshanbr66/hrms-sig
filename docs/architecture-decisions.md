@@ -199,7 +199,7 @@ Not included: global state libraries, CSS-in-JS, chart libraries (added only whe
 - **Context.** Two things change the database: our application and the Procrastinate library. Two uncoordinated runners would produce ambiguous ordering and deployments that are hard to reproduce.
 - **Decision.** Alembic is the single runner. The backend team owns application revisions. Procrastinate owns the *content* of its schema. We apply its release SQL files, unchanged and checksum-verified, through Alembic revisions. `procrastinate schema --apply` is never run against staging or production. Every revision follows expand/contract so code rollback never needs schema rollback. Production and staging are forward-only. Migrations run as a one-off job, as `hrms_migrator`, before the worker and API roll out. Details in `database-design.md` §11.
 - **Alternatives.** Let Procrastinate manage its own schema — two sources of truth for ordering. A custom migration tool — unnecessary.
-- **Consequences.** Upgrading Procrastinate is a deliberate PR with vendored SQL. CI checks: single Alembic head, checksums of vendored files, grants and catalog after upgrade, and the up/down/up cycle for application revisions.
+- **Consequences.** Upgrading Procrastinate is a deliberate, dedicated commit with vendored SQL. CI checks: single Alembic head, checksums of vendored files, grants and catalog after upgrade, and the up/down/up cycle for application revisions.
 
 ## ADR-025 Super admin least privilege and controlled elevation
 

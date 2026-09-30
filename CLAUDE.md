@@ -66,6 +66,7 @@ Sentence case, plain words, no emoji in headings. Never use: seamless, cutting-e
 - IDs: UUIDv7. Timestamps: `timestamptz` UTC. Money: `numeric(14,2)` + currency; `Decimal` in Python; strings in JSON.
 - Errors: RFC 9457 problem details with stable `type` values.
 - Backend module layout: `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`, `policies.py`, `events.py`, `public.py`. Cross-module imports only via `public.py`.
+- Git: one branch, `main`. No feature branches, no pull requests, no force push. Commit directly to `main` after the checks in `docs/engineering-principles.md` §8 pass; deployment runs from `main`.
 
 ## Commands
 

@@ -21,9 +21,7 @@ Status: In progress. Checkpoint A complete (2026-09-30); checkpoints B–H to do
 hrms/
   .editorconfig  .gitattributes  .gitignore  .env.example  README.md
   .github/
-    workflows/ci.yml                 # backend, frontend, contract, security jobs
-    CODEOWNERS
-    pull_request_template.md
+    workflows/ci.yml                 # backend, frontend, contract, security jobs; runs on every push to main
   api/openapi.json                   # generated, committed, checked in CI
   infra/
     compose.yaml                     # postgres:18, redis:7.2, s3 emulator (object lock), mailpit
@@ -242,4 +240,4 @@ Decisions taken during the checkpoint (documents updated in the same change):
 
 Moved to the checkpoint that first needs them, so nothing unused is shipped: the mail catcher (D), the S3 emulator with object lock (F), import-linter contracts (B, when the first modules exist), the banned-words check on UI copy and the frontend CI job (G).
 
-Waiting on input: the GitHub usernames for `.github/CODEOWNERS` (a second reviewer for auth, authorization, payroll, documents and audit code).
+Waiting on input: the second engineer who reviews authentication, authorization, payroll, documents and audit code before it is pushed (`engineering-principles.md` §8).

@@ -377,7 +377,7 @@ This keeps one migration runner, one ordering and one audit trail of schema chan
 **Procrastinate specifics**
 
 - The initial revision installs the base schema of the pinned Procrastinate version.
-- Upgrading Procrastinate is a dedicated PR: bump the pinned version; add Alembic revisions that apply each upstream migration file between the old and new versions, in upstream order. The files are copied into `backend/migrations/vendor/procrastinate/<version>/`, and CI verifies their checksums against the installed package.
+- Upgrading Procrastinate is a dedicated commit: bump the pinned version; add Alembic revisions that apply each upstream migration file between the old and new versions, in upstream order. The files are copied into `backend/migrations/vendor/procrastinate/<version>/`, and CI verifies their checksums against the installed package.
 - If a Procrastinate release splits a change into steps to run before and after the new worker code is deployed, the "before" revision ships in release N and the "after" revision in release N+1, following the expand/contract rule below.
 - Procrastinate objects live in a dedicated `procrastinate` schema (confirmed against 3.10.0 in M1: its SQL uses unqualified names). Revision 0002 applies `schema.sql` with `search_path` set to that schema. `hrms_app` and `hrms_worker` have the database-level `search_path = procrastinate, public`; `public` stays on the path so extension operators (`citext` equality, `pg_trgm`) resolve. Application tables are always schema-qualified.
 
@@ -397,7 +397,7 @@ This keeps one migration runner, one ordering and one audit trail of schema chan
 5. Roll out the worker, then the API. Old and new replicas can coexist thanks to expand/contract.
 6. Run smoke tests. Mark the deployment complete.
 
-**Staging before production:** the same image digest must have migrated staging successfully first. Staging holds the production schema (not production data) and synthetic data at production-like volume, so lock behaviour and migration duration are measured before production. Any migration taking more than 30 s on staging needs an explicit plan in its PR.
+**Staging before production:** the same image digest must have migrated staging successfully first. Staging holds the production schema (not production data) and synthetic data at production-like volume, so lock behaviour and migration duration are measured before production. Any migration taking more than 30 s on staging needs an explicit plan in its commit message.
 
 **Rollback expectations**
 

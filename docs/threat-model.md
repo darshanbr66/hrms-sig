@@ -147,7 +147,7 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 
 ### T21. Supply chain
 - Attack: compromised npm/PyPI package.
-- Controls: minimal dependencies (ADR-017); lockfiles committed; `pnpm` with `minimum-release-age` for new versions and no install scripts by default; `uv` lock with hashes; dependency review in PRs; CI with least-privileged tokens; container images pinned by digest.
+- Controls: minimal dependencies (ADR-017); lockfiles committed; `pnpm` with `minimum-release-age` for new versions and no install scripts by default; `uv` lock with hashes; dependency review before any lockfile change is pushed; CI with least-privileged tokens; container images pinned by digest.
 
 ### T22. Development data in production / production data in development
 - Controls: seed commands refuse to run when `APP_ENV=production`; staging uses synthetic data only; production dumps never copied to developer machines; if a production issue needs data, investigate in place with audited access.
