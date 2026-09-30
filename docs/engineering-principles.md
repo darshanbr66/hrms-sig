@@ -37,7 +37,7 @@ One repository, two applications, one contract.
 |---|---|---|
 | Package / env manager | `uv` with `uv.lock` | `pnpm` with `pnpm-lock.yaml` |
 | Formatting + lint | Ruff (format + lint incl. `S` security, `B`, `UP`, `SIM`, `I`) | ESLint (typescript-eslint strict, react-hooks, jsx-a11y) + Prettier |
-| Types | mypy `--strict` (or pyright strict; one, chosen in Phase 1) | `tsc --noEmit` with `strict`, `noUncheckedIndexedAccess` |
+| Types | mypy `--strict` with the Pydantic plugin | `tsc --noEmit` with `strict`, `noUncheckedIndexedAccess` |
 | Tests | pytest, pytest-asyncio, testcontainers (real PostgreSQL) | Vitest + Testing Library; Playwright for end-to-end |
 | Architecture checks | import-linter (module boundaries) | ESLint `no-restricted-imports` for feature boundaries |
 | Security | Semgrep, pip-audit, gitleaks | pnpm audit, gitleaks |

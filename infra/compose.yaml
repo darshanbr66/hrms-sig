@@ -1,0 +1,49 @@
+# Local services for development. Every port is bound to 127.0.0.1.
+# Start with: docker compose --env-file .env -f infra/compose.yaml up -d --wait
+#
+# Services arrive with the checkpoint that first uses them (docs/m1-implementation-plan.md §7):
+# the mail catcher with identity emails, the S3 emulator with audit anchors, ClamAV in M5.
+
+name: hrms
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      HRMS_DB_MIGRATOR_PASSWORD: ${HRMS_DB_MIGRATOR_PASSWORD:?set HRMS_DB_MIGRATOR_PASSWORD in .env}
+      HRMS_DB_APP_PASSWORD: ${HRMS_DB_APP_PASSWORD:?set HRMS_DB_APP_PASSWORD in .env}
+      HRMS_DB_WORKER_PASSWORD: ${HRMS_DB_WORKER_PASSWORD:?set HRMS_DB_WORKER_PASSWORD in .env}
+      HRMS_DB_AUDIT_RETENTION_PASSWORD: ${HRMS_DB_AUDIT_RETENTION_PASSWORD:?set HRMS_DB_AUDIT_RETENTION_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./db/bootstrap-roles.sql:/hrms-bootstrap/bootstrap-roles.sql:ro
+      - ./db/local-init.sh:/docker-entrypoint-initdb.d/10-hrms-bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres", "--dbname", "hrms"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.2.16
+    # The custom entrypoint bypasses the image script that drops root, so set the user here.
+    user: redis
+    entrypoint: ["/bin/sh", "/hrms-redis/start.sh"]
+    environment:
+      REDIS_RATELIMIT_PASSWORD: ${REDIS_RATELIMIT_PASSWORD:?set REDIS_RATELIMIT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - ./redis:/hrms-redis:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning --user hrms_ratelimit --pass \"$$REDIS_RATELIMIT_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-data:

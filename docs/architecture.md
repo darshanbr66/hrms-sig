@@ -80,15 +80,15 @@ Redis is kept in the MVP for one concrete need: the API runs as two or more repl
 
 | Use | Key pattern | TTL | If Redis is unavailable |
 |---|---|---|---|
-| Per-IP login / MFA / password-reset / step-up throttling and progressive delay | `rl:auth:{purpose}:{hmac(ip)}` | ≤ 1 h | Fail closed on these auth endpoints: respond `503` with `Retry-After`. The proxy's per-IP limits and the PostgreSQL account lockout (below) remain active. |
-| Per-user API rate limits (`api-architecture.md` §9) | `rl:api:{scope}:{user_id}` | ≤ 1 h | Fail open, log a warning, raise an operational alert. Proxy limits still apply. |
-| Per-user limits for document downloads and export requests | `rl:dl:{user_id}`, `rl:exp:{user_id}` | ≤ 1 h | Fail closed (`503`). These are the exfiltration-sensitive paths. |
+| Per-IP login / MFA / password-reset / step-up throttling and progressive delay | `rl:auth:{rule}:{hmac(ip)}` | ≤ 1 h | Fail closed on these auth endpoints: respond `503` with `Retry-After`. The proxy's per-IP limits and the PostgreSQL account lockout (below) remain active. |
+| Per-user API rate limits (`api-architecture.md` §9) | `rl:api:{rule}:{hmac(user_id)}` | ≤ 1 h | Fail open, log a warning, raise an operational alert. Proxy limits still apply. |
+| Per-user limits for document downloads and export requests | `rl:dl:{rule}:{hmac(user_id)}`, `rl:exp:{rule}:{hmac(user_id)}` | ≤ 1 h | Fail closed (`503`). These are the exfiltration-sensitive paths. |
 
 **Phase 2 candidate (decided then, not now):** cross-replica WebSocket fan-out via pub/sub. PostgreSQL `LISTEN/NOTIFY` is the alternative and is evaluated first.
 
 **Not permitted, ever:** Redis is never the authoritative or only store for employees, attendance, leave, payroll, permissions or role assignments, sessions or tokens, audit records, security events, lockout state, documents, idempotency keys, job queues or notifications. Account lockout (`identity.users.locked_until` and failed-attempt counters) and every security event are in PostgreSQL. Effective permissions are resolved from PostgreSQL on every request. There is no application data cache in the MVP. A cache added later needs an ADR that defines invalidation, and it may never hold `personal`, `sensitive`, `restricted` or `secret` data.
 
-**Configuration:** persistence disabled (no RDB/AOF), every key has a TTL, `maxmemory-policy volatile-ttl`, TLS, a dedicated ACL user limited to the commands the rate limiter needs, private network only. Keys contain no personal data: IPs and emails are HMAC-ed with a dedicated key before use in key names. A Redis restart resets counters, and that is the full extent of the impact.
+**Configuration:** persistence disabled (no RDB/AOF), every key has a TTL, `maxmemory-policy volatile-ttl`, TLS, a dedicated ACL user limited to the commands the rate limiter needs, private network only. Keys contain no personal data: every subject (IP address, email, user ID) is HMAC-ed with a dedicated key before use in a key name. Counters are sliding logs (a sorted set of timestamps per key) that expire one window after their last entry, and windows are at most 1 hour, so no key lives longer than an hour. The ACL user may run only `ZADD`, `ZREMRANGEBYSCORE`, `ZCARD`, `ZRANGE`, `PEXPIRE`, `EVALSHA`, `SCRIPT LOAD`, `CLIENT SETINFO` and `PING`, on `rl:*` keys only (`infra/redis/ratelimit.acl`). A Redis restart resets counters, and that is the full extent of the impact.
 
 ## 4. Backend structure
 

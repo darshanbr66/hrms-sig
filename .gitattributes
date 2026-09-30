@@ -1,0 +1,8 @@
+# Normalise text to LF in the repository and working tree on every platform.
+* text=auto eol=lf
+
+# Vendored upstream SQL is applied byte-for-byte and verified by checksum.
+backend/migrations/vendor/** -text
+
+*.png binary
+*.woff2 binary

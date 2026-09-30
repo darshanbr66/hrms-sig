@@ -4,7 +4,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 
 ## Current phase
 
-**Phase 0 — architecture and planning, complete (v0.2 after review).** No application code exists yet. Do not scaffold, install packages or write features until the user explicitly approves starting Phase 1 (`docs/development-roadmap.md`, milestone M1). ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
+**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10; Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter) is complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
 
 ## Read before working
 
@@ -69,4 +69,18 @@ Sentence case, plain words, no emoji in headings. Never use: seamless, cutting-e
 
 ## Commands
 
-Not yet defined. They will be added here when M1 scaffolds the repository.
+Local services (from the repository root): `docker compose --env-file .env -f infra/compose.yaml up -d --wait`
+
+Backend (from `backend/`):
+
+| Task | Command |
+|---|---|
+| Install | `uv sync` |
+| Migrate (as `hrms_migrator`) | `uv run --env-file ../.env alembic upgrade head` |
+| API | `uv run --env-file ../.env uvicorn app.main:app_factory --factory --loop asyncio:SelectorEventLoop` |
+| Worker | `uv run --env-file ../.env python -m app.worker` |
+| Format / lint / types | `uv run ruff format .` · `uv run ruff check .` · `uv run mypy .` |
+| Tests (Docker required) | `uv run pytest` |
+| Regenerate `api/openapi.json` | `uv run python -m scripts.export_openapi` |
+
+The selector event loop is required because psycopg's async driver does not support the Windows Proactor loop.

@@ -45,8 +45,10 @@ Engine: PostgreSQL 18.
 | `hrms_migrator` | Owner of all schemas and of the Procrastinate objects. Used only by the migration job (§11). Sets default privileges so new tables get the grants below. |
 | `hrms_app` | `SELECT, INSERT, UPDATE, DELETE` on module schemas; on `audit.audit_log` and `audit.security_events`: `SELECT, INSERT` only; on `audit.chain_*`: `SELECT` only; on `payroll`: full DML (application enforces permissions); DML and function execution on Procrastinate objects (to enqueue jobs). `statement_timeout = 5s`, `transaction_timeout = 30s`, `idle_in_transaction_session_timeout = 10s`. |
 | `hrms_worker` | Same as `hrms_app`, plus `INSERT` on `audit.chain_links` and `audit.chain_checkpoints`. `statement_timeout = 5min`, `transaction_timeout = 10min`. Only the worker has the checkpoint signing key (outside the database). |
-| `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); can detach and drop expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links`; `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). |
+| `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); can detach and drop expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links`; `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). `statement_timeout = 5min`, `transaction_timeout = 10min` (the worker's limits). |
 | `hrms_readonly` (optional) | `SELECT` on non-sensitive schemas for operational reporting; no access to `payroll`, `audit`, `identity`, `people.employee_identifiers`, `people.employee_bank_accounts`, `people.employee_personal`. |
+
+The one-time cluster bootstrap (`infra/db/bootstrap-roles.sql`, run by a database administrator) creates these login roles and the database owned by `hrms_migrator`, and gives `hrms_migrator` `CREATEROLE` plus `ADMIN OPTION` (without `INHERIT` or `SET`) on the runtime roles, so migrations can set their per-database session limits without acting as them. Everything else (schemas, grants, default privileges, limits) is applied by Alembic. `PUBLIC` has no privileges on the database (no `TEMP`) and cannot execute functions the migrator creates.
 
 The `transaction_timeout` values bound how long a transaction can stay open. The audit sealer relies on that bound to close a month partition safely.
 
@@ -377,7 +379,7 @@ This keeps one migration runner, one ordering and one audit trail of schema chan
 - The initial revision installs the base schema of the pinned Procrastinate version.
 - Upgrading Procrastinate is a dedicated PR: bump the pinned version; add Alembic revisions that apply each upstream migration file between the old and new versions, in upstream order. The files are copied into `backend/migrations/vendor/procrastinate/<version>/`, and CI verifies their checksums against the installed package.
 - If a Procrastinate release splits a change into steps to run before and after the new worker code is deployed, the "before" revision ships in release N and the "after" revision in release N+1, following the expand/contract rule below.
-- Whether Procrastinate objects live in a dedicated `procrastinate` schema (via `search_path` on the job connections) or in `public` with their `procrastinate_` prefix is confirmed against the pinned version in M1. Either way, Alembic applies them.
+- Procrastinate objects live in a dedicated `procrastinate` schema (confirmed against 3.10.0 in M1: its SQL uses unqualified names). Revision 0002 applies `schema.sql` with `search_path` set to that schema. `hrms_app` and `hrms_worker` have the database-level `search_path = procrastinate, public`; `public` stays on the path so extension operators (`citext` equality, `pg_trgm`) resolve. Application tables are always schema-qualified.
 
 **Ordering rules**
 
@@ -401,5 +403,5 @@ This keeps one migration runner, one ordering and one audit trail of schema chan
 
 - **Code rollback** is the normal path: redeploy the previous image. Expand/contract guarantees the old code works on the new schema.
 - **Schema rollback** in staging and production is never done with `alembic downgrade`. A faulty migration is fixed by a new forward revision.
-- `downgrade()` functions are written for application revisions and exercised in CI (`upgrade head → downgrade base → upgrade head` on an empty database) so local development stays fast. Procrastinate revisions are forward-only.
+- `downgrade()` functions are written for application revisions and exercised in CI (`upgrade head → downgrade base → upgrade head` on an empty database) so local development stays fast. The Procrastinate base-schema revision's downgrade drops the `procrastinate` schema so this cycle can reach base; revisions that apply later Procrastinate upgrades are forward-only.
 - **Point-in-time restore** is reserved for data corruption or loss. It is decided by the named incident owner and follows the restore runbook, because it discards writes made after the restore point.

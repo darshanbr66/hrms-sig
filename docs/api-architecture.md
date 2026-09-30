@@ -39,7 +39,7 @@ Related: `architecture.md` §4–5, `authorization-model.md`, `security-architec
 
 ```json
 {
-  "type": "https://<app-host>/problems/validation-error",
+  "type": "/problems/validation-error",
   "title": "Some fields need attention",
   "status": 422,
   "detail": null,
@@ -50,6 +50,8 @@ Related: `architecture.md` §4–5, `authorization-model.md`, `security-architec
   ]
 }
 ```
+
+`type` is a relative URI reference (`/problems/<name>`), so it is identical in every environment. Errors that have no defined type (for example `405`) use `about:blank` with the HTTP status phrase as the title.
 
 Defined problem types (stable, used by the client for behaviour):
 

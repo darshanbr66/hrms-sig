@@ -1,0 +1,1 @@
+resetkeys ~rl:* resetchannels -@all +zadd +zremrangebyscore +zcard +zrange +pexpire +evalsha +script|load +client|setinfo +ping
