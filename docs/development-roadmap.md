@@ -115,6 +115,9 @@ Engineering decisions are final (see the ADR status index). The items below are 
 | Document categories, sensitivity and retention | M5 |
 | Legal retention periods for HR, payroll and audit data | M5 (retention jobs), M6 |
 | Default locale, currency and week start (en-IN / INR proposed) | M1 settings (changeable later) |
+| Whether accounts may be invited before the joining date, and what a pre-joining account may see (the derived `employee` role applies from the joining date) | M2 |
+| Whether `user.disable` may target administrator accounts (`system_admin`, `super_admin`), and by whom; today any holder may disable any other account | Checkpoint E |
+| Rehire: a new employee record or the same one (one `employees` row holds one joining and exit date) | M2 |
 | Payroll: in-house calculation or external provider; four-eyes on by default | Phase 2 |
 | Chat: needed at all; investigation-access policy | Future |
 | DPDP Act obligations and owners (privacy notice, grievance officer, breach process), if applicable | M6 launch |

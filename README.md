@@ -45,6 +45,24 @@ Status: Phase 1 (M1, foundation) in progress. See `docs/m1-implementation-plan.m
    `GET http://127.0.0.1:8000/api/health/ready` returns `{"status": "ok"}` when the API can reach the
    database.
 
+5. Run the web app (from `frontend/`; Node 20.19 or later, pnpm through corepack).
+
+   ```sh
+   corepack enable
+   pnpm install
+   pnpm dev
+   ```
+
+   Open `http://localhost:5173`. Vite forwards `/api` to the API on port 8000, so the app and
+   the API share one origin, as in production. Set `APP_BASE_URL=http://localhost:5173`.
+
+6. Create the first two super admins (once per installation). The command prints an invite link
+   for each; there are no default credentials.
+
+   ```sh
+   uv run --env-file ../.env python -m app.cli bootstrap-super-admins --email <first> --email <second>
+   ```
+
 ## Checks (from `backend/`)
 
 | Check | Command |
@@ -57,7 +75,20 @@ Status: Phase 1 (M1, foundation) in progress. See `docs/m1-implementation-plan.m
 | Dependency audit | `uv run pip-audit --strict` |
 | Regenerate the API contract | `uv run python -m scripts.export_openapi` |
 
-CI (`.github/workflows/ci.yml`) runs the same checks plus a gitleaks secret scan and Semgrep.
+## Checks (from `frontend/`)
+
+| Check | Command |
+|---|---|
+| Format | `pnpm format:check` |
+| Lint (includes accessibility rules) | `pnpm lint` |
+| Types | `pnpm typecheck` |
+| Banned words in UI copy | `pnpm copy:check` |
+| Tests | `pnpm test` |
+| Build | `pnpm build` |
+| Regenerate API types from `api/openapi.json` | `pnpm api:types` |
+
+CI (`.github/workflows/ci.yml`) runs the same checks plus dependency audits, a gitleaks secret
+scan and Semgrep.
 
 ## Rules for migrations
 

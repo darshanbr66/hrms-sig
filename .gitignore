@@ -13,6 +13,11 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Node
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
 # Editors and OS
 .idea/
 .vscode/

@@ -96,3 +96,7 @@ def configure_logging(level: str) -> None:
     access.handlers.clear()
     access.propagate = False
     access.disabled = True
+    # HTTP client libraries log full request URLs at INFO. The breached-password check's URL
+    # carries a prefix of a password's SHA-1, which is derived from a secret; keep them quiet.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)

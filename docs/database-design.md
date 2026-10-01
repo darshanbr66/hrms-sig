@@ -43,7 +43,7 @@ Engine: PostgreSQL 18.
 | Role | Grants |
 |---|---|
 | `hrms_migrator` | Owner of all schemas and of the Procrastinate objects. Used only by the migration job (§11). Sets default privileges so new tables get the grants below. |
-| `hrms_app` | `SELECT, INSERT, UPDATE, DELETE` on module schemas; on `audit.audit_log` and `audit.security_events`: `SELECT, INSERT` only; on `audit.chain_*`: `SELECT` only; on `payroll`: full DML (application enforces permissions); DML and function execution on Procrastinate objects (to enqueue jobs). `statement_timeout = 5s`, `transaction_timeout = 30s`, `idle_in_transaction_session_timeout = 10s`. |
+| `hrms_app` | `SELECT, INSERT, UPDATE, DELETE` on module schemas, except `SELECT` only on the permission catalog (`access.permissions`, `access.roles`, `access.role_permissions`); on `audit.audit_log` and `audit.security_events`: `SELECT, INSERT` only; on `audit.chain_*`: `SELECT` only; on `payroll`: full DML (application enforces permissions); DML and function execution on Procrastinate objects (to enqueue jobs). `statement_timeout = 5s`, `transaction_timeout = 30s`, `idle_in_transaction_session_timeout = 10s`. |
 | `hrms_worker` | Same as `hrms_app`, plus `INSERT` on `audit.chain_links` and `audit.chain_checkpoints`, and `EXECUTE` on `audit.ensure_partitions` (§4.10). `statement_timeout = 5min`, `transaction_timeout = 10min`. Only the worker has the checkpoint signing key (outside the database). |
 | `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); can detach and drop expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links`; `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). `statement_timeout = 5min`, `transaction_timeout = 10min` (the worker's limits). |
 | `hrms_readonly` (optional) | `SELECT` on non-sensitive schemas for operational reporting; no access to `payroll`, `audit`, `identity`, `people.employee_identifiers`, `people.employee_bank_accounts`, `people.employee_personal`. |
@@ -59,23 +59,24 @@ Only key columns and constraints are listed. All tables have `id`, and timestamp
 ### 4.1 identity
 
 **users** — a login identity.
-- `email citext NOT NULL UNIQUE`, `email_verified_at`, `status` (`invited`, `active`, `disabled`), `employee_id uuid NULL UNIQUE → people.employees` (1:0..1; null for non-employee service/admin accounts if ever needed), `last_login_at`, `mfa_reenrolment_required boolean NOT NULL DEFAULT false` (set by an admin MFA reset; restricts the account to enrolment endpoints), `failed_login_count smallint`, `failed_login_window_started_at`, `locked_until timestamptz NULL`, `version`.
+- `email citext NOT NULL UNIQUE`, `email_verified_at`, `status` (`invited`, `active`, `disabled`), `employee_id uuid NULL UNIQUE → people.employees` (1:0..1; null for accounts with no employee record, such as the bootstrapped super admins), `last_login_at`, `failed_login_count smallint`, `failed_login_window_started_at`, `last_failed_login_at` (for the progressive delay), `locked_until timestamptz NULL`, `version`. `CHECK (status <> 'active' OR email_verified_at IS NOT NULL)`: activation verifies the email.
+- `mfa_reenrolment_required boolean NOT NULL DEFAULT false` (set by an admin MFA reset; restricts the account to enrolment endpoints) arrives with the MFA reset flow (Checkpoint E).
 - A user is linked to at most one employee and vice versa.
-- There is no "MFA required" flag, because MFA is required for everyone. Invariant, enforced in the service layer and tested: a user in status `active` without `mfa_reenrolment_required` has at least one confirmed, unrevoked MFA factor.
+- There is no "MFA required" flag, because MFA is required for everyone. Invariant: an `active` account has at least one confirmed, unrevoked MFA factor. It is enforced in the database by a deferred constraint trigger (`identity.require_mfa_for_active_users`) on `users` (status) and `mfa_factors` (confirmation, revocation, deletion), which locks the account row before checking, so concurrent removals of different factors cannot both commit. The service also refuses to remove the last factor (`409 mfa.last_factor`). E extends the trigger for `mfa_reenrolment_required`.
 
 **credentials** — `user_id UNIQUE → users`, `password_hash text` (Argon2id encoded), `password_changed_at`. Separate table so user queries never load the hash.
 
-**mfa_factors** — `user_id → users`, `type` (`totp`, `webauthn`), `secret_ciphertext bytea` (TOTP, app-encrypted), `webauthn_credential_id`, `public_key` (Phase 2), `label`, `last_used_step bigint` (TOTP replay prevention), `confirmed_at`, `revoked_at`. A user may hold several factors (for example, a new authenticator enrolled before the old one is removed). The service caps active factors at 5 and refuses to revoke the last confirmed one.
+**mfa_factors** — `user_id → users`, `type` (`totp`; `webauthn` with its `webauthn_credential_id` and `public_key` in Phase 2), `label`, `secret_ciphertext bytea` (AES-256-GCM, associated data bound to the purpose and the user), `secret_key_version smallint` (key rotation), `last_used_step bigint` and `last_used_at` (TOTP replay prevention: a step is accepted only if later than the last, in one atomic UPDATE), `confirmed_at`, `revoked_at`. Index `(user_id) WHERE revoked_at IS NULL`. A user may hold several factors (for example, a new authenticator enrolled before the old one is removed). The service caps active factors at 5; an unconfirmed factor expires after 15 minutes and is replaced by the next setup.
 
-**recovery_codes** — `user_id`, `code_hash`, `used_at`.
+**recovery_codes** — `user_id`, `code_hash` (SHA-256 of an 80-bit code), `used_at`, `revoked_at` (set when the codes are regenerated). `UNIQUE (user_id, code_hash)`.
 
-**sessions** — `user_id`, `client_type` (`web`, `mobile`), `ip inet`, `user_agent`, `device_label`, `created_at`, `last_activity_at`, `idle_expires_at`, `absolute_expires_at`, `step_up_at`, `revoked_at`, `revoked_reason`. Index `(user_id) WHERE revoked_at IS NULL`.
+**sessions** — `user_id`, `client_type` (`web`; `mobile` with the mobile client), `scope` (`full`, `mfa_enrolment`), `ip inet`, `user_agent`, `created_at`, `last_activity_at`, `idle_expires_at`, `absolute_expires_at`, `step_up_at`, `revoked_at`, `revoked_reason` (`logout`, `revoked_by_user`, `revoked_by_admin`, `password_changed`, `account_disabled`, `token_reuse`). `CHECK (idle_expires_at <= absolute_expires_at)`. Index `(user_id) WHERE revoked_at IS NULL`. A `device_label` arrives with new-device notifications.
 
-**session_tokens** — `session_id → sessions ON DELETE CASCADE`, `kind` (`access`, `refresh`), `token_hash bytea UNIQUE`, `expires_at`, `used_at` (refresh), `replaced_by_id` (refresh chain). Lookups by `token_hash` only.
+**session_tokens** — `session_id → sessions ON DELETE CASCADE`, `kind` (`access`, `refresh`), `token_hash bytea UNIQUE` (SHA-256 of a 256-bit token), `expires_at`, `used_at` (refresh only), `replaced_by_id` (refresh chain). Lookups by `token_hash` only. Rotation ends the previous access tokens (`expires_at` set to now) and retires unused refresh tokens (`used_at`); a role change ends only the access tokens, so the next refresh issues new ones.
 
-**one_time_tokens** — `user_id`, `purpose` (`invite`, `password_reset`, `email_change`, `mfa_reenrolment`), `token_hash UNIQUE`, `expires_at`, `used_at`, `payload jsonb` (e.g. new email). Purged 30 days after expiry.
+**one_time_tokens** — `user_id`, `purpose`, `token_hash UNIQUE`, `expires_at`, `used_at`, `failed_attempts smallint`. Purposes in use: `invite` (72 h), `invite_enrolment` (30 min; binds the authenticator steps of an invite to the browser that set the password), `login_mfa` (5 min; the password step's single-use proof, at most 5 wrong codes). Issuing a token of a purpose retires the user's earlier unused ones. `password_reset`, `email_change` and `mfa_reenrolment` (with `payload jsonb`) arrive with their flows. Purged 30 days after expiry by the retention job.
 
-**trusted_devices** — `user_id`, `fingerprint_hash`, `first_seen_at`, `last_seen_at`. Used for new-device notifications, not as an authentication factor.
+**trusted_devices** — `user_id`, `fingerprint_hash`, `first_seen_at`, `last_seen_at`. Used for new-device notifications, not as an authentication factor. Arrives with the email outbox (Checkpoint D).
 
 Login attempts are recorded in `audit.security_events`. Account lockout state is in `users` (PostgreSQL, authoritative). Only per-IP throttling counters live in Redis, and they are ephemeral (`architecture.md` §3.1).
 
@@ -87,9 +88,11 @@ Login attempts are recorded in `audit.security_events`. Account lockout state is
 
 **role_permissions** — `role_id`, `permission_id`, PK `(role_id, permission_id)`.
 
-**user_roles** — `user_id`, `role_id`, `department_id NULL`, `location_id NULL`, `valid_from timestamptz`, `valid_until timestamptz NULL`, `granted_by`, `grant_reason`, `grant_request_id NULL → role_grant_requests`, `revoked_at`, `revoked_by`. Rows are revoked, not deleted, so history of who had what access is preserved. Unique partial index on `(user_id, role_id, coalesce(department_id), coalesce(location_id)) WHERE revoked_at IS NULL`. Derived roles are never stored here; the engine computes them. `CHECK (granted_by IS NULL OR granted_by <> user_id OR grant_request_id IS NOT NULL)` enforces SOD-3 in the database too. `granted_by IS NULL` only for the installation bootstrap; the service layer restricts a self-grant with a request to kind `break_glass`.
+**user_roles** — `user_id`, `role_id`, `department_id NULL`, `location_id NULL`, `valid_from timestamptz`, `valid_until timestamptz NULL`, `granted_by`, `grant_reason`, `revoked_at`, `revoked_by`. Rows are revoked, not deleted, so history of who had what access is preserved: a trigger refuses DELETE and TRUNCATE for every role and allows an UPDATE only of `revoked_at`/`revoked_by`, once. Unique partial index on `(user_id, role_id, coalesce(department_id), coalesce(location_id)) WHERE revoked_at IS NULL`. Derived roles are never stored here; the engine computes them, and a composite foreign key `(role_id, role_is_derived) → roles (id, is_derived)` with `role_is_derived = false` makes storing one impossible. `CHECK (granted_by IS NULL OR granted_by <> user_id)` enforces SOD-3 in the database; `granted_by IS NULL` only for the installation bootstrap. `grant_request_id NULL → role_grant_requests` arrives with the grant request workflow (Checkpoint E), when the check becomes `... OR grant_request_id IS NOT NULL` and the service restricts a self-grant with a request to kind `break_glass`.
 
-**role_grant_requests** — requests that need a second person or are emergency grants (`authorization-model.md` §4.3).
+`permissions`, `roles` and `role_permissions` are written only by migrations: the runtime roles hold `SELECT` on them and nothing else, so no application bug can widen a role. The code catalog (`platform/authz/catalog.py`, `roles.py`) is the source of truth; a test checks the database copy matches it.
+
+**role_grant_requests** (Checkpoint E) — requests that need a second person or are emergency grants (`authorization-model.md` §4.3).
 - `kind` (`elevation`, `super_admin_assignment`, `break_glass`), `subject_user_id` (who receives the role), `role_id`, `department_id NULL`, `location_id NULL`, `reason text NOT NULL`, `requested_duration interval NULL`, `requested_by`, `requested_at`, `status` (`pending`, `approved`, `rejected`, `expired`, `active`, `ended`, `revoked`), `decided_by NULL`, `decided_at`, `decision_note`, `starts_at`, `ends_at`, `acknowledged_by NULL`, `acknowledged_at` (break-glass post-incident review).
 - `CHECK (decided_by IS NULL OR decided_by <> requested_by)`.
 - `CHECK (kind <> 'break_glass' OR (role is system_admin AND ends_at - starts_at <= interval '1 hour'))`. The role check is by a fixed role ID and is also enforced in the service layer.
@@ -321,9 +324,10 @@ locations 1──* location_holiday_calendars *──1 holiday_calendars 1──
 3. One pending correction per employee per day.
 4. Grant-request checks: approver ≠ requester; elevation ≤ 8 h; break-glass ≤ 1 h; no self-granted `user_roles` row without a request.
 5. Payroll four-eyes check constraint.
-6. Append-only triggers on `attendance_events`, `leave_ledger`, `employee_status_history`, and every table in `audit` (`audit_log`, `security_events`, `chain_links`, `chain_checkpoints`). Job history (`employee_jobs`) cannot be deleted or truncated, and only `effective_to` may change.
-7. Finalized payroll immutability trigger.
-8. All foreign keys `ON DELETE RESTRICT` except token/child tables that are purely owned (`session_tokens`, `recovery_codes`, `correction_items`, `leave_request_days`), which cascade. Audit tables have no foreign keys (§4.10).
+6. Append-only triggers on `attendance_events`, `leave_ledger`, `employee_status_history`, and every table in `audit` (`audit_log`, `security_events`, `chain_links`, `chain_checkpoints`). Job history (`employee_jobs`) cannot be deleted or truncated, and only `effective_to` may change. Role assignments (`user_roles`) cannot be deleted or truncated, and only their revocation may be recorded, once.
+7. An active account always keeps a confirmed MFA factor (deferred constraint trigger, §4.1).
+8. Finalized payroll immutability trigger.
+9. All foreign keys `ON DELETE RESTRICT` except token/child tables that are purely owned (`session_tokens`, `recovery_codes`, `correction_items`, `leave_request_days`), which cascade. Audit tables have no foreign keys (§4.10).
 
 Business rules that depend on time zones, policies or permissions live in the service layer and are covered by tests.
 

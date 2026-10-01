@@ -37,9 +37,9 @@ Every column and file category carries a classification. It drives permissions, 
 
 ### 3.2 Passwords
 
-- Hash: Argon2id via `argon2-cffi` (through `pwdlib`), parameters at least m=64 MiB, t=3, p=1, tuned so a hash takes ~250 ms on production hardware. Parameters stored in the hash string; rehash on login when parameters change.
+- Hash: Argon2id via `argon2-cffi` (used directly; it provides hashing, verification and rehash detection), m=64 MiB, t=3, p=1, tuned so a hash takes ~250 ms on production hardware. Parameters stored in the hash string; rehash on login when parameters change. Passwords are NFKC-normalized before hashing. Hashing runs in a worker thread outside any database transaction, at most 4 at a time per API process, so a flood of sign-in attempts queues instead of exhausting memory (each hash uses 64 MiB).
 - Policy: 12–128 characters, Unicode allowed, no composition rules, no forced periodic rotation (NIST SP 800-63B).
-- Breached-password check against Have I Been Pwned range API (k-anonymity: only the first 5 characters of the SHA-1 hash leave the server). Configurable; if disabled or unreachable, fall back to a bundled list of the most common passwords.
+- Breached-password check: a bundled list of common passwords (SecLists NCSC list filtered to 12-128 characters, MIT licence) is always checked; the Have I Been Pwned range API (k-anonymity: only the first 5 characters of the SHA-1 hash leave the server, with response padding) is checked too when `HIBP_ENABLED`. An unreachable range API does not block the password. HTTP client libraries log at WARNING only, so the range URL never reaches the logs.
 - Password change requires the current password and revokes all other sessions.
 
 ### 3.3 Multi-factor authentication
@@ -67,7 +67,7 @@ Permanent lockout is a denial-of-service vector, so throttling is progressive. F
 
 Account-level lockout is security state, so it lives in PostgreSQL and survives any Redis failure. Per-IP counters are ephemeral. If Redis is unavailable, the auth endpoints fail closed (`503`) rather than silently dropping IP throttling (`architecture.md` §3.1). The thresholds above are security settings, adjustable by `security.settings.manage`.
 
-Responses are identical for unknown email, wrong password and locked account (generic message, same timing via a dummy hash verification).
+Responses are identical (`401 invalid-credentials`) for unknown email, wrong password, locked, disabled or not yet activated account, and wrong code, with the timing of a real password verification (a dummy Argon2 verification for unknown accounts). The per-IP block is a 5-minute sliding count of failures in Redis; reaching 20 sets a 15-minute block entry. Known limitation: the progressive delay applies only to existing accounts with recent failures, so after five failures an attacker could tell an existing account from an unknown one by timing; the account lockout and the per-IP limit bound such probing.
 
 ### 3.5 Sessions and tokens
 
@@ -80,10 +80,11 @@ Opaque server-side tokens, not JWTs, so revocation is immediate and there is no 
 | Session | Row in `identity.sessions` | Idle timeout 30 min, absolute 12 h (web); configurable | — | device label, IP, user agent, created/last active, step-up time |
 
 - **Rotation and reuse detection.** Each refresh issues a new access and refresh token and marks the old refresh token used. Presenting a used refresh token revokes the entire session and raises a security event (token theft signal).
-- **Idle timeout** is based on user activity, not background refreshes: the session's `last_activity_at` updates only on user-initiated requests (the client marks background polling with a header that does not extend activity).
-- **Session ID rotation** on login, on step-up, and on any change to the user's roles.
+- **Idle timeout** is based on user activity, not background refreshes: the session's `last_activity_at` updates only on user-initiated requests (the client marks background polling with `X-Sv-Background: 1`, which does not extend activity). It is written at most once a minute. A refresh does not extend it either.
+- **Session ID rotation** on login (a new session), on step-up and on confirming a new factor in an enrolment-only session (new access and refresh tokens; the old ones stop working), and on any change to the user's roles (their access tokens end at once, so each session's next refresh issues new tokens).
+- **Locking order.** Changes to a session lock the account row, then the session row, then its tokens; a refresh locks the session before its token. Concurrent refreshes, sign-outs and revocations therefore serialize instead of deadlocking, and every locked read refreshes the row it locks.
 - **Revocation** is a row update checked on every request. Effective permissions are also resolved from PostgreSQL on every request, so a role removal or an expired elevation takes effect on the next request. There is no permission cache to invalidate.
-- **Mobile (future)** uses the same tokens in the response body, sent as `Authorization: Bearer`, stored in the platform keystore. Mobile absolute lifetime 30 days with device-bound refresh (Phase 2 decision).
+- **Mobile (future)** uses the same tokens in the response body (with `X-Client-Type: mobile`, not implemented until the mobile client exists), sent as `Authorization: Bearer`, stored in the platform keystore. Mobile absolute lifetime 30 days with device-bound refresh (Phase 2 decision).
 
 ### 3.6 Step-up authentication
 
@@ -152,7 +153,7 @@ Fonts are self-hosted so no third-party origins are needed in the CSP. Tailwind 
 ### 6.2 At rest
 
 - Database and object storage encrypted at rest by the provider (disk level). This protects against lost disks, not against a compromised application or a leaked database dump.
-- **Application-level encryption** for `sensitive` and `secret` fields: government IDs, bank account numbers, TOTP secrets. AES-256-GCM via `cryptography`, envelope encryption: a data key per record type encrypted by a key-encryption key held in the secret manager / KMS. Ciphertext stores a key version for rotation.
+- **Application-level encryption** for `sensitive` and `secret` fields: government IDs, bank account numbers, TOTP secrets. AES-256-GCM via `cryptography`, envelope encryption: a data key per record type encrypted by a key-encryption key held in the secret manager / KMS. Ciphertext stores a key version for rotation. In M1 the keys are supplied as `FIELD_ENCRYPTION_KEYS` (version -> 32-byte key) from the secret manager, with `FIELD_ENCRYPTION_ACTIVE_VERSION`; each ciphertext's associated data binds it to its purpose and owner (TOTP secret: `identity.mfa_factors.secret:<user id>`), so it cannot be moved to another row. Wrapping the data keys with a KMS key-encryption key is part of the hosting decision (ADR-023).
 - **Blind index** (HMAC-SHA256 with a separate key) where equality lookup on an encrypted field is needed (e.g. detecting a duplicate government ID number across employees).
 - Compensation amounts are not column-encrypted because payroll must compute and aggregate them. They are protected by permissions, step-up, read auditing, a separate PostgreSQL schema, and database-level grants (see `database-design.md` §3).
 - Backups encrypted with a key separate from the production database credentials.
@@ -297,7 +298,7 @@ The same design applies to both streams, so security events are protected like b
 | Activity | When |
 |---|---|
 | Unit tests for authz policies (every permission × scope × separation-of-duty rule) | Every commit |
-| Route coverage test: every route declares a permission or is on an explicit public allow-list (`/auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/password-reset/*`, `/auth/invite/*`, `/auth/mfa-reenrolment/*`, `/health/*`) | Every commit |
+| Route coverage test (`tests/security/test_route_coverage.py`): every route declares exactly one access rule: a permission, the account allow-list (the actor's own account: `/me`, `/me/password`, `/me/mfa/*`, `/auth/logout`, `/auth/step-up`), or the public allow-list (`/auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/password-reset/*`, `/auth/invite/*`, `/auth/mfa-reenrolment/*`, `/health/*`). Every catalog permission is routed or listed with the checkpoint that brings it. | Every commit |
 | Authorization matrix integration tests: each role against each endpoint with own/team/other records | Every commit |
 | SAST: Ruff security rules (flake8-bandit), Semgrep; ESLint security plugins | Every commit |
 | Dependency and container scanning | Every commit + weekly |

@@ -189,7 +189,7 @@ Deriving `manager` from reporting lines removes a common failure: a manager is m
 
 | Permission | employee | manager | hr | hr_admin | payroll_admin | system_admin | super_admin | auditor |
 |---|---|---|---|---|---|---|---|---|
-| auth.session.read/revoke.self | ● | | | | | | | |
+| auth.session.read/revoke.self | (account baseline: every active account) | | | | | | | |
 | auth.session.read.all | | | | | | ● | | ● |
 | auth.session.revoke.all | | | | | | ● | | |
 | user.read.all | | | ● | ● | | ● | ● | |
@@ -249,7 +249,7 @@ Deriving `manager` from reporting lines removes a common failure: a manager is m
 | document.company.manage | | | ● | ● | | | | |
 | notification.* (self) | ● | | | | | | | |
 
-Roles are additive: an HR person is also an `employee` and possibly a `manager`. Notably:
+Roles are additive: an HR person is also an `employee` and possibly a `manager`. Every active account also holds the **account baseline** (`auth.session.read.self`, `auth.session.revoke.self`: its own sessions and sign-in history), whether or not it is linked to an employee record, because accounts such as the bootstrapped super admins have none. The account's own sign-in security (`/me`, password, MFA factors, recovery codes, step-up, sign-out) needs no permission: those routes are on an explicit account allow-list. The derived `employee` role applies while the linked employee is employed on the day (joined, not past the exit date), the same rule team resolution uses. Notably:
 
 - `system_admin` has **no** employee data, document, or compensation access.
 - `super_admin` has **no** compensation, payroll, personal, sensitive, document or message access (§4.2).
@@ -291,7 +291,7 @@ Elevation to `super_admin` itself is not possible; assigning `super_admin` goes 
 
 ## 5. Role assignment constraints
 
-`access.user_roles` rows carry optional `department_id` and `location_id`. When set, `all` scope for that role means "employees currently in that department/location". Example: an HR person for one office.
+`access.user_roles` rows carry optional `department_id` and `location_id`. When set, `all` scope for that role means "employees currently in that department/location": employed on the date and placed there by the job row that applies on it. Example: an HR person for one office. An employee with no applying job row is outside every restricted scope. Several assignments of a role combine (the union of their constraints).
 
 Assignments also carry `valid_from` / `valid_until` for temporary access (e.g. covering HR during leave). Expired assignments stop applying without a manual step.
 
@@ -339,6 +339,8 @@ rows = repo.list_days(filter_, date_range, page)
 
 `scope_filter` returns the union of all scopes the actor holds, expressed as a SQL predicate on `employee_id`. If the actor holds none, it raises 403 before any query runs.
 
+Implementation (`platform/authz`): `requires(permission)` on the route is the fast fail (held at some scope) and records a denial of an R-flagged permission as an `access.denied_sensitive` security event, in its own short transaction before the route opens one. The service calls `Authorizer.require(...)` for the full decision: the narrowest held scope that covers the subject wins and is the `permission_used` in the audit row; step-up is checked only after the permission, so a user without it learns nothing about step-up. Permissions not about a person's data (`user.disable`, `auth.session.revoke.all`) are decided by their exact key. The engine reaches reporting lines and placements through a `Relationships` protocol that the people module implements, so the platform imports no module. "Today" is the UTC date in M1; per-location dates arrive with location time zones (M2), and until then a change effective on a date applies from UTC midnight.
+
 **Team resolution.** The reporting subtree is computed with a recursive CTE over the job records that apply on a date (`people.employee_jobs` where `effective_from <= d < effective_to`), counting only employees employed on that date. Open-ended rows are not the same thing: a future-dated transfer closes the current row and opens the future one, so selecting `effective_to IS NULL` would move team access before the transfer takes effect. "Now" passes today's date; a historical record passes its own date, which gives the "team at the time of the record" rule in §2. The people module exposes this as `team_member_ids_query` (for scope filters), `is_team_member` (single record, walking up the chain) and `has_direct_reports` (derived `manager` role). At Sigvitas's expected size this is milliseconds. If it becomes a hotspot, a materialized closure table refreshed on job changes replaces it without changing the engine's interface.
 
 ## 8. Error semantics
@@ -350,7 +352,7 @@ rows = repo.list_days(filter_, date_range, page)
 
 ## 9. Enforceability checklist
 
-- Every permission in the catalog maps to at least one route or service method; a test fails if a catalog entry is unused or a route references an unknown permission.
+- Every permission in the catalog maps to at least one route or service method; a test fails if a catalog entry is unused or a route references an unknown permission. Permissions whose routes arrive in a later checkpoint or milestone are listed in that test with where they arrive, and the list shrinks as they do.
 - Every route declares its permission(s) as metadata or appears on the public allow-list.
 - Every list repository function requires a scope filter parameter (enforced by signature, tested).
 - Every response model is tied to a tier; tests assert that team/directory models contain no personal/sensitive/restricted fields.

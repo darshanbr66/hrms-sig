@@ -58,6 +58,7 @@ Defined problem types (stable, used by the client for behaviour):
 | Type | Status | Meaning |
 |---|---|---|
 | `unauthenticated` | 401 | No or expired session. Client attempts one refresh, then shows sign-in. |
+| `invalid-credentials` | 401 | Any sign-in failure: unknown email, wrong password, wrong code, locked, disabled or not yet activated account. Identical for all, so it never reveals which. `code: login.challenge_expired` when the MFA step's token is used, expired or out of attempts (start again). |
 | `forbidden` | 403 | Not permitted. |
 | `step-up-required` | 403 | Needs MFA re-verification; includes `max_age_seconds`. |
 | `mfa-enrolment-required` | 403 | Session is enrolment-only (recovery-code sign-in or admin MFA reset); only `/me/mfa/*` enrolment endpoints are allowed. |
@@ -79,13 +80,13 @@ MFA is mandatory for every account. No endpoint creates a full session from a pa
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/auth/login` | email + password. On success always returns `{ "mfa_token": ... }` (5 min, single-use), never session cookies. |
+| POST | `/auth/login` | email + password. On success always returns `{ "mfa_token": ... }` (5 min, single-use, at most 5 wrong codes), never session cookies. A newer password step retires the account's earlier unused MFA token. |
 | POST | `/auth/login/mfa` | `mfa_token` + TOTP → full session. `mfa_token` + recovery code → **enrolment-only session** (can call only the `/me/mfa/*` enrolment endpoints until a new factor is confirmed). |
 | POST | `/auth/refresh` | Uses refresh cookie (web) or body token (mobile). Rotates. |
 | POST | `/auth/logout` | Revokes current session. |
 | POST | `/auth/step-up` | TOTP (passkey in Phase 2) → sets `step_up_at` and rotates session tokens. Password and recovery codes are not accepted. |
 | GET | `/auth/invite/{token}` | Validate invite (returns only first name and whether valid). |
-| POST | `/auth/invite/{token}/password` | Step 1: set password. Returns an enrolment-only token bound to this invite. |
+| POST | `/auth/invite/{token}/password` | Step 1: set password (policy-checked). Returns `enrolment_token` (30 min), required with the invite token by steps 2 and 3, so the emailed link alone cannot enrol an authenticator. |
 | POST | `/auth/invite/{token}/mfa/totp/setup` · `/confirm` | Step 2: enrol and confirm TOTP. Confirming returns the recovery codes once, marks the account `active`, consumes the invite and creates a full session. |
 | POST | `/auth/mfa-reenrolment/{token}` | After an admin MFA reset: password + emailed re-enrolment token → enrolment-only session. |
 | POST | `/auth/password-reset` | Request; always `202`. |
@@ -95,7 +96,7 @@ MFA is mandatory for every account. No endpoint creates a full session from a pa
 | POST | `/me/mfa/totp/setup` · `/me/mfa/totp/confirm` | Add a factor (step-up, or allowed in an enrolment-only session). |
 | DELETE | `/me/mfa/factors/{id}` | Remove a factor (step-up). Refused with `409 mfa.last_factor` if it is the last confirmed factor. |
 | POST | `/me/mfa/recovery-codes` | Regenerate (step-up). |
-| GET/DELETE | `/me/sessions`, `/me/sessions/{id}` | Own sessions. |
+| GET/DELETE | `/me/sessions`, `/me/sessions/{id}` | Own sessions. `DELETE /me/sessions` signs out every session except the current one and returns `{ "revoked": n }`. |
 | GET | `/me/login-history` | Own security events (login subset). |
 
 Mobile clients send `X-Client-Type: mobile` on login to receive tokens in the body instead of cookies. This header is accepted only on `/auth/*` endpoints.
@@ -115,7 +116,8 @@ async def approve_leave(request_id: UUID, body: LeaveDecision, ctx: Ctx = Depend
 
 - `requires(...)` checks the actor holds the permission at any scope (fast fail) and registers metadata for the route-coverage test.
 - The service performs the resource-level check (scope, SoD, state, step-up) with the loaded resource.
-- Public routes use `public_route()` explicitly; the coverage test fails for routes with neither.
+- Public routes use `public_route()` explicitly; routes about the actor's own account use `account()` (any full session, or with `allow_enrolment=True` an enrolment-only one), and both are confined to allow-lists. The coverage test fails for a route with none of these, or more than one.
+- Every route dependency returns the `Actor`, built once per request from PostgreSQL in a short transaction that closes before the route runs.
 
 ## 7. Response shaping
 
@@ -198,8 +200,8 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /exports/{id}` · `POST /exports/{id}/download`
 
 **Administration**
-- `GET /users` · `POST /users/{id}/disable` · `/enable` · `POST /users/{id}/mfa-reset` · `GET/DELETE /users/{id}/sessions`
-- `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` and creates a `super_admin_assignment` request instead)
+- `GET /users` (keyset by ID) · `POST /users/{id}/disable` · `/enable` · `POST /users/{id}/mfa-reset` (E) · `GET/DELETE /users/{id}/sessions`
+- `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` and creates a `super_admin_assignment` request instead; until grant requests exist (E) it is refused with `409 sod.super_admin_assignment`. Removing a `super_admin` assignment that would leave fewer than two is refused with `409 role.min_super_admins`.)
 - `GET /role-grant-requests?status=` · `POST /role-grant-requests` (`kind: elevation`) · `POST /role-grant-requests/{id}/approve` · `/reject` · `/revoke`
 - `POST /role-grant-requests/break-glass` · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin)
 - `GET /audit-log?actor_id=&subject_employee_id=&action=&from=&to=`

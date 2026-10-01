@@ -1,0 +1,66 @@
+/* Design tokens (docs/ui-ux-guidelines.md §4). Components use these tokens only, never raw
+   colour values. The accent is a placeholder ink blue until Sigvitas brand colours arrive. */
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+
+  /* Warm neutral scale, 11 steps. */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #faf9f7;
+  --color-neutral-100: #f3f1ee;
+  --color-neutral-200: #e6e3de;
+  --color-neutral-300: #d3cec7;
+  --color-neutral-400: #a8a29a;
+  --color-neutral-500: #7a746c;
+  --color-neutral-600: #5c5751;
+  --color-neutral-700: #45413c;
+  --color-neutral-800: #2e2b28;
+  --color-neutral-900: #1c1a18;
+
+  /* One accent: primary buttons, links, focus rings, the current navigation item. */
+  --color-accent-50: #eef3fb;
+  --color-accent-600: #264f8f;
+  --color-accent-700: #1d3f75;
+
+  /* Meaning only, always paired with text or an icon. */
+  --color-success-50: #ecf7ef;
+  --color-success-700: #1f6b37;
+  --color-warning-50: #fdf5e6;
+  --color-warning-700: #8a5a00;
+  --color-danger-50: #fcefee;
+  --color-danger-700: #a3261f;
+  --color-info-50: #eef3fb;
+  --color-info-700: #1d3f75;
+
+  --radius-control: 6px;
+  --radius-surface: 8px;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: var(--color-neutral-900);
+    background: var(--color-neutral-50);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-600);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0ms !important;
+      animation-duration: 0ms !important;
+    }
+  }
+}

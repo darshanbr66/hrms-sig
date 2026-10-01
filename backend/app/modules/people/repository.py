@@ -15,11 +15,12 @@ records they take no scope filter.
 import uuid
 from datetime import date
 
-from sqlalchemy import ColumnElement, Select, and_, exists, or_, select
+from sqlalchemy import ColumnElement, Select, and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.modules.people.models import Employee, EmployeeJob
+from app.platform.authz.engine import Placement
 
 
 def _job_applies_on(job: type[EmployeeJob], on: date) -> ColumnElement[bool]:
@@ -33,7 +34,7 @@ def _employed_on(employee: type[Employee], on: date) -> ColumnElement[bool]:
     )
 
 
-def team_member_ids_query(manager_employee_id: uuid.UUID, on: date) -> Select[tuple[uuid.UUID]]:
+def team_member_ids_query(manager_employee_id: uuid.UUID, on: date) -> Select[uuid.UUID]:
     """Employee IDs in the reporting subtree (direct and indirect reports) on a date."""
     job, employee = aliased(EmployeeJob), aliased(Employee)
     team = (
@@ -58,7 +59,7 @@ def team_member_ids_query(manager_employee_id: uuid.UUID, on: date) -> Select[tu
 
 def _reporting_chain_contains_query(
     employee_id: uuid.UUID, manager_employee_id: uuid.UUID, on: date
-) -> Select[tuple[bool]]:
+) -> Select[bool]:
     job, employee = aliased(EmployeeJob), aliased(Employee)
     chain = (
         select(job.manager_employee_id.label("manager_id"))
@@ -113,3 +114,49 @@ async def has_direct_reports(session: AsyncSession, employee_id: uuid.UUID, on: 
         .where(employee.id == job.employee_id)
     )
     return bool((await session.execute(query)).scalar_one())
+
+
+async def is_employed(session: AsyncSession, employee_id: uuid.UUID, on: date) -> bool:
+    employee = aliased(Employee)
+    query = select(exists().where(employee.id == employee_id, _employed_on(employee, on)))
+    return bool((await session.execute(query)).scalar_one())
+
+
+async def placement(session: AsyncSession, employee_id: uuid.UUID, on: date) -> Placement | None:
+    """The department and location of the job row that applies on a date, for an employee
+    employed on it."""
+    job, employee = aliased(EmployeeJob), aliased(Employee)
+    query = (
+        select(job.department_id, job.location_id)
+        .join(employee, employee.id == job.employee_id)
+        .where(job.employee_id == employee_id, _job_applies_on(job, on), _employed_on(employee, on))
+    )
+    row = (await session.execute(query)).one_or_none()
+    return Placement(row.department_id, row.location_id) if row else None
+
+
+def placed_employee_ids_query(
+    department_id: uuid.UUID | None, location_id: uuid.UUID | None, on: date
+) -> Select[uuid.UUID]:
+    """Employee IDs placed in a department and/or location on a date (an `all` scope
+    restricted by a role assignment, docs/authorization-model.md §5)."""
+    job, employee = aliased(EmployeeJob), aliased(Employee)
+    query = (
+        select(job.employee_id)
+        .join(employee, employee.id == job.employee_id)
+        .where(_job_applies_on(job, on), _employed_on(employee, on))
+    )
+    if department_id is not None:
+        query = query.where(job.department_id == department_id)
+    if location_id is not None:
+        query = query.where(job.location_id == location_id)
+    return query
+
+
+async def first_name(session: AsyncSession, employee_id: uuid.UUID) -> str | None:
+    """Preferred name, else legal first name (`public_internal` directory fields)."""
+    query = select(func.coalesce(Employee.preferred_name, Employee.legal_first_name)).where(
+        Employee.id == employee_id
+    )
+    value: str | None = (await session.execute(query)).scalar_one_or_none()
+    return value

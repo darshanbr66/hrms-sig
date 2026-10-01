@@ -25,6 +25,7 @@ PROBLEM_TYPE_PREFIX = "/problems/"
 
 class ProblemType(StrEnum):
     UNAUTHENTICATED = "unauthenticated"
+    INVALID_CREDENTIALS = "invalid-credentials"
     FORBIDDEN = "forbidden"
     STEP_UP_REQUIRED = "step-up-required"
     MFA_ENROLMENT_REQUIRED = "mfa-enrolment-required"
@@ -39,6 +40,13 @@ class ProblemType(StrEnum):
 
 _STATUS_AND_TITLE: dict[ProblemType, tuple[int, str]] = {
     ProblemType.UNAUTHENTICATED: (401, "Sign in to continue."),
+    # One answer for every sign-in failure, so it never reveals whether an account exists,
+    # is locked or is disabled (docs/security-architecture.md §3.4).
+    ProblemType.INVALID_CREDENTIALS: (
+        401,
+        "The details you entered are not correct. Check them and try again. "
+        "If you keep having trouble, contact HR.",
+    ),
     ProblemType.FORBIDDEN: (403, "You don't have access to this."),
     ProblemType.STEP_UP_REQUIRED: (403, "Enter a code from your authenticator app to continue."),
     ProblemType.MFA_ENROLMENT_REQUIRED: (403, "Set up an authenticator app to continue."),

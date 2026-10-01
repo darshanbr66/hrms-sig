@@ -5,19 +5,24 @@ description = "Sigvitas HRMS API, worker and migrations"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.20,<2",
+    "argon2-cffi>=25.1,<26",
+    "cryptography>=50.0.2,<51",
+    "email-validator>=2.3,<3",
     "fastapi>=0.142,<0.143",
+    "httpx>=0.28,<0.29",
     "procrastinate==3.10.0",
     "psycopg[binary,pool]>=3.3,<4",
     "pydantic>=2.13,<3",
     "pydantic-settings>=2.15,<3",
+    "pyotp>=2.9,<3",
     "redis>=8.1,<9",
+    "segno>=1.6,<2",
     "sqlalchemy[asyncio]>=2.1,<2.2",
     "uvicorn[standard]>=0.54,<0.55",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28,<0.29",
     "import-linter>=2.15,<3",
     "mypy>=2.3,<3",
     "pip-audit>=2.10,<3",
@@ -62,8 +67,9 @@ module = ["testcontainers.*", "procrastinate.*"]
 ignore_missing_imports = true
 
 # Module boundaries (docs/architecture.md §4): a module is imported by other modules only
-# through its public.py, and the platform imports no module. app.metadata is the composition
-# root that collects every module's models. Each new module adds one "protected" contract.
+# through its public.py, and the platform imports no module. app.metadata (every module's
+# models) and app.main (routers and services) are the composition roots. Each new module adds
+# one "protected" contract.
 [tool.importlinter]
 root_packages = ["app"]
 
@@ -77,7 +83,7 @@ forbidden_modules = ["app.modules"]
 name = "org is imported only through org.public"
 type = "protected"
 protected_modules = ["app.modules.org"]
-allowed_importers = ["app.modules.org", "app.metadata"]
+allowed_importers = ["app.modules.org", "app.metadata", "app.main"]
 ignore_imports = ["app.** -> app.modules.org.public"]
 unmatched_ignore_imports_alerting = "none"
 
@@ -85,8 +91,32 @@ unmatched_ignore_imports_alerting = "none"
 name = "people is imported only through people.public"
 type = "protected"
 protected_modules = ["app.modules.people"]
-allowed_importers = ["app.modules.people", "app.metadata"]
+allowed_importers = ["app.modules.people", "app.metadata", "app.main"]
 ignore_imports = ["app.** -> app.modules.people.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "identity is imported only through identity.public"
+type = "protected"
+protected_modules = ["app.modules.identity"]
+allowed_importers = ["app.modules.identity", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.identity.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "access is imported only through access.public"
+type = "protected"
+protected_modules = ["app.modules.access"]
+allowed_importers = ["app.modules.access", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.access.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "audit is imported only through audit.public"
+type = "protected"
+protected_modules = ["app.modules.audit"]
+allowed_importers = ["app.modules.audit", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.audit.public"]
 unmatched_ignore_imports_alerting = "none"
 
 [tool.pytest.ini_options]

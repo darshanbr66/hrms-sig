@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
@@ -20,6 +21,9 @@ from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.platform.config import AppEnv, MigrationSettings
 from app.platform.db import Database, create_engine
+
+if TYPE_CHECKING:
+    from tests.api_support import Api
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 INFRA_DIR = BACKEND_DIR.parent / "infra"
@@ -196,3 +200,12 @@ def redis() -> Iterator[RedisServer]:
             password=password,
             container=container,
         )
+
+
+@pytest.fixture
+async def api(migrated_postgres: PostgresServer, redis: RedisServer) -> AsyncIterator["Api"]:
+    """A running API on the shared test database (tests/api_support.py)."""
+    from tests.api_support import running_api  # noqa: PLC0415 (api_support imports this module)
+
+    async with running_api(migrated_postgres, redis) as running:
+        yield running

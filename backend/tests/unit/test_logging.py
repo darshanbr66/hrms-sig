@@ -3,7 +3,14 @@ import logging
 
 import pytest
 
-from app.platform.logging import REDACTED, JsonFormatter, is_sensitive_key, redact, request_id_var
+from app.platform.logging import (
+    REDACTED,
+    JsonFormatter,
+    configure_logging,
+    is_sensitive_key,
+    redact,
+    request_id_var,
+)
 
 FIXTURE_SECRETS = {
     "password": "fixture-password-value",
@@ -74,3 +81,16 @@ def test_records_are_json_with_request_id() -> None:
 def test_extra_cannot_overwrite_base_fields() -> None:
     output = render({"level": "FORGED"})
     assert output["level"] == "INFO"
+
+
+def test_http_client_request_urls_are_not_logged() -> None:
+    """The breached-password check's URL carries a password-derived hash prefix."""
+    root = logging.getLogger()
+    saved = (root.handlers[:], root.level)
+    try:
+        configure_logging("INFO")
+        assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+        assert logging.getLogger("httpcore").getEffectiveLevel() == logging.WARNING
+    finally:
+        root.handlers[:], level = saved
+        root.setLevel(level)

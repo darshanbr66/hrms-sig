@@ -43,7 +43,8 @@ MAX_DETAIL_KEYS: Final = 32
 MAX_JSON_BYTES: Final = 16384
 
 _DOTTED_NAME = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+")
-_PERMISSION_KEY = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,3}")
+# Two to four parts: the resource is omitted when a domain has one (`user.invite`).
+_PERMISSION_KEY = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){1,3}")
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 _EMAIL_SHAPE = re.compile(r"[^@\s]+@[^@\s]+")
 
@@ -109,6 +110,14 @@ class SecurityEventType(StrEnum):
     ELEVATION_APPROVED = "elevation.approved"
     ELEVATION_BREAK_GLASS = "elevation.break_glass"
     AUDIT_CHAIN_MISMATCH = "audit.chain_mismatch"
+    STEP_UP_SUCCEEDED = "step_up.succeeded"
+    STEP_UP_FAILED = "step_up.failed"
+    PASSWORD_CHANGED = "password.changed"  # noqa: S105 (an event name, not a secret)
+    MFA_FACTOR_REMOVED = "mfa.factor_removed"
+    MFA_RECOVERY_CODES_REGENERATED = "mfa.recovery_codes_regenerated"
+    ACCOUNT_ACTIVATED = "account.activated"
+    ACCOUNT_DISABLED = "account.disabled"
+    ACCOUNT_ENABLED = "account.enabled"
 
 
 def _require_aware(value: datetime, name: str) -> None:

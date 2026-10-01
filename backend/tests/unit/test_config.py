@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from app.platform.config import ApiSettings, AppEnv, MigrationSettings, WorkerSettings, sqlalchemy_url
 
 HMAC_KEY = base64.b64encode(b"k" * 32).decode()
+FIELD_KEY = base64.b64encode(b"f" * 32).decode()
+FIELD_KEYS = f'{{"1": "{FIELD_KEY}"}}'
 LOCAL_DB = "postgresql://hrms_app:pw@127.0.0.1:5433/hrms"
 DEPLOYED_DB = "postgresql://hrms_app:pw@db.internal:5432/hrms?sslmode=verify-full"
 
@@ -16,6 +18,9 @@ def api_settings(**overrides: object) -> ApiSettings:
         "database_url_app": LOCAL_DB,
         "redis_url": "redis://hrms_ratelimit:pw@127.0.0.1:6380/0",
         "rate_limit_key_hmac_key": HMAC_KEY,
+        "app_base_url": "http://localhost:5173",
+        "field_encryption_keys": FIELD_KEYS,
+        "field_encryption_active_version": 1,
     }
     values.update(overrides)
     return ApiSettings.model_validate(values)
@@ -32,8 +37,10 @@ def test_production_settings_with_tls_are_accepted() -> None:
         app_env=AppEnv.PRODUCTION,
         database_url_app=DEPLOYED_DB,
         redis_url="rediss://hrms_ratelimit:pw@cache.internal:6379/0",
+        app_base_url="https://hrms.example.com/",
     )
     assert settings.app_env.is_deployed
+    assert settings.app_base_url == "https://hrms.example.com"
 
 
 @pytest.mark.parametrize("app_env", [AppEnv.STAGING, AppEnv.PRODUCTION])
@@ -45,6 +52,7 @@ def test_production_settings_with_tls_are_accepted() -> None:
         ({"redis_url": "redis://hrms_ratelimit:pw@cache.internal:6379/0"}, "rediss://"),
         ({"api_docs_enabled": True}, "API_DOCS_ENABLED"),
         ({"log_level": "DEBUG"}, "DEBUG"),
+        ({"app_base_url": "http://hrms.example.com"}, "APP_BASE_URL"),
     ],
 )
 def test_deployed_environments_refuse_unsafe_settings(
@@ -54,6 +62,7 @@ def test_deployed_environments_refuse_unsafe_settings(
         "app_env": app_env,
         "database_url_app": DEPLOYED_DB,
         "redis_url": "rediss://hrms_ratelimit:pw@cache.internal:6379/0",
+        "app_base_url": "https://hrms.example.com",
     }
     with pytest.raises(ValidationError, match=message):
         api_settings(**(safe | overrides))
@@ -66,6 +75,26 @@ def test_deployed_environments_refuse_unsafe_settings(
 def test_weak_or_malformed_hmac_key_is_refused(key: str) -> None:
     with pytest.raises(ValidationError, match="RATE_LIMIT_KEY_HMAC_KEY"):
         api_settings(rate_limit_key_hmac_key=key)
+
+
+@pytest.mark.parametrize("url", ["localhost:5173", "http://localhost:5173/app", "http://localhost?x=1"])
+def test_app_base_url_must_be_an_origin(url: str) -> None:
+    with pytest.raises(ValidationError, match="APP_BASE_URL"):
+        api_settings(app_base_url=url)
+
+
+@pytest.mark.parametrize(
+    ("keys", "version"),
+    [
+        ("not json", 1),
+        ('{"1": "not base64!"}', 1),
+        (f'{{"1": "{base64.b64encode(b"short").decode()}"}}', 1),
+        (FIELD_KEYS, 2),
+    ],
+)
+def test_field_encryption_keys_are_checked(keys: str, version: int) -> None:
+    with pytest.raises(ValidationError, match="FIELD_ENCRYPTION"):
+        api_settings(field_encryption_keys=keys, field_encryption_active_version=version)
 
 
 def test_missing_required_settings_fail_fast(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,6 +115,7 @@ def test_secrets_are_not_shown_in_repr() -> None:
     settings = api_settings()
     assert "pw@" not in repr(settings)
     assert HMAC_KEY not in repr(settings)
+    assert FIELD_KEY not in repr(settings)
 
 
 def test_sqlalchemy_url_selects_psycopg() -> None:

@@ -53,12 +53,15 @@ def test_action_must_be_a_dotted_lower_case_name(action: str) -> None:
         event(action=action)
 
 
-@pytest.mark.parametrize(
-    "permission", ["leave.approve", "leave.request.approve.team.extra", "Leave.request.read"]
-)
+@pytest.mark.parametrize("permission", ["leave", "leave.request.approve.team.extra", "Leave.request.read"])
 def test_permission_used_must_be_a_permission_key(permission: str) -> None:
     with pytest.raises(ValueError, match="permission_used"):
         event(permission_used=permission)
+
+
+@pytest.mark.parametrize("permission", ["user.invite", "org.read", "leave.request.approve.team"])
+def test_permission_keys_of_two_to_four_parts_are_accepted(permission: str) -> None:
+    assert event(permission_used=permission).permission_used == permission
 
 
 def test_target_type_and_id_come_together() -> None:

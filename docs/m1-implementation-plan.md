@@ -1,6 +1,6 @@
 # Sigvitas HRMS — M1 (Phase 1) Implementation Plan
 
-Status: In progress. Checkpoint A complete (2026-09-30); checkpoints B–H to do (§10, §12). Scope: `development-roadmap.md` M1 only. Nothing here changes the architecture; where the docs were ambiguous, the choice and its reason are stated in §10.
+Status: In progress. Checkpoints A, B and C complete (2026-10-01); D–H to do (§10, §12). Scope: `development-roadmap.md` M1 only. Nothing here changes the architecture; where the docs were ambiguous, the choice and its reason are stated in §10.
 
 ## 0. Environment found
 
@@ -128,9 +128,11 @@ Technical setting keys seeded (values are the security defaults already written 
 | 0003 | `org` tables (B) |
 | 0004 | `people.employees`, `people.employee_jobs` (+ exclusion constraint, manager index, job-history guard) (B) |
 | 0005 | `audit.audit_log`, `audit.security_events`, append-only and `recorded_at` triggers, `audit.ensure_partitions`, initial monthly partitions (current + 3 ahead), audit grants (B) |
-| later | `identity` tables |
-| later | `access` tables + CHECK constraints (SOD-3 in DB, grant request limits); `user_roles` references `identity.users`, so this follows the identity revision |
-| later | Data: permission catalog + system roles + role_permissions (generated from `authz/catalog.py` and `authz/roles.py`) |
+| 0006 | Accept two-part permission keys in `audit_log.permission_used` (C; corrects 0005) |
+| 0007 | `identity` tables (users, credentials, mfa_factors, recovery_codes, sessions, session_tokens, one_time_tokens) + the MFA invariant trigger (C) |
+| 0008 | `access` tables (permissions, roles, role_permissions, user_roles) + SOD-3 check, derived-role foreign key, assignment history trigger, read-only catalog grants (C) |
+| 0009 | Data: permission catalog + system roles + role_permissions (a frozen copy of `authz/catalog.py` and `authz/roles.py`) (C) |
+| later | `identity.trusted_devices` (D); `access.role_grant_requests` + `user_roles.grant_request_id` (E) |
 | later | `notify.email_outbox`, `app.settings`, `app.idempotency_keys`; seed technical setting keys |
 | later | `audit.chain_links`, `audit.chain_checkpoints` and the retention role's grants (with the sealer, F) |
 
@@ -206,7 +208,7 @@ Startup refuses to run in `staging`/`production` with missing keys, debug on, no
 **Backend runtime:** fastapi, uvicorn[standard], pydantic, pydantic-settings, email-validator (EmailStr), sqlalchemy[asyncio], psycopg[binary,pool], alembic, procrastinate, argon2-cffi (Argon2id), pyotp (TOTP, well-reviewed), segno (QR as SVG, no deps), cryptography (AES-GCM, Ed25519), rfc8785 (canonical JSON for audit digests), redis (async client), httpx (HIBP range API), boto3 (S3 object-lock anchoring).
 **Backend dev:** pytest, pytest-asyncio, testcontainers, ruff, mypy, import-linter, pip-audit.
 **Frontend runtime:** react, react-dom, react-router, @tanstack/react-query, react-hook-form, zod, @hookform/resolvers, react-aria-components, lucide-react, openapi-fetch (typed client over generated types), @fontsource/ibm-plex-sans.
-**Frontend dev:** vite, @vitejs/plugin-react, typescript, tailwindcss, @tailwindcss/vite, openapi-typescript, eslint + typescript-eslint + eslint-plugin-react-hooks + eslint-plugin-jsx-a11y, prettier, vitest, @testing-library/react, jsdom, @playwright/test, @axe-core/playwright, vitest-axe.
+**Frontend dev:** vite, @vitejs/plugin-react, typescript (6.x: openapi-typescript and typescript-eslint need its JavaScript compiler API, which TypeScript 7 does not ship), tailwindcss, @tailwindcss/vite, openapi-typescript, eslint + @eslint/js + globals + typescript-eslint + eslint-plugin-react-hooks + eslint-plugin-jsx-a11y, prettier, vitest, @testing-library/react, @testing-library/user-event (realistic typing and clicking in tests), @testing-library/jest-dom (DOM assertions), jsdom (26.x, which runs on Node 20), vitest-axe; @playwright/test and @axe-core/playwright arrive with the end-to-end suite (G).
 **Deliberately not in M1:** TanStack Table and Motion (no screen needs them yet), ClamAV, any UI kit.
 
 ## 10. Order of work and checkpoints
@@ -217,14 +219,16 @@ The requested order is kept except where a later step is a hard dependency of an
 |---|---|---|
 | A. Foundation | 1 repo, 25 CI skeleton, 2 compose, 3 PostgreSQL config, 5 Alembic, 6 Procrastinate, 7 roles/grants/timeouts, 4 Redis rate limiter | CI from the first commit so every later step is gated |
 | B. Audit writer + minimal org/people | 19, 22 | Identity must audit from its first line; `users.employee_id` needs `people.employees` |
-| C. Authorization engine | 16, 17 | Admin identity flows (MFA reset, disable, invite) need `require()` |
-| D. Identity | 8–14 | Models, invite, password, mandatory MFA, two-step sign-in, recovery codes, step-up |
+| C. Identity, authentication, sessions and authorization | 16, 17, 8, 10–14, part of 23 | Re-scoped by the project owner (2026-10-01): the engine plus sign-in, sessions, MFA, step-up and the frontend sign-in shell, so identity and authorization land and are tested together |
+| D. Email-based identity flows and settings | 9, rest of 11, 24 (outbox) | Email outbox and SMTP, admin invites (`POST /users`), password reset, new-device and lockout emails, keyed email hash, the settings registry |
 | E. Admin flows | 15, 18, 24 | MFA reset/re-enrolment, grant requests, bootstrap CLI |
 | F. Audit integrity | 20, 21 | Sealer, checkpoints, anchors, verification, retention, tamper suite |
 | G. Frontend | 23 | Screens over a finished, tested API |
 | H. Delivery | 26, 27 | Needs hosting decision (ADR-023) |
 
 ## 11. Small documentation corrections to make during M1
+
+Status: 2 is done (C uses `argon2-cffi` directly); `sessions.scope` from 3 is done (C); `POST /users` from 3 comes with D.
 
 1. Roadmap M1 exit says a super admin "invites a user", but `super_admin` does not hold `user.invite` (authorization-model §4.1). Correct the wording to: the super admin invites through an approved elevation to `system_admin`. This keeps the least-privilege model and exercises elevation in the exit test.
 2. Security architecture names `argon2-cffi (through pwdlib)`. Use `argon2-cffi` directly (it already provides hashing, verification and rehash detection), which removes a dependency.
@@ -277,3 +281,47 @@ Review (2026-10-01): no second engineer was available, so the project owner auth
 Automated verification at commit time: `uv sync --locked`; pytest 269 passed (including the migration gates: single head `0005`, upgrade/downgrade/upgrade, schema drift); Ruff format and lint clean; mypy strict clean; import-linter 3 contracts kept (a planted violation was reported, then removed); pip-audit `--strict` no known vulnerabilities; gitleaks v8.30.1 and Semgrep 1.178.0 (CI's rule sets) no findings; OpenAPI regenerated unchanged; Compose configuration valid.
 
 Future decisions, not made here: rehire (one `employees` row holds one joining and exit date); rules for correcting `effective_to` on historical job rows (the database currently allows any `effective_to` change, M2 write path); connection-pool behaviour of `record_separately` on denial paths under load (C/D).
+
+### Checkpoint C — identity, authentication, sessions and authorization (done, 2026-10-01)
+
+Scope set by the project owner: the authorization engine (plan C) together with sign-in, sessions, MFA and step-up (most of plan D), and the frontend sign-in shell (part of G). Flows that need outbound email moved to D.
+
+Delivered:
+
+- Revisions 0006 (two-part permission keys in `audit_log.permission_used`, correcting 0005), 0007 (identity tables and the MFA invariant trigger), 0008 (access tables, SOD-3 check, derived-role foreign key, assignment history trigger, read-only catalog grants) and 0009 (catalog and system roles seed).
+- `platform/security`: Argon2id hashing and policy with the bundled breached-password list and the optional range API, 256-bit tokens stored as SHA-256 digests, 80-bit recovery codes, TOTP with replay protection, AES-256-GCM field encryption with key versions.
+- `platform/authz`: the permission catalog (MVP permissions), the system role matrix, the engine (`require`, `scope_filter`, step-up, department/location constraints, team scope as of a date), separation-of-duties checks, and route declarations (`requires`, `account`, `public_route`) with allow-lists. CSRF middleware (custom header + Origin).
+- `modules/identity`: two-step sign-in, account lockout and per-IP throttling, server-side sessions with single-use refresh rotation and reuse detection, sign-out, own sessions and sign-in history, step-up, password change, MFA factors (add, confirm, remove with the last-factor guard), recovery codes, invite activation (password, authenticator, recovery codes), account administration (list, disable/enable, sessions of others).
+- `modules/access`: per-request actor resolution (assignments, derived `employee`/`manager`, account baseline), roles and role assignment with SOD-3, SOD-8 (refusal until grant requests), SOD-10 and the two-super-admin minimum, rotation of the target's sessions.
+- `modules/audit`: audited reads of the audit log and security events.
+- `app/cli.py bootstrap-super-admins`: the first two super admins as invited accounts, printed invite links.
+- Frontend (`frontend/`): Vite, React 19, TypeScript strict, Tailwind v4 tokens, React Aria components, TanStack Query, React Hook Form + Zod, typed API client generated from `api/openapi.json` with single-flight refresh; sign-in (two steps, recovery code), invite activation, account security (sessions, authenticators, recovery codes, password, sign-in history), enrolment-only mode, step-up dialog, access-denied and not-found states, lazy-loaded feature routes; CI job.
+
+Decisions (documents updated in the same change):
+
+- Every active account holds the account baseline (own sessions and sign-in history); the account's own security routes need no permission and are on an account allow-list (`authorization-model.md` §4.1, `security-architecture.md` §12).
+- One `invalid-credentials` problem type for every sign-in failure (`api-architecture.md` §4).
+- Assigning `super_admin` is refused until the grant-request approval exists (E); the bootstrap command is the only source of super admins until then. Removing one that would leave fewer than two is refused (`security-architecture.md` §9).
+- A role change ends the user's access tokens; the next refresh issues new ones (session rotation without signing the user out).
+- "Today" for authorization is the UTC date until location time zones (M2).
+- Locked reads always refresh the row (`populate_existing`), and session changes lock account, session, then tokens.
+- Password hashing is bounded to 4 concurrent hashes per API process.
+- TypeScript is pinned to 6.x and jsdom to 26.x for tool and Node 20 compatibility.
+
+Deferred, with where they go: email outbox, admin invites (`POST /users`), password reset, new-device and lockout emails, `trusted_devices` and the keyed attempted-email hash (D); the settings registry, so security thresholds are code constants at the documented values until then (D); MFA reset and re-enrolment, grant requests, elevation and break-glass, `super_admin` assignment (E); retention purge of expired tokens and sessions (F/M5); mobile token transport (`X-Client-Type`) with the mobile client; Playwright end-to-end tests and a real-browser accessibility pass (G); admin screens (G).
+
+Review (2026-10-01): adversarial self-review authorized by the project owner (`engineering-principles.md` §8); no human has reviewed this checkpoint yet, and that review is still owed. Defects found and fixed, each with a regression test:
+
+- Revision 0005 refused two-part permission keys (`user.invite`), so those uses could not be audited (fixed by 0006).
+- Locked re-reads returned stale ORM objects: two concurrent refreshes with one token could both succeed, and concurrent removals of one role assignment could fail with an error. Every locked read now refreshes the row.
+- A refresh racing a sign-out could deadlock (lock order); refresh now locks the session first.
+- Sign-out left no security event.
+- Concurrent Argon2 hashing was unbounded (memory exhaustion under a sign-in flood).
+- The health routes declared no access rule (now explicitly public).
+- `looks_like_token` accepted non-ASCII letters.
+- React Aria's native validation blocked resubmitting a form after a server-side field error.
+- HTTP client libraries logged request URLs, which for the breached-password check carry a password-derived hash prefix.
+
+Automated verification at commit time: backend `uv sync --locked`; pytest 463 passed (including migration gates: single head `0009`, upgrade/downgrade/upgrade, schema drift, the authorization matrix over every role and gated route, data scopes over PostgreSQL, route coverage, secret leakage); Ruff format and lint clean; mypy strict clean; import-linter 6 contracts kept; pip-audit `--strict` no known vulnerabilities. Frontend: pnpm install frozen; 26 tests passed (including axe); ESLint, TypeScript strict and Prettier clean; banned-words check passed; build passed (148 KB gzipped initial JavaScript); `pnpm audit` no known vulnerabilities; generated API types match the contract. gitleaks v8.30.1 and Semgrep 1.178.0 (CI rule sets) no findings; OpenAPI regenerated and committed; Compose configuration valid.
+
+Open decisions recorded in roadmap §6: pre-joining account access, whether `user.disable` may target administrators, rehire. Known limitation: the progressive sign-in delay applies only to existing accounts (`security-architecture.md` §3.4).

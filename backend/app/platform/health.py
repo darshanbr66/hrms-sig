@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.platform.authz.route import public_route
 from app.platform.db import Database
 from app.platform.errors import ProblemError, ProblemType
 
@@ -26,12 +27,12 @@ class HealthStatus(BaseModel):
     status: Literal["ok"]
 
 
-@router.get("/live", response_model=HealthStatus)
+@router.get("/live", response_model=HealthStatus, dependencies=[public_route()])
 async def live() -> HealthStatus:
     return HealthStatus(status="ok")
 
 
-@router.get("/ready", response_model=HealthStatus)
+@router.get("/ready", response_model=HealthStatus, dependencies=[public_route()])
 async def ready(request: Request) -> HealthStatus:
     database: Database = request.app.state.database
     try:

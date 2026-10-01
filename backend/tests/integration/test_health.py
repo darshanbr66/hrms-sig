@@ -1,4 +1,3 @@
-import base64
 import socket
 from collections.abc import AsyncIterator
 
@@ -7,17 +6,13 @@ import pytest
 from pydantic import SecretStr
 
 from app.main import create_app
-from app.platform.config import ApiSettings, AppEnv
+from app.platform.config import ApiSettings
+from tests.api_support import api_settings
 from tests.conftest import PostgresServer
 
 
 def settings_for(database_url: SecretStr) -> ApiSettings:
-    return ApiSettings(
-        app_env=AppEnv.TEST,
-        database_url_app=database_url,
-        redis_url=SecretStr("redis://hrms_ratelimit:unused@127.0.0.1:1/0"),
-        rate_limit_key_hmac_key=SecretStr(base64.b64encode(b"k" * 32).decode()),
-    )
+    return api_settings(database_url)
 
 
 async def client_for(settings: ApiSettings) -> AsyncIterator[httpx.AsyncClient]:

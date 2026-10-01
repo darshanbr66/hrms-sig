@@ -47,6 +47,43 @@ jobs:
       - name: Tests
         run: uv run pytest
 
+  frontend:
+    name: Frontend lint, types, tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Enable pnpm (the version pinned in package.json)
+        run: corepack enable
+      - name: Install dependencies from the lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Dependency audit
+        run: pnpm audit
+      # The API types are generated from api/openapi.json, which the backend job checks
+      # against the application; together they keep client and server in step.
+      - name: API types match the committed contract
+        run: pnpm api:types && git diff --exit-code -- src/lib/api-schema.ts
+      - name: Format
+        run: pnpm format:check
+      - name: Lint (includes accessibility rules)
+        run: pnpm lint
+      - name: Types (TypeScript strict)
+        run: pnpm typecheck
+      - name: UI copy (banned words)
+        run: pnpm copy:check
+      - name: Tests (components, flows, axe)
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-24.04

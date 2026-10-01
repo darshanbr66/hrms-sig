@@ -163,6 +163,19 @@ def test_the_database_assigns_record_ids(migrated_postgres: PostgresServer, stre
     assert first[0].version == second[0].version == 7
 
 
+@pytest.mark.parametrize("permission", ["user.invite", "leave.request.approve.team"])
+def test_audit_log_accepts_catalog_permission_keys(
+    migrated_postgres: PostgresServer, permission: str
+) -> None:
+    """Regression: revision 0005 refused two-part keys such as `user.invite` (fixed in 0006)."""
+    with migrated_postgres.connect("hrms_app") as connection:
+        connection.execute(
+            "INSERT INTO audit.audit_log (occurred_at, actor_type, action, outcome, permission_used) "
+            "VALUES (now(), 'system', 'test.probe', 'success', %s)",
+            (permission,),
+        )
+
+
 @pytest.mark.parametrize(
     "row",
     [
@@ -177,6 +190,8 @@ def test_the_database_assigns_record_ids(migrated_postgres: PostgresServer, stre
         "VALUES (now(), 'system', 'test.probe', 'success', 'employee')",
         "(occurred_at, actor_type, action, outcome, permission_used) "
         "VALUES (now(), 'system', 'test.probe', 'success', 'not-a-permission')",
+        "(occurred_at, actor_type, action, outcome, permission_used) "
+        "VALUES (now(), 'system', 'test.probe', 'success', 'leave')",
         "(occurred_at, actor_type, session_id, action, outcome) "
         "VALUES (now(), 'system', uuidv7(), 'test.probe', 'success')",
     ],
