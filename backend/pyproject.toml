@@ -68,7 +68,7 @@ ignore_missing_imports = true
 
 # Module boundaries (docs/architecture.md §4): a module is imported by other modules only
 # through its public.py, and the platform imports no module. app.metadata (every module's
-# models) and app.main (routers and services) are the composition roots. Each new module adds
+# models), app.main (routers and services) and app.worker (jobs) are the composition roots. Each new module adds
 # one "protected" contract.
 [tool.importlinter]
 root_packages = ["app"]
@@ -99,7 +99,7 @@ unmatched_ignore_imports_alerting = "none"
 name = "identity is imported only through identity.public"
 type = "protected"
 protected_modules = ["app.modules.identity"]
-allowed_importers = ["app.modules.identity", "app.metadata", "app.main"]
+allowed_importers = ["app.modules.identity", "app.metadata", "app.main", "app.worker"]
 ignore_imports = ["app.** -> app.modules.identity.public"]
 unmatched_ignore_imports_alerting = "none"
 
@@ -117,6 +117,22 @@ type = "protected"
 protected_modules = ["app.modules.audit"]
 allowed_importers = ["app.modules.audit", "app.metadata", "app.main"]
 ignore_imports = ["app.** -> app.modules.audit.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "notify is imported only through notify.public"
+type = "protected"
+protected_modules = ["app.modules.notify"]
+allowed_importers = ["app.modules.notify", "app.metadata", "app.main", "app.worker"]
+ignore_imports = ["app.** -> app.modules.notify.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "settings is imported only through settings.public"
+type = "protected"
+protected_modules = ["app.modules.settings"]
+allowed_importers = ["app.modules.settings", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.settings.public"]
 unmatched_ignore_imports_alerting = "none"
 
 [tool.pytest.ini_options]

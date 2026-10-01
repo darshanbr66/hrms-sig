@@ -25,6 +25,7 @@ from app.modules.people.repository import (
     placement,
     team_member_ids,
     team_member_ids_query,
+    work_email,
 )
 
 
@@ -50,4 +51,5 @@ __all__ = [
     "relationships",
     "team_member_ids",
     "team_member_ids_query",
+    "work_email",
 ]

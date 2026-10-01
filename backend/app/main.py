@@ -20,8 +20,12 @@ from app.modules.access.public import SessionActorProvider
 from app.modules.access.service import AccessService
 from app.modules.audit import router as audit_router
 from app.modules.identity import router as identity_router
+from app.modules.identity.invitations import InvitationService
+from app.modules.identity.password_reset import PasswordResetService
 from app.modules.identity.service import IdentityService, Sleep
 from app.modules.people import public as people
+from app.modules.settings import router as settings_router
+from app.modules.settings.service import SettingsService
 from app.platform import health
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.engine import Authorizer
@@ -34,6 +38,7 @@ from app.platform.logging import configure_logging
 from app.platform.middleware import RequestContextMiddleware
 from app.platform.ratelimit import RateLimiter, create_redis_client
 from app.platform.security.crypto import FieldCipher
+from app.platform.security.emails import EmailHasher
 from app.platform.security.passwords import BreachedPasswordChecker
 
 API_TITLE = "Sigvitas HRMS API"
@@ -57,6 +62,7 @@ def _build(*, docs_enabled: bool, lifespan: Any = None) -> FastAPI:
     app.include_router(identity_router.router)
     app.include_router(access_router.router)
     app.include_router(audit_router.router)
+    app.include_router(settings_router.router)
     return app
 
 
@@ -71,6 +77,9 @@ def create_app(settings: ApiSettings, *, clock: Clock | None = None, sleep: Slee
         breach_client = httpx.AsyncClient() if settings.hibp_enabled else None
         audit = AuditWriter(app_clock)
         authorizer = Authorizer(people.relationships, app_clock)
+        email_hasher = EmailHasher(settings.email_lookup_key_bytes)
+        breach_checker = BreachedPasswordChecker(hibp_enabled=settings.hibp_enabled, client=breach_client)
+        limiter = RateLimiter(redis, hmac_key=settings.rate_limit_hmac_key_bytes, clock=app_clock)
         app.state.clock = app_clock
         app.state.database = database
         app.state.audit_writer = audit
@@ -80,11 +89,26 @@ def create_app(settings: ApiSettings, *, clock: Clock | None = None, sleep: Slee
             database=database,
             clock=app_clock,
             cipher=FieldCipher(settings.field_keys, settings.field_encryption_active_version),
-            breach_checker=BreachedPasswordChecker(hibp_enabled=settings.hibp_enabled, client=breach_client),
-            rate_limiter=RateLimiter(redis, hmac_key=settings.rate_limit_hmac_key_bytes, clock=app_clock),
+            breach_checker=breach_checker,
+            rate_limiter=limiter,
             audit=audit,
             authorizer=authorizer,
+            email_hasher=email_hasher,
             sleep=sleep or asyncio.sleep,
+        )
+        app.state.password_reset_service = PasswordResetService(
+            database=database,
+            clock=app_clock,
+            breach_checker=breach_checker,
+            rate_limiter=limiter,
+            audit=audit,
+            email_hasher=email_hasher,
+        )
+        app.state.invitation_service = InvitationService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
+        )
+        app.state.settings_service = SettingsService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
         app.state.access_service = AccessService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer

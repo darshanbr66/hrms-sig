@@ -113,11 +113,11 @@ Columns follow `database-design.md` §4 exactly unless noted.
 | `identity` | users, credentials, mfa_factors, recovery_codes, sessions, session_tokens, one_time_tokens, trusted_devices | Full. Enrolment-only sessions: `sessions.scope` (`full`, `mfa_enrolment`) — the column the docs imply for "enrolment-only session". |
 | `access` | permissions, roles, role_permissions, user_roles, role_grant_requests | Full, with catalog + system roles as data revision. |
 | `audit` | audit_log, security_events (partitioned monthly on `recorded_at`), chain_links (partitioned), chain_checkpoints | Full integrity design. The two streams and their writer come in B; the chain tables with the sealer in F. |
-| `notify` | email_outbox | Only the outbox (emails for invite, reset, re-enrolment, lockout, new device, elevation). In-app notifications are M5. |
-| `app` | settings, idempotency_keys | `export_jobs` is M5. |
+| `notify` | email_outbox | Only the outbox (emails for invite, reset, lockout, new device, password and MFA changes in D; re-enrolment and elevation in E). In-app notifications are M5. |
+| `app` | settings, idempotency_keys | `export_jobs` is M5. `idempotency_keys` arrives with the first endpoint that takes an `Idempotency-Key` header. |
 | Procrastinate | vendored schema of the pinned release | Applied by Alembic. |
 
-Technical setting keys seeded (values are the security defaults already written in `security-architecture.md`, not HR policy): session idle/absolute timeouts, access-token TTL, step-up window, invite/reset/re-enrolment token TTLs, lockout thresholds, elevation default/max duration, HIBP enabled flag. No HR values are seeded.
+Technical settings (D): declared in the code registry with the security defaults already written in `security-architecture.md` as defaults; nothing is seeded, the table holds only overrides (`database-design.md` §4.11). Session timeouts, invite/reset TTLs, lockout thresholds, the per-IP sign-in threshold, the trusted-device lifetime and email delivery attempts are settings. The access-token TTL and step-up window stay fixed in code (they are security properties, not tuning); elevation durations come with E; the HIBP flag stays an environment variable. No HR values exist as settings.
 
 ## 3. Migration sequence (single linear Alembic history)
 
@@ -132,8 +132,8 @@ Technical setting keys seeded (values are the security defaults already written 
 | 0007 | `identity` tables (users, credentials, mfa_factors, recovery_codes, sessions, session_tokens, one_time_tokens) + the MFA invariant trigger (C) |
 | 0008 | `access` tables (permissions, roles, role_permissions, user_roles) + SOD-3 check, derived-role foreign key, assignment history trigger, read-only catalog grants (C) |
 | 0009 | Data: permission catalog + system roles + role_permissions (a frozen copy of `authz/catalog.py` and `authz/roles.py`) (C) |
-| later | `identity.trusted_devices` (D); `access.role_grant_requests` + `user_roles.grant_request_id` (E) |
-| later | `notify.email_outbox`, `app.settings`, `app.idempotency_keys`; seed technical setting keys |
+| 0010 | `notify.email_outbox`, `identity.trusted_devices`, `app.settings`; `password_reset` added to the one-time token purposes and session revocation reasons (D) |
+| later | `access.role_grant_requests` + `user_roles.grant_request_id` (E); `app.idempotency_keys` (first idempotent endpoint) |
 | later | `audit.chain_links`, `audit.chain_checkpoints` and the retention role's grants (with the sealer, F) |
 
 Revisions after 0005 are numbered in the order they are written, following their foreign-key dependencies.
@@ -142,16 +142,16 @@ Revisions after 0005 are numbered in the order they are written, following their
 
 ## 4. API endpoints in M1 (`/api/v1`)
 
-**Public (allow-listed):** `POST /auth/login`, `POST /auth/login/mfa`, `POST /auth/refresh`, `GET /auth/invite/{token}`, `POST /auth/invite/{token}/password`, `POST /auth/invite/{token}/mfa/totp/setup`, `POST /auth/invite/{token}/mfa/totp/confirm`, `POST /auth/mfa-reenrolment/{token}`, `POST /auth/password-reset`, `POST /auth/password-reset/{token}`, `GET /api/health/live`, `GET /api/health/ready`.
+**Public (allow-listed):** `POST /auth/login`, `POST /auth/login/mfa`, `POST /auth/refresh`, `GET /auth/invite/{token}`, `POST /auth/invite/{token}/password`, `POST /auth/invite/{token}/mfa/totp/setup`, `POST /auth/invite/{token}/mfa/totp/confirm`, `POST /auth/mfa-reenrolment/{token}`, `POST /auth/password-reset`, `POST /auth/password-reset/{token}` (D), `GET /api/health/live`, `GET /api/health/ready`.
 
-**Authenticated self:** `POST /auth/logout`, `POST /auth/step-up`, `GET /me`, `POST /me/password`, `GET /me/mfa/factors`, `POST /me/mfa/totp/setup`, `POST /me/mfa/totp/confirm`, `DELETE /me/mfa/factors/{id}`, `POST /me/mfa/recovery-codes`, `GET /me/sessions`, `DELETE /me/sessions/{id}`, `GET /me/login-history`.
+**Authenticated self:** `POST /auth/logout`, `POST /auth/step-up`, `GET /me`, `POST /me/password`, `GET /me/mfa/factors`, `POST /me/mfa/totp/setup`, `POST /me/mfa/totp/confirm`, `DELETE /me/mfa/factors/{id}`, `POST /me/mfa/recovery-codes`, `GET /me/sessions`, `DELETE /me/sessions/{id}`, `GET /me/login-history`, `GET /me/devices`, `DELETE /me/devices/{id}` (D).
 
 **Administration (permission-gated):**
-- Users: `GET /users` (user.read.all), `POST /users` — create an invited account for an email, optionally linked to an existing employee (user.invite), `POST /users/{id}/invite` resend, `POST /users/{id}/disable` · `/enable` (user.disable), `POST /users/{id}/mfa-reset` (security.mfa.reset), `GET/DELETE /users/{id}/sessions` (auth.session.*.all).
+- Users: `GET /users` (user.read.all), `POST /users` — create an invited account for an email, optionally linked to an existing employee (user.invite, plus employee.lifecycle.manage over that employee), `POST /users/{id}/invite` resend, `DELETE /users/{id}/invite` revoke (D), `POST /users/{id}/disable` · `/enable` (user.disable), `POST /users/{id}/mfa-reset` (security.mfa.reset), `GET/DELETE /users/{id}/sessions` (auth.session.*.all).
 - Roles: `GET /roles`, `GET /roles/{id}`, `GET /users/{id}/roles` (role.read), `POST /users/{id}/roles`, `DELETE /users/{id}/roles/{assignment_id}` (role.assign; `super_admin` → 202 + request).
 - Grant requests: `GET /role-grant-requests`, `POST /role-grant-requests`, `POST /role-grant-requests/{id}/approve` · `/reject` · `/revoke`, `POST /role-grant-requests/break-glass`, `POST /role-grant-requests/{id}/acknowledge`.
 - Audit read: `GET /audit-log`, `GET /security-events` (audit.read / security.event.read) — API only in M1; viewers are M5.
-- Settings: `GET /settings` (settings.read), `PUT /settings/{key}` (settings.manage).
+- Settings: `GET /settings` (settings.read), `PUT /settings/{key}` (settings.manage; `security.*` keys also security.settings.manage) (D).
 
 ## 5. Frontend screens in M1
 
@@ -228,7 +228,7 @@ The requested order is kept except where a later step is a hard dependency of an
 
 ## 11. Small documentation corrections to make during M1
 
-Status: 2 is done (C uses `argon2-cffi` directly); `sessions.scope` from 3 is done (C); `POST /users` from 3 comes with D.
+Status: 2 is done (C uses `argon2-cffi` directly); 3 is done (`sessions.scope` in C, `POST /users` in D).
 
 1. Roadmap M1 exit says a super admin "invites a user", but `super_admin` does not hold `user.invite` (authorization-model §4.1). Correct the wording to: the super admin invites through an approved elevation to `system_admin`. This keeps the least-privilege model and exercises elevation in the exit test.
 2. Security architecture names `argon2-cffi (through pwdlib)`. Use `argon2-cffi` directly (it already provides hashing, verification and rehash detection), which removes a dependency.
@@ -249,7 +249,7 @@ Decisions taken during the checkpoint (documents updated in the same change):
 - SQLAlchemy 2.1 (current release of the 2.x line) is used.
 - On Windows, the API runs with `--loop asyncio:SelectorEventLoop` and the worker selects the selector loop itself, because psycopg's async driver does not support the Proactor loop.
 
-Moved to the checkpoint that first needs them, so nothing unused is shipped: the mail catcher (D), the S3 emulator with object lock (F), import-linter contracts (delivered in B), the banned-words check on UI copy and the frontend CI job (G).
+Moved to the checkpoint that first needs them, so nothing unused is shipped: the mail catcher (D, delivered), the S3 emulator with object lock (F), import-linter contracts (delivered in B), the banned-words check on UI copy and the frontend CI job (G).
 
 Open: a second engineer to review authentication, authorization, payroll, documents and audit code (`engineering-principles.md` §8). Until one is available, the project owner authorizes adversarial self-review per checkpoint; the human review of that code is still owed.
 
@@ -267,7 +267,7 @@ Decisions taken during the checkpoint (documents updated in the same change):
 - A schema drift test compares the models with the migrated database on every run.
 - The audit record types refuse values for personal field names (`security-architecture.md` §2) as well as secret ones, refuse contact details and email-shaped values in security event details, and refuse NUL characters.
 
-Deferred with reason: the keyed hash for `email_attempted_hash` is computed by the sign-in flow (D), which also introduces its dedicated key; the writer accepts only a 32-byte digest.
+Deferred with reason: the keyed hash for `email_attempted_hash` is computed by the sign-in flow (D), which also introduces its dedicated key; the writer accepts only a 32-byte digest. (Delivered in D.)
 
 Review (2026-10-01): no second engineer was available, so the project owner authorized an adversarial self-review (`engineering-principles.md` §8). No human has reviewed this checkpoint yet; that review is still owed. Defects found and fixed, each with a regression test:
 
@@ -308,7 +308,7 @@ Decisions (documents updated in the same change):
 - Password hashing is bounded to 4 concurrent hashes per API process.
 - TypeScript is pinned to 6.x and jsdom to 26.x for tool and Node 20 compatibility.
 
-Deferred, with where they go: email outbox, admin invites (`POST /users`), password reset, new-device and lockout emails, `trusted_devices` and the keyed attempted-email hash (D); the settings registry, so security thresholds are code constants at the documented values until then (D); MFA reset and re-enrolment, grant requests, elevation and break-glass, `super_admin` assignment (E); retention purge of expired tokens and sessions (F/M5); mobile token transport (`X-Client-Type`) with the mobile client; Playwright end-to-end tests and a real-browser accessibility pass (G); admin screens (G).
+Deferred, with where they go: email outbox, admin invites (`POST /users`), password reset, new-device and lockout emails, `trusted_devices` and the keyed attempted-email hash, the settings registry (D, all delivered in D); MFA reset and re-enrolment, grant requests, elevation and break-glass, `super_admin` assignment (E); retention purge of expired tokens and sessions (F/M5); mobile token transport (`X-Client-Type`) with the mobile client; Playwright end-to-end tests and a real-browser accessibility pass (G); admin screens (G).
 
 Review (2026-10-01): adversarial self-review authorized by the project owner (`engineering-principles.md` §8); no human has reviewed this checkpoint yet, and that review is still owed. Defects found and fixed, each with a regression test:
 
@@ -325,3 +325,41 @@ Review (2026-10-01): adversarial self-review authorized by the project owner (`e
 Automated verification at commit time: backend `uv sync --locked`; pytest 463 passed (including migration gates: single head `0009`, upgrade/downgrade/upgrade, schema drift, the authorization matrix over every role and gated route, data scopes over PostgreSQL, route coverage, secret leakage); Ruff format and lint clean; mypy strict clean; import-linter 6 contracts kept; pip-audit `--strict` no known vulnerabilities. Frontend: pnpm install frozen; 26 tests passed (including axe); ESLint, TypeScript strict and Prettier clean; banned-words check passed; build passed (148 KB gzipped initial JavaScript); `pnpm audit` no known vulnerabilities; generated API types match the contract. gitleaks v8.30.1 and Semgrep 1.178.0 (CI rule sets) no findings; OpenAPI regenerated and committed; Compose configuration valid.
 
 Open decisions recorded in roadmap §6: pre-joining account access, whether `user.disable` may target administrators, rehire. Known limitation: the progressive sign-in delay applies only to existing accounts (`security-architecture.md` §3.4).
+
+### Checkpoint D — email outbox, invites, password reset, trusted devices, settings (done, 2026-10-01)
+
+Delivered:
+
+- Revision 0010: `notify.email_outbox`, `identity.trusted_devices`, `app.settings`; `password_reset` added to the one-time token purposes and the session revocation reasons. Expand only; the downgrade reverses it for development databases.
+- `modules/notify`: the email outbox (`enqueue` in the business transaction, idempotency key per event, template data checked for secrets and contact details) and the worker's dispatcher (`notify.dispatch_email`, every minute: `SKIP LOCKED` claim with a lease, retries with backoff, `failed` after the configured attempts, `cancelled` when an email no longer applies). `platform/email.py`: SMTP sender (STARTTLS, TLS, or plain only in `local`/`test`), whose errors carry only the exception class.
+- `modules/identity`: admin invites (`POST /users`, resend, revoke), password reset (request and complete), security emails (new device, account locked once per lock, recovery code used, password changed or reset, MFA changes), trusted devices (`/me/devices`), the keyed attempted-email hash for unknown accounts, lockout and session timeouts read from settings.
+- `platform/settings.py` and `modules/settings`: the typed settings registry (defaults in code, overrides in `app.settings`, bounds, rules between settings, secret-shaped names refused) and `GET /settings`, `PUT /settings/{key}`.
+- `platform/security/emails.py`: the one canonical email normalization and the HMAC-SHA256 email hash with its own key (`EMAIL_LOOKUP_HMAC_KEY`).
+- Frontend: password reset request and completion, recognized browsers on the account security page, the settings page (read-only without the change permission, step-up on save), "Forgot your password?" on sign-in.
+- Local Mailpit service in Compose; the integration tests send real SMTP to a Mailpit container.
+
+Decisions (documents updated in the same change):
+
+- Outbox rows name the recipient account, never the address; the worker reads the address at send time and creates invite and reset link tokens then, so a usable token exists only in the email (`database-design.md` §4.9).
+- Linking an invited account to an employee needs `employee.lifecycle.manage` over that employee and the employee's work email; `user.invite` alone cannot route an employee's self-service access to another mailbox (`security-architecture.md` §3.1, `authorization-model.md`).
+- An unscoped permission decided for a subject employee reaches every employee, narrowed by the assignment's constraints, like `all` (`authorization-model.md`).
+- Trusted devices only suppress the new-device email; they never skip MFA or step-up. Default lifetime 90 days, chosen here because the documents left it open; it is a setting (`security-architecture.md` §3.4).
+- Settings are not seeded: defaults live in the registry, so removing an override restores the default. `security.*` settings need `security.settings.manage` as well as the route's `settings.manage`.
+- The access-token lifetime, step-up window, sign-in challenge and recovery-code count stay fixed in code: they are security properties, not tuning.
+
+Deferred, with where they go: MFA reset and re-enrolment emails, grant requests, elevation and break-glass emails, `super_admin` assignment (E); retention purge of sent outbox rows, expired tokens and revoked devices (F/M5); `app.idempotency_keys` (first idempotent endpoint); the admin user screens, including invite, resend and revoke (G; the API is complete); Playwright end-to-end tests including the email flows through Mailpit (G); a transactional email provider for staging and production (roadmap §6).
+
+Review (2026-10-01): adversarial self-review authorized by the project owner (`engineering-principles.md` §8); no human has reviewed this checkpoint yet, and that review is still owed. Defects found and fixed, each with a regression test:
+
+- A row whose rendering failed stopped the dispatcher's batch and was retried for ever; it now counts as a failed attempt. A row whose last allowed attempt was abandoned mid-send is marked failed instead of sent again.
+- Invite activation hashed the new password (Argon2, 64 MiB) before checking the link (a C defect); an invalid link is now refused first, as in the reset flow.
+- The browser description in security emails is attacker-chosen; it is now reduced to plain characters so it cannot read as a link or an address.
+- Outbox template data accepted contact-detail keys (`email`, `phone`, `address`); they are now refused.
+- An unscoped permission decided for a subject employee was always denied, so HR could not link an invite to an employee.
+- Planted violations (sessions surviving a password reset, a reset token written to the log, the employee check removed from invites) each made the security tests fail; they were removed.
+
+Automated verification at commit time: backend `uv sync --locked`; pytest 559 passed (including migration gates: single head `0010`, upgrade/downgrade/upgrade, schema drift; the authorization matrix and route coverage with the new routes; secret leakage over the email flows; SMTP delivery to a Mailpit container); Ruff format and lint clean; mypy strict clean; import-linter 8 contracts kept; pip-audit `--strict` no known vulnerabilities. Frontend: pnpm install frozen; 35 tests passed (including axe); ESLint, TypeScript strict and Prettier clean; banned-words check passed; build passed (155 KB gzipped initial JavaScript); `pnpm audit` no known vulnerabilities; generated API types match the contract. gitleaks v8.30.1 and Semgrep 1.178.0 (CI rule sets) no findings; OpenAPI regenerated and committed; Compose configuration valid.
+
+One local full run had a sign-in answer `503` (the rate-limit store missed its 0.5-second timeout, so the limiter failed closed as designed) and a later run stalled near the trusted-device tests; neither repeated in two more full runs and three repeats of the email and sign-in tests. The test helper that drains the outbox is now bounded, so a stall there fails the test instead of hanging the suite.
+
+Remaining risks: email delivery is at least once (a worker stopping between the server's acceptance and the status update resends after the lease); the dispatcher sends one email at a time, which suits current volumes; staging needs a transactional email provider (roadmap §6) before invites and resets work outside development.

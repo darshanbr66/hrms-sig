@@ -7,6 +7,7 @@ in one test never affects another. All data is obviously fake.
 """
 
 import base64
+import re
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -24,9 +25,12 @@ from sqlalchemy import select, text
 
 from app.main import create_app
 from app.modules.access.models import Role, UserRole
+from app.modules.identity.emails import IdentityEmails
 from app.modules.identity.models import Credential, FactorType, MfaFactor, User, UserStatus
-from app.platform.config import ApiSettings, AppEnv
+from app.modules.notify.dispatcher import DispatchResult, OutboxDispatcher
+from app.platform.config import ApiSettings, AppEnv, WorkerSettings
 from app.platform.db import Database, create_engine
+from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
 from app.platform.security import passwords, totp
 from app.platform.security.crypto import FieldCipher
 from tests.conftest import PostgresServer, RedisServer
@@ -34,6 +38,7 @@ from tests.conftest import PostgresServer, RedisServer
 APP_ORIGIN = "https://hrms.test"
 BASE_URL = APP_ORIGIN
 FIELD_KEY = b"t" * 32
+EMAIL_LOOKUP_KEY = b"e" * 32
 CSRF_HEADERS = {"X-Requested-With": "sv-web"}
 # A password that passes the policy; used for every test account.
 PASSWORD = "correct horse battery staple 42"
@@ -45,6 +50,7 @@ def api_settings(database_url: SecretStr, **overrides: Any) -> ApiSettings:
         "database_url_app": database_url,
         "redis_url": SecretStr("redis://hrms_ratelimit:unused@127.0.0.1:1/0"),
         "rate_limit_key_hmac_key": SecretStr(base64.b64encode(b"k" * 32).decode()),
+        "email_lookup_hmac_key": SecretStr(base64.b64encode(EMAIL_LOOKUP_KEY).decode()),
         "app_base_url": APP_ORIGIN,
         "field_encryption_keys": SecretStr(f'{{"1": "{base64.b64encode(FIELD_KEY).decode()}"}}'),
         "field_encryption_active_version": 1,
@@ -106,15 +112,70 @@ class Account:
         return pyotp.TOTP(self.totp_secret).at(at)
 
 
+@dataclass
+class RecordingSender:
+    """Captures outgoing email instead of sending it; can be told to fail."""
+
+    sent: list[OutgoingEmail] = field(default_factory=list)
+    failures: int = 0
+
+    async def send(self, email: OutgoingEmail) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            raise EmailDeliveryError("ConnectionRefusedError")
+        self.sent.append(email)
+
+
+LINK = re.compile(r"https://hrms\.test/(invite|password-reset)/([A-Za-z0-9_-]{43})")
+# More than enough for the emails one test produces (each pass handles up to 20).
+DELIVER_PASSES = 50
+
+
+def link_token(email: OutgoingEmail) -> str:
+    match = LINK.search(email.body)
+    assert match is not None, email.body
+    return match.group(2)
+
+
 class Api:
     """A running application with a controllable clock, plus helpers to create accounts."""
 
-    def __init__(self, app: FastAPI, clock: FakeClock, sleep: RecordingSleep, database: Database) -> None:
+    def __init__(
+        self,
+        app: FastAPI,
+        clock: FakeClock,
+        sleep: RecordingSleep,
+        database: Database,
+        worker_database: Database,
+    ) -> None:
         self.app = app
         self.clock = clock
         self.sleep = sleep
         self.database = database
+        self.worker_database = worker_database
         self.cipher = FieldCipher({1: FIELD_KEY}, 1)
+        self.mail = RecordingSender()
+
+    def dispatcher(self, sender: EmailSender | None = None) -> OutboxDispatcher:
+        """The outbox dispatcher as the worker runs it (worker database role)."""
+        return OutboxDispatcher(
+            database=self.worker_database,
+            sender=sender or self.mail,
+            renderers=IdentityEmails(app_base_url=APP_ORIGIN, clock=self.clock).renderers(),
+            clock=self.clock,
+        )
+
+    async def deliver(self) -> list[OutgoingEmail]:
+        """Run the dispatcher until nothing is due; returns the emails sent by this call."""
+        before = len(self.mail.sent)
+        # Bounded, so a dispatcher that keeps finding work fails the test instead of hanging it.
+        for _ in range(DELIVER_PASSES):
+            if await self.dispatcher().run_once() == DispatchResult():
+                return self.mail.sent[before:]
+        raise AssertionError(f"the outbox still had due emails after {DELIVER_PASSES} dispatch passes")
+
+    def mail_to(self, email: str) -> list[OutgoingEmail]:
+        return [message for message in self.mail.sent if message.to == email]
 
     @asynccontextmanager
     async def client(self, *, ip: str | None = None, csrf: bool = True) -> AsyncIterator[httpx.AsyncClient]:
@@ -206,7 +267,24 @@ async def running_api(postgres: PostgresServer, redis: RedisServer, **settings: 
     app = create_app(api_settings(postgres.url("hrms_app"), **settings), clock=clock, sleep=sleep)
     async with app.router.lifespan_context(app):
         database = Database(create_engine(postgres.url("hrms_app"), application_name="test-support"))
+        worker = Database(create_engine(postgres.url("hrms_worker"), application_name="test-worker"))
         try:
-            yield Api(app, clock, sleep, database)
+            yield Api(app, clock, sleep, database, worker)
         finally:
             await database.dispose()
+            await worker.dispose()
+
+
+def worker_settings(database_url: SecretStr, **overrides: Any) -> WorkerSettings:
+    """Worker settings for tests: plain SMTP to an address nothing listens on, unless overridden."""
+    values: dict[str, Any] = {
+        "app_env": AppEnv.TEST,
+        "database_url_worker": database_url,
+        "app_base_url": APP_ORIGIN,
+        "smtp_host": "127.0.0.1",
+        "smtp_port": 1,
+        "smtp_from": "HRMS <hrms@dev.example>",
+        "smtp_security": "none",
+    }
+    values.update(overrides)
+    return WorkerSettings.model_validate(values)

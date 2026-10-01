@@ -19,15 +19,15 @@ from tests.integration.test_authorization_matrix import ROUTES as MATRIX_ROUTES
 
 # Permissions whose routes or service methods arrive later (m1-implementation-plan.md §10).
 NOT_YET_USED = {
-    "user.invite": "D (admin invites need the email outbox)",
     "security.mfa.reset": "E (MFA reset and re-enrolment)",
-    "security.settings.manage": "D (settings registry)",
-    "settings.read": "D (settings registry)",
-    "settings.manage": "D (settings registry)",
     "role.elevation.request": "E (grant requests)",
     "role.elevation.approve": "E (grant requests)",
     "role.elevation.break_glass": "E (grant requests)",
     "audit.export": "M5 (exports)",
+}
+# Permissions a service checks beyond the route's own (the route-level rule is broader).
+SERVICE_CHECKED = {
+    "security.settings.manage": "PUT /settings/{key} for security.* keys (modules/settings/service.py)",
 }
 # Domains whose modules do not exist yet (M2 onwards): their permissions are all unused.
 LATER_DOMAINS = (
@@ -118,7 +118,7 @@ def test_every_catalog_permission_is_used_or_scheduled() -> None:
         if key.startswith(LATER_DOMAINS):
             assert key not in used, f"{key} is routed; remove its domain from LATER_DOMAINS"
             continue
-        assert (key in used) != (key in NOT_YET_USED), key
+        assert (key in used or key in SERVICE_CHECKED) != (key in NOT_YET_USED), key
 
 
 def test_the_authorization_matrix_covers_every_permission_route() -> None:
@@ -127,6 +127,9 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{assignment}": "{assignment_id}",
         "{role}": "{role_id}",
         "{session}": "{session_id}",
+        "{device}": "{device_id}",
+        # The matrix changes one concrete setting.
+        "email.delivery.max_attempts": "{key}",
     }
     matrix = set()
     for route in MATRIX_ROUTES:

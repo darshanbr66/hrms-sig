@@ -5,19 +5,44 @@ import sys
 
 import procrastinate
 
+from app.modules.identity.emails import IdentityEmails
+from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
 from app.platform.audit.partitions import register_partition_maintenance
+from app.platform.clock import SystemClock
 from app.platform.config import WorkerSettings
 from app.platform.db import Database, create_engine
+from app.platform.email import EmailSender, SmtpSender
 from app.platform.jobs import create_job_app
 from app.platform.logging import configure_logging
 
 APPLICATION_NAME = "hrms-worker"
 
 
-def build_job_app(settings: WorkerSettings, database: Database) -> procrastinate.App:
+def smtp_sender(settings: WorkerSettings) -> SmtpSender:
+    return SmtpSender(
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        sender=settings.smtp_from,
+        security=settings.smtp_security,
+        username=settings.smtp_username,
+        password=settings.smtp_password,
+    )
+
+
+def build_job_app(
+    settings: WorkerSettings, database: Database, *, sender: EmailSender | None = None
+) -> procrastinate.App:
     """The worker's job app with every task and periodic schedule registered."""
     job_app = create_job_app(settings.database_url_worker, application_name=APPLICATION_NAME)
     register_partition_maintenance(job_app, database)
+    clock = SystemClock()
+    dispatcher = OutboxDispatcher(
+        database=database,
+        sender=sender or smtp_sender(settings),
+        renderers=IdentityEmails(app_base_url=settings.app_base_url, clock=clock).renderers(),
+        clock=clock,
+    )
+    register_email_dispatch(job_app, dispatcher)
     return job_app
 
 

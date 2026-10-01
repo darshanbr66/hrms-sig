@@ -38,6 +38,8 @@ PUBLIC_ROUTES: Final = frozenset(
         "/api/v1/auth/invite/{token}/password",
         "/api/v1/auth/invite/{token}/mfa/totp/setup",
         "/api/v1/auth/invite/{token}/mfa/totp/confirm",
+        "/api/v1/auth/password-reset",
+        "/api/v1/auth/password-reset/{token}",
         "/api/health/live",
         "/api/health/ready",
     }

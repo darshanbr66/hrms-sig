@@ -70,13 +70,13 @@ Only key columns and constraints are listed. All tables have `id`, and timestamp
 
 **recovery_codes** — `user_id`, `code_hash` (SHA-256 of an 80-bit code), `used_at`, `revoked_at` (set when the codes are regenerated). `UNIQUE (user_id, code_hash)`.
 
-**sessions** — `user_id`, `client_type` (`web`; `mobile` with the mobile client), `scope` (`full`, `mfa_enrolment`), `ip inet`, `user_agent`, `created_at`, `last_activity_at`, `idle_expires_at`, `absolute_expires_at`, `step_up_at`, `revoked_at`, `revoked_reason` (`logout`, `revoked_by_user`, `revoked_by_admin`, `password_changed`, `account_disabled`, `token_reuse`). `CHECK (idle_expires_at <= absolute_expires_at)`. Index `(user_id) WHERE revoked_at IS NULL`. A `device_label` arrives with new-device notifications.
+**sessions** — `user_id`, `client_type` (`web`; `mobile` with the mobile client), `scope` (`full`, `mfa_enrolment`), `ip inet`, `user_agent`, `created_at`, `last_activity_at`, `idle_expires_at`, `absolute_expires_at`, `step_up_at`, `revoked_at`, `revoked_reason` (`logout`, `revoked_by_user`, `revoked_by_admin`, `password_changed`, `password_reset`, `account_disabled`, `token_reuse`). Each session keeps the idle window it was created with, so a change to the idle-timeout setting applies to new sessions. `CHECK (idle_expires_at <= absolute_expires_at)`. Index `(user_id) WHERE revoked_at IS NULL`. New-device notifications use `trusted_devices`, not a session column.
 
 **session_tokens** — `session_id → sessions ON DELETE CASCADE`, `kind` (`access`, `refresh`), `token_hash bytea UNIQUE` (SHA-256 of a 256-bit token), `expires_at`, `used_at` (refresh only), `replaced_by_id` (refresh chain). Lookups by `token_hash` only. Rotation ends the previous access tokens (`expires_at` set to now) and retires unused refresh tokens (`used_at`); a role change ends only the access tokens, so the next refresh issues new ones.
 
-**one_time_tokens** — `user_id`, `purpose`, `token_hash UNIQUE`, `expires_at`, `used_at`, `failed_attempts smallint`. Purposes in use: `invite` (72 h), `invite_enrolment` (30 min; binds the authenticator steps of an invite to the browser that set the password), `login_mfa` (5 min; the password step's single-use proof, at most 5 wrong codes). Issuing a token of a purpose retires the user's earlier unused ones. `password_reset`, `email_change` and `mfa_reenrolment` (with `payload jsonb`) arrive with their flows. Purged 30 days after expiry by the retention job.
+**one_time_tokens** — `user_id`, `purpose`, `token_hash UNIQUE`, `expires_at`, `used_at`, `failed_attempts smallint`. Purposes in use: `invite` (72 h), `invite_enrolment` (30 min; binds the authenticator steps of an invite to the browser that set the password), `login_mfa` (5 min; the password step's single-use proof, at most 5 wrong codes), `password_reset` (30 min by default). Invite and reset tokens are created by the worker when it sends the email, so a usable token exists only in the email. Issuing a token of a purpose retires the user's earlier unused ones; a password change or reset also retires pending `login_mfa` tokens. `email_change` and `mfa_reenrolment` (with `payload jsonb`) arrive with their flows. Purged 30 days after expiry by the retention job.
 
-**trusted_devices** — `user_id`, `fingerprint_hash`, `first_seen_at`, `last_seen_at`. Used for new-device notifications, not as an authentication factor. Arrives with the email outbox (Checkpoint D).
+**trusted_devices** — `user_id`, `token_hash bytea UNIQUE` (SHA-256 of the random device cookie; no fingerprinting), `user_agent`, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `revoked_reason` (`revoked_by_user`, `revoked_by_admin`, `password_changed`, `password_reset`, `mfa_changed`, `account_disabled`). Index `(user_id) WHERE revoked_at IS NULL`. Used for new-device notifications only, never as an authentication factor (`security-architecture.md` §3.4). Revoked rows are kept.
 
 Login attempts are recorded in `audit.security_events`. Account lockout state is in `users` (PostgreSQL, authoritative). Only per-IP throttling counters live in Redis, and they are ephemeral (`architecture.md` §3.1).
 
@@ -249,7 +249,8 @@ Views and downloads are recorded in `audit.audit_log`, not a separate table.
 
 **notification_preferences** — `user_id`, `type`, `channel` (`in_app`, `email`, `push`), `enabled`. `UNIQUE (user_id, type, channel)`. Security types are not stored here (always on).
 
-**email_outbox** — `to_user_id`, `template`, `template_data jsonb` (no sensitive values), `status`, `attempts`, `last_error`, `sent_at`. Written in the business transaction; sent by a job.
+**email_outbox** — `user_id → identity.users` (the recipient account; the address is read at send time and never stored here), `template` (`identity.invite`, `identity.password_reset`, `identity.password_changed`, `identity.new_device`, `identity.account_locked`, `identity.recovery_code_used`, `identity.mfa_changed`), `template_data jsonb` (small display values only; keys and values are checked: no secrets, codes, tokens or addresses), `idempotency_key UNIQUE` (one email per event, for example one per lock), `status` (`pending`, `sending`, `sent`, `failed`, `cancelled`), `attempts`, `next_attempt_at`, `lease_expires_at`, `last_error` (an exception class name only), `created_at`, `updated_at`, `sent_at`. Indexes `(next_attempt_at) WHERE status IN ('pending','sending')` and `(user_id, template) WHERE status = 'pending'`.
+- Written in the business transaction, so an email exists exactly when its change commits. The worker's dispatcher (every minute) claims due rows with `FOR UPDATE SKIP LOCKED` under a 5-minute lease, renders each in its own transaction (creating any link token there, so it exists before the email leaves), sends outside any transaction, and records `sent`, a retry with backoff (1, 2, 4, 8 … minutes, at most an hour), or `failed` after `email.delivery.max_attempts` (5). A row that cannot be rendered counts as a failed attempt; an email that no longer applies (the account was disabled, the invite accepted) is `cancelled`. Failed and cancelled rows stay. Delivery is at least once: a worker that stops after the server accepted an email but before recording it sends it again after the lease.
 
 **announcements** (Phase 2) — `title`, `body_sanitized text`, `published_by`, `published_at`, `expires_at`; **announcement_audiences** — `announcement_id`, `department_id NULL`, `location_id NULL` (NULL/NULL = everyone).
 
@@ -277,7 +278,23 @@ User-visible login history (AUTH-7) is a filtered read of `security_events` for 
 
 ### 4.11 app
 
-**settings** — `key text PRIMARY KEY`, `value jsonb`, `schema_version int`, `updated_by`, `updated_at`. Each key has a Pydantic model in code; unknown keys rejected. Changes audited with old/new values (settings contain no personal data).
+**settings** — `key text PRIMARY KEY`, `value jsonb` (a number), `version`, `updated_by → identity.users`, `updated_at`. Only overrides are stored: every setting is declared in the code registry (`app/platform/settings.py`) with its type, default, bounds, unit and permission, so a default cannot drift and removing a row restores it. Nothing is seeded. Unknown keys are ignored when read and refused when written; secrets are never settings. Changes are serialized, checked against the rules between settings, need step-up, and are audited with old and new values (settings contain no personal data).
+
+| Key | Default | Bounds | Change permission |
+|---|---|---|---|
+| `security.lockout.threshold` | 10 attempts | 3-20 | `security.settings.manage` |
+| `security.lockout.delay_after` | 5 attempts | 1-19, below the threshold | `security.settings.manage` |
+| `security.lockout.window_minutes` | 15 | 5-60 | `security.settings.manage` |
+| `security.lockout.duration_minutes` | 15 | 5-120 | `security.settings.manage` |
+| `security.login.ip_failure_threshold` | 20 per 5 minutes | 5-200 | `security.settings.manage` |
+| `security.session.idle_timeout_minutes` | 30 | 5-240, at most the absolute timeout | `security.settings.manage` |
+| `security.session.absolute_timeout_hours` | 12 | 1-24 | `security.settings.manage` |
+| `security.invite.ttl_hours` | 72 | 1-168 | `security.settings.manage` |
+| `security.password_reset.ttl_minutes` | 30 | 10-60 | `security.settings.manage` |
+| `security.trusted_device.lifetime_days` | 90 (chosen default; the architecture leaves it open) | 1-365 | `security.settings.manage` |
+| `email.delivery.max_attempts` | 5 | 1-10 | `settings.manage` |
+
+Fixed in code, not settings: the access-token lifetime (15 min), the step-up window (10 min, AUTH-8), the sign-in challenge (5 min, 5 attempts), recovery codes (10), active factors (5), and the per-IP block (15 min).
 
 **idempotency_keys** — `user_id`, `key`, `request_hash`, `response_status`, `response_body jsonb`, `created_at`. `UNIQUE (user_id, key)`. Purged after 24 hours.
 

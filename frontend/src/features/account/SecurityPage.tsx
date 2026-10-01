@@ -26,6 +26,7 @@ import { RecoveryCodes } from "../auth/RecoveryCodes";
 
 const KEYS = {
   sessions: ["identity", "sessions"],
+  devices: ["identity", "devices"],
   factors: ["identity", "factors"],
   history: ["identity", "login-history"],
 } as const;
@@ -38,6 +39,7 @@ export function SecurityPage() {
         description="Where you are signed in, how you confirm it's you, and your password."
       />
       <SessionsSection />
+      <DevicesSection />
       <AuthenticatorsSection />
       <RecoveryCodesSection />
       <PasswordSection />
@@ -117,6 +119,62 @@ function SessionsSection() {
           ) : null}
         </>
       ) : null}
+    </Section>
+  );
+}
+
+function DevicesSection() {
+  const queryClient = useQueryClient();
+  const devices = useQuery({
+    queryKey: KEYS.devices,
+    queryFn: () => unwrap(client.GET("/api/v1/me/devices")),
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) =>
+      unwrap(client.DELETE("/api/v1/me/devices/{device_id}", { params: { path: { device_id: id } } })),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: KEYS.devices }),
+  });
+  return (
+    <Section
+      title="Recognized browsers"
+      description="Browsers you have signed in from. A sign-in from any other browser is emailed to you. Recognizing a browser never skips your authenticator code."
+    >
+      {devices.isPending ? <Skeleton label="Loading browsers" /> : null}
+      {devices.isError ? (
+        <ProblemMessage error={devices.error} fallback="We couldn't load your browsers." />
+      ) : null}
+      {revoke.isError ? (
+        <ProblemMessage error={revoke.error} fallback="We couldn't forget that browser." />
+      ) : null}
+      {devices.data?.items.length === 0 ? (
+        <p className="text-sm text-neutral-600">
+          No recognized browsers. Your next sign-in will be emailed to you.
+        </p>
+      ) : null}
+      <ul className="divide-y divide-neutral-200">
+        {devices.data?.items.map((device) => (
+          <li key={device.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm">
+            <div>
+              <p className="font-semibold">
+                {device.user_agent ?? "Unknown browser"}
+                {device.current ? <span className="ml-2 text-success-700">(this browser)</span> : null}
+              </p>
+              <p className="text-neutral-600">
+                Last used {formatDateTime(device.last_seen_at)} · recognized until{" "}
+                {formatDateTime(device.expires_at)}
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onPress={() => {
+                revoke.mutate(device.id);
+              }}
+            >
+              Forget this browser
+            </Button>
+          </li>
+        ))}
+      </ul>
     </Section>
   );
 }

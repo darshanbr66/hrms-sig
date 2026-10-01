@@ -22,6 +22,7 @@ interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { to: "/account/security", label: "Account security", permission: null },
+  { to: "/settings", label: "Settings", permission: "settings.read" },
 ];
 
 export function visibleNavItems(me: Me | null | undefined): NavItem[] {

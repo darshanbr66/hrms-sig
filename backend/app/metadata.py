@@ -7,11 +7,22 @@ this composition root is the one place that imports them all.
 
 from app.modules.access import models as access_models
 from app.modules.identity import models as identity_models
+from app.modules.notify import models as notify_models
 from app.modules.org import models as org_models
 from app.modules.people import models as people_models
+from app.platform import settings as settings_tables
 from app.platform.audit import tables as audit_tables
 from app.platform.db import Base
 
 metadata = Base.metadata
 
-__all__ = ["access_models", "audit_tables", "identity_models", "metadata", "org_models", "people_models"]
+__all__ = [
+    "access_models",
+    "audit_tables",
+    "identity_models",
+    "metadata",
+    "notify_models",
+    "org_models",
+    "people_models",
+    "settings_tables",
+]

@@ -19,19 +19,19 @@ docs/security-architecture.md §3, docs/api-architecture.md §5. Rules that shap
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity import defaults
+from app.modules.identity import defaults, devices, notifications
 from app.modules.identity import repository as repo
 from app.modules.identity.history import LoginHistoryRow, login_events
 from app.modules.identity.models import (
     AuthSession,
     ClientType,
-    Credential,
+    DeviceRevokedReason,
     FactorType,
     MfaFactor,
     OneTimePurpose,
@@ -39,10 +39,12 @@ from app.modules.identity.models import (
     RevokedReason,
     SessionToken,
     TokenKind,
+    TrustedDevice,
     User,
     UserStatus,
 )
 from app.modules.people import public as people
+from app.platform import settings as policy
 from app.platform.audit.records import (
     AuditActor,
     AuditEvent,
@@ -62,6 +64,7 @@ from app.platform.errors import ProblemError, ProblemType
 from app.platform.ratelimit import RateLimiter, RateLimitExceeded
 from app.platform.security import passwords, tokens, totp
 from app.platform.security.crypto import DecryptionError, Encrypted, FieldCipher
+from app.platform.security.emails import EmailHasher
 
 SECRET_PURPOSE: Final = b"identity.mfa_factors.secret:"
 
@@ -97,6 +100,8 @@ class IssuedSession:
     access_expires_at: datetime
     refresh_token: str
     refresh_expires_at: datetime
+    # A new trusted-device cookie to set, when this sign-in came from a new browser.
+    device: devices.IssuedDevice | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +138,7 @@ class IdentityService:
         rate_limiter: RateLimiter,
         audit: AuditWriter,
         authorizer: Authorizer,
+        email_hasher: EmailHasher,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._db = database
@@ -142,6 +148,7 @@ class IdentityService:
         self._limiter = rate_limiter
         self._audit = audit
         self._authz = authorizer
+        self._email_hasher = email_hasher
         self._sleep = sleep
 
     # --- sign-in: password step ----------------------------------------------------------
@@ -150,34 +157,35 @@ class IdentityService:
         """Check email and password; return a single-use MFA token. Never a session."""
         await self._check_ip_block(context)
         async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
             user = await repo.user_by_email(session, email)
             credential = await repo.credential(session, user.id) if user else None
         now = self._clock.now()
 
         if user is None or credential is None:
             await passwords.burn_verification_time(password)
-            await self._record_ip_failure(context)
-            await self._record_unknown_account_failure(context)
+            await self._record_ip_failure(context, values)
+            await self._record_unknown_account_failure(context, email)
             raise InvalidCredentials
 
         if user.locked_until is not None and user.locked_until > now:
             await passwords.burn_verification_time(password)
-            await self._record_ip_failure(context)
-            await self._record_failure(context, user.id, stage="password", count_towards_lockout=False)
+            await self._record_ip_failure(context, values)
+            await self._record_failure(context, user.id, stage="password", values=values, count=False)
             raise InvalidCredentials
 
-        await self._progressive_delay(user, now)
+        await self._progressive_delay(user, now, values)
         verification = await passwords.verify_password(credential.password_hash, password)
         if not verification.valid or user.status != UserStatus.ACTIVE:
-            await self._record_ip_failure(context)
-            await self._record_failure(context, user.id, stage="password")
+            await self._record_ip_failure(context, values)
+            await self._record_failure(context, user.id, stage="password", values=values)
             raise InvalidCredentials
 
         new_hash = await passwords.hash_password(password) if verification.needs_rehash else None
         raw = tokens.new_token()
         async with self._db.unit_of_work() as session:
             if new_hash is not None:
-                await self._store_password(session, user.id, new_hash, keep_changed_at=True)
+                await repo.store_password(session, user.id, new_hash, now, keep_changed_at=True)
             await repo.retire_one_time_tokens(session, user.id, OneTimePurpose.LOGIN_MFA, now)
             session.add(
                 OneTimeToken(
@@ -192,9 +200,16 @@ class IdentityService:
     # --- sign-in: MFA step ---------------------------------------------------------------
 
     async def complete_login(
-        self, context: RequestContext, mfa_token: str, *, code: str | None, recovery_code: str | None
+        self,
+        context: RequestContext,
+        mfa_token: str,
+        *,
+        code: str | None,
+        recovery_code: str | None,
+        device_token: str | None = None,
     ) -> IssuedSession:
-        """TOTP code -> full session; recovery code -> enrolment-only session."""
+        """TOTP code -> full session; recovery code -> enrolment-only session. A sign-in from
+        a browser that is not a trusted device of the account is reported by email."""
         await self._check_ip_block(context)
         now = self._clock.now()
         if not tokens.looks_like_token(mfa_token):
@@ -204,6 +219,7 @@ class IdentityService:
         failure: str | None = None
         issued: IssuedSession | None = None
         async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
             challenge = await repo.lock_one_time_token(
                 session, tokens.token_digest(mfa_token), OneTimePurpose.LOGIN_MFA, now
             )
@@ -220,15 +236,29 @@ class IdentityService:
                     scope = await self._verify_second_factor(session, user, code, recovery_code, now)
                     if scope is None:
                         challenge.failed_attempts += 1
-                        await self._failure_records(session, context, user.id, stage="mfa", now=now)
+                        await self._failure_records(
+                            session, context, user.id, stage="mfa", now=now, values=values
+                        )
                         failure = "login.failed"
                     else:
                         challenge.used_at = now
-                        issued = await self._open_session(session, user, scope, context, now)
+                        issued = await self._open_session(
+                            session, user, scope, context, now=now, values=values
+                        )
                         await self._signed_in(session, context, user, scope, issued)
+                        issued = await self._recognize_device(
+                            session,
+                            context,
+                            user,
+                            issued,
+                            device_token=device_token,
+                            now=now,
+                            values=values,
+                            report_new=True,
+                        )
         if failure is not None or issued is None:
             if failure == "login.failed":
-                await self._record_ip_failure(context)
+                await self._record_ip_failure(context, values)
                 raise InvalidCredentials
             raise InvalidCredentials("login.challenge_expired")
         return issued
@@ -279,6 +309,7 @@ class IdentityService:
             ),
         )
         if scope is SessionScope.MFA_ENROLMENT:
+            remaining = await repo.unused_recovery_code_count(session, user.id)
             await self._audit.record_security_event(
                 session,
                 SecurityEvent(
@@ -287,9 +318,50 @@ class IdentityService:
                     context=context,
                     user_id=user.id,
                     session_id=issued.session_id,
-                    details={"remaining_codes": await repo.unused_recovery_code_count(session, user.id)},
+                    details={"remaining_codes": remaining},
                 ),
             )
+            await notifications.recovery_code_used(
+                session, user.id, issued.session_id, remaining, self._clock.now()
+            )
+
+    async def _recognize_device(
+        self,
+        session: AsyncSession,
+        context: RequestContext,
+        user: User,
+        issued: IssuedSession,
+        *,
+        device_token: str | None,
+        now: datetime,
+        values: policy.Settings,
+        report_new: bool,
+    ) -> IssuedSession:
+        """Recognize the browser or trust it as a new device (reported by email when asked)."""
+        recognition = await devices.recognize(
+            session,
+            user_id=user.id,
+            device_token=device_token,
+            user_agent=context.user_agent,
+            now=now,
+            lifetime=timedelta(days=values[policy.TRUSTED_DEVICE_LIFETIME]),
+        )
+        if not recognition.new:
+            return issued
+        await self._audit.record_security_event(
+            session,
+            SecurityEvent(
+                SecurityEventType.DEVICE_TRUSTED,
+                Severity.INFO,
+                context=context,
+                user_id=user.id,
+                session_id=issued.session_id,
+                details={"device_id": recognition.device_id},
+            ),
+        )
+        if report_new:
+            await notifications.new_device(session, user.id, recognition.device_id, context.user_agent, now)
+        return replace(issued, device=recognition.issued)
 
     # --- throttling and lockout ----------------------------------------------------------
 
@@ -300,11 +372,12 @@ class IdentityService:
         if not decision.allowed:
             raise RateLimitExceeded(decision.retry_after_seconds)
 
-    async def _record_ip_failure(self, context: RequestContext) -> None:
+    async def _record_ip_failure(self, context: RequestContext, values: policy.Settings) -> None:
         if context.ip is None:
             return
         subject = str(context.ip)
-        decision = await self._limiter.record(defaults.LOGIN_IP_FAILURES, subject)
+        rule = defaults.login_ip_failures(values[policy.LOGIN_IP_FAILURES])
+        decision = await self._limiter.record(rule, subject)
         if decision.remaining == 0:
             block = await self._limiter.hit(defaults.LOGIN_IP_BLOCK, subject)
             if block.allowed:
@@ -318,27 +391,64 @@ class IdentityService:
                     ),
                 )
 
-    async def _progressive_delay(self, user: User, now: datetime) -> None:
-        """1, 2, 4 ... 30 s between attempts once an account has 5 recent failures."""
-        if user.failed_login_count < defaults.DELAY_AFTER_FAILURES or user.last_failed_login_at is None:
+    async def _progressive_delay(self, user: User, now: datetime, values: policy.Settings) -> None:
+        """1, 2, 4 ... 30 s between attempts once an account has recent failures."""
+        delay_after = values[policy.LOCKOUT_DELAY_AFTER]
+        if user.failed_login_count < delay_after or user.last_failed_login_at is None:
             return
-        if user.failed_login_window_started_at is None or (
-            user.failed_login_window_started_at <= now - defaults.FAILURE_WINDOW
-        ):
+        window = timedelta(minutes=values[policy.LOCKOUT_WINDOW])
+        if user.failed_login_window_started_at is None or user.failed_login_window_started_at <= now - window:
             return
-        exponent = user.failed_login_count - defaults.DELAY_AFTER_FAILURES
+        exponent = user.failed_login_count - delay_after
         delay = timedelta(seconds=min(2**exponent, defaults.MAX_DELAY_SECONDS))
         remaining = (user.last_failed_login_at + delay - now).total_seconds()
         if remaining > 0:
             await self._sleep(remaining)
 
     async def _record_failure(
-        self, context: RequestContext, user_id: uuid.UUID, *, stage: str, count_towards_lockout: bool = True
+        self,
+        context: RequestContext,
+        user_id: uuid.UUID,
+        *,
+        stage: str,
+        values: policy.Settings,
+        count: bool = True,
     ) -> None:
         async with self._db.unit_of_work() as session:
             await self._failure_records(
-                session, context, user_id, stage=stage, now=self._clock.now(), count=count_towards_lockout
+                session, context, user_id, stage=stage, now=self._clock.now(), values=values, count=count
             )
+
+    async def _count_failure(
+        self,
+        session: AsyncSession,
+        context: RequestContext,
+        user_id: uuid.UUID,
+        now: datetime,
+        values: policy.Settings,
+    ) -> repo.FailureState:
+        """Count a failed attempt; at the lockout threshold, record the lock and queue one
+        lockout email (one per lock, however many attempts follow)."""
+        lockout = repo.LockoutPolicy(
+            threshold=values[policy.LOCKOUT_THRESHOLD],
+            window=timedelta(minutes=values[policy.LOCKOUT_WINDOW]),
+            duration=timedelta(minutes=values[policy.LOCKOUT_DURATION]),
+        )
+        state = await repo.register_failure(session, user_id, now, lockout)
+        if state.count == lockout.threshold and state.locked_until is not None:
+            minutes = values[policy.LOCKOUT_DURATION]
+            await self._audit.record_security_event(
+                session,
+                SecurityEvent(
+                    SecurityEventType.ACCOUNT_LOCKED,
+                    Severity.HIGH,
+                    context=context,
+                    user_id=user_id,
+                    details={"locked_minutes": minutes},
+                ),
+            )
+            await notifications.account_locked(session, user_id, state.locked_until, minutes, now)
+        return state
 
     async def _failure_records(
         self,
@@ -348,9 +458,10 @@ class IdentityService:
         *,
         stage: str,
         now: datetime,
+        values: policy.Settings,
         count: bool = True,
     ) -> None:
-        state = await repo.register_failure(session, user_id, now) if count else None
+        state = await self._count_failure(session, context, user_id, now, values) if count else None
         await self._audit.record_security_event(
             session,
             SecurityEvent(
@@ -361,27 +472,16 @@ class IdentityService:
                 details={"stage": stage, "failed_attempts": state.count if state else None},
             ),
         )
-        if state is not None and state.count == defaults.LOCK_AFTER_FAILURES:
-            await self._audit.record_security_event(
-                session,
-                SecurityEvent(
-                    SecurityEventType.ACCOUNT_LOCKED,
-                    Severity.HIGH,
-                    context=context,
-                    user_id=user_id,
-                    details={"locked_minutes": int(defaults.LOCK_DURATION.total_seconds() // 60)},
-                ),
-            )
 
-    async def _record_unknown_account_failure(self, context: RequestContext) -> None:
-        # The attempted email is not recorded: the keyed email hash arrives with the email
-        # outbox checkpoint, and a raw email never enters a security event.
+    async def _record_unknown_account_failure(self, context: RequestContext, email: str) -> None:
+        """Recorded with the keyed hash of the attempted email, never the email itself."""
         await self._audit.record_separately(
             self._db,
             SecurityEvent(
                 SecurityEventType.LOGIN_FAILED,
                 Severity.WARNING,
                 context=context,
+                email_attempted_hash=self._email_hasher.digest(email),
                 details={"stage": "password", "known_user": False},
             ),
         )
@@ -389,8 +489,16 @@ class IdentityService:
     # --- sessions ------------------------------------------------------------------------
 
     async def _open_session(
-        self, session: AsyncSession, user: User, scope: SessionScope, context: RequestContext, now: datetime
+        self,
+        session: AsyncSession,
+        user: User,
+        scope: SessionScope,
+        context: RequestContext,
+        *,
+        now: datetime,
+        values: policy.Settings,
     ) -> IssuedSession:
+        absolute = now + timedelta(hours=values[policy.SESSION_ABSOLUTE])
         record = AuthSession(
             user_id=user.id,
             client_type=ClientType.WEB.value,
@@ -398,8 +506,8 @@ class IdentityService:
             ip=str(context.ip) if context.ip else None,
             user_agent=context.user_agent,
             last_activity_at=now,
-            idle_expires_at=now + defaults.SESSION_IDLE_TIMEOUT,
-            absolute_expires_at=now + defaults.SESSION_ABSOLUTE_TIMEOUT,
+            idle_expires_at=min(now + timedelta(minutes=values[policy.SESSION_IDLE]), absolute),
+            absolute_expires_at=absolute,
         )
         session.add(record)
         await session.flush()
@@ -587,6 +695,7 @@ class IdentityService:
         now = self._clock.now()
         issued: IssuedSession | None = None
         async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
             user = _required(await repo.lock_user(session, actor.user_id))
             record = _required(
                 await session.get(AuthSession, actor.session_id, with_for_update=True, populate_existing=True)
@@ -602,7 +711,7 @@ class IdentityService:
                     session_id=record.id,
                 )
             else:
-                await repo.register_failure(session, user.id, now)
+                await self._count_failure(session, context, user.id, now, values)
                 event = SecurityEvent(
                     SecurityEventType.STEP_UP_FAILED,
                     Severity.WARNING,
@@ -618,13 +727,21 @@ class IdentityService:
     # --- password ------------------------------------------------------------------------
 
     async def change_password(
-        self, actor: SessionActor, context: RequestContext, current_password: str, new_password: str
+        self,
+        actor: SessionActor,
+        context: RequestContext,
+        current_password: str,
+        new_password: str,
+        *,
+        device_token: str | None = None,
     ) -> None:
-        """Current password + a policy-compliant new one. Revokes every other session."""
+        """Current password + a policy-compliant new one. Revokes every other session and every
+        other trusted device, ends pending sign-in challenges, and tells the user by email."""
         async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
             credential = _required(await repo.credential(session, actor.user_id))
         if not (await passwords.verify_password(credential.password_hash, current_password)).valid:
-            await self._record_failure(context, actor.user_id, stage="password_change")
+            await self._record_failure(context, actor.user_id, stage="password_change", values=values)
             raise field_error(
                 "current_password", "password.incorrect", "Your current password is not correct."
             )
@@ -632,7 +749,8 @@ class IdentityService:
         new_hash = await passwords.hash_password(new_password)
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
-            await self._store_password(session, actor.user_id, new_hash)
+            await repo.lock_user(session, actor.user_id)
+            await repo.store_password(session, actor.user_id, new_hash, now)
             revoked = await repo.revoke_sessions(
                 session,
                 user_id=actor.user_id,
@@ -640,6 +758,15 @@ class IdentityService:
                 reason=RevokedReason.PASSWORD_CHANGED,
                 now=now,
             )
+            await repo.retire_one_time_tokens(session, actor.user_id, OneTimePurpose.LOGIN_MFA, now)
+            await devices.revoke_all(
+                session,
+                user_id=actor.user_id,
+                reason=DeviceRevokedReason.PASSWORD_CHANGED,
+                now=now,
+                keep_token=device_token,
+            )
+            await notifications.password_changed(session, actor.user_id, now, by_reset=False)
             await self._audit.record_security_event(
                 session,
                 SecurityEvent(
@@ -656,19 +783,6 @@ class IdentityService:
         problem = await self._breach.problem(password)
         if problem is not None:
             raise field_error(field, problem.value, passwords.PROBLEM_MESSAGES[problem])
-
-    async def _store_password(
-        self, session: AsyncSession, user_id: uuid.UUID, password_hash: str, *, keep_changed_at: bool = False
-    ) -> None:
-        now = self._clock.now()
-        credential = await repo.credential(session, user_id)
-        if credential is None:
-            session.add(Credential(user_id=user_id, password_hash=password_hash, password_changed_at=now))
-            return
-        credential.password_hash = password_hash
-        credential.updated_at = now
-        if not keep_changed_at:
-            credential.password_changed_at = now
 
     # --- MFA factors ---------------------------------------------------------------------
 
@@ -713,7 +827,13 @@ class IdentityService:
         return FactorSetup(factor.id, secret, uri, totp.qr_svg_data_uri(uri))
 
     async def confirm_factor(
-        self, actor: SessionActor, context: RequestContext, factor_id: uuid.UUID, code: str
+        self,
+        actor: SessionActor,
+        context: RequestContext,
+        factor_id: uuid.UUID,
+        code: str,
+        *,
+        device_token: str | None = None,
     ) -> IssuedSession | None:
         """Confirm a new factor. In an enrolment-only session this completes the recovery:
         the session becomes a full one, with new tokens."""
@@ -731,6 +851,7 @@ class IdentityService:
                     session_id=actor.session_id,
                 ),
             )
+            await self._mfa_changed(session, actor.user_id, "authenticator_added", now, device_token)
             if actor.scope is SessionScope.MFA_ENROLMENT:
                 record = _required(
                     await session.get(
@@ -761,7 +882,24 @@ class IdentityService:
         factor.last_used_at = now
         factor.updated_at = now
 
-    async def remove_factor(self, actor: SessionActor, context: RequestContext, factor_id: uuid.UUID) -> None:
+    async def _mfa_changed(
+        self, session: AsyncSession, user_id: uuid.UUID, change: str, now: datetime, device_token: str | None
+    ) -> None:
+        """Any MFA change re-evaluates trust: every other trusted device is revoked, and the
+        user is told by email."""
+        await devices.revoke_all(
+            session, user_id=user_id, reason=DeviceRevokedReason.MFA_CHANGED, now=now, keep_token=device_token
+        )
+        await notifications.mfa_changed(session, user_id, change, now)
+
+    async def remove_factor(
+        self,
+        actor: SessionActor,
+        context: RequestContext,
+        factor_id: uuid.UUID,
+        *,
+        device_token: str | None = None,
+    ) -> None:
         """Refused for the last confirmed factor; the database refuses it too."""
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
@@ -787,8 +925,11 @@ class IdentityService:
                     session_id=actor.session_id,
                 ),
             )
+            await self._mfa_changed(session, actor.user_id, "authenticator_removed", now, device_token)
 
-    async def regenerate_recovery_codes(self, actor: SessionActor, context: RequestContext) -> list[str]:
+    async def regenerate_recovery_codes(
+        self, actor: SessionActor, context: RequestContext, *, device_token: str | None = None
+    ) -> list[str]:
         async with self._db.unit_of_work() as session:
             await repo.lock_user(session, actor.user_id)
             codes = await self._new_recovery_codes(session, actor.user_id)
@@ -801,6 +942,9 @@ class IdentityService:
                     user_id=actor.user_id,
                     session_id=actor.session_id,
                 ),
+            )
+            await self._mfa_changed(
+                session, actor.user_id, "recovery_codes_replaced", self._clock.now(), device_token
             )
         return codes
 
@@ -846,6 +990,11 @@ class IdentityService:
     async def accept_invite_password(self, context: RequestContext, invite_token: str, password: str) -> str:
         """Step 1: set the password. Returns a 30-minute enrolment token for steps 2 and 3."""
         await self._limit_invite(context)
+        # A cheap check first: an invalid link never costs an Argon2 hash (each uses 64 MiB
+        # and a limited slot), so garbage links cannot slow down sign-in for everyone.
+        async with self._db.unit_of_work() as session:
+            if await self._invited_user(session, invite_token, lock=False) is None:
+                raise _invite_invalid()
         await self._check_policy(password, field="password")
         password_hash = await passwords.hash_password(password)
         now = self._clock.now()
@@ -853,7 +1002,7 @@ class IdentityService:
             user = await self._invited_user(session, invite_token, lock=True)
             if user is None:
                 raise _invite_invalid()
-            await self._store_password(session, user.id, password_hash)
+            await repo.store_password(session, user.id, password_hash, now)
             await repo.retire_one_time_tokens(session, user.id, OneTimePurpose.INVITE_ENROLMENT, now)
             raw = tokens.new_token()
             session.add(
@@ -900,12 +1049,15 @@ class IdentityService:
         enrolment_token: str,
         factor_id: uuid.UUID,
         code: str,
+        *,
+        device_token: str | None = None,
     ) -> Activation:
         """Step 3: confirm the authenticator. The account becomes active with its recovery
         codes (shown once) and a full session; the invite is consumed."""
         await self._limit_invite(context)
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
             user, enrolment = await self._enrolling_user(session, invite_token, enrolment_token)
             await self._confirm_factor(session, user.id, factor_id, code, now)
             codes = await self._new_recovery_codes(session, user.id)
@@ -915,7 +1067,20 @@ class IdentityService:
             user.version += 1
             enrolment.used_at = now
             await repo.retire_one_time_tokens(session, user.id, OneTimePurpose.INVITE, now)
-            issued = await self._open_session(session, user, SessionScope.FULL, context, now)
+            issued = await self._open_session(
+                session, user, SessionScope.FULL, context, now=now, values=values
+            )
+            # The activating browser is the account's first device: trusted, not reported.
+            issued = await self._recognize_device(
+                session,
+                context,
+                user,
+                issued,
+                device_token=device_token,
+                now=now,
+                values=values,
+                report_new=False,
+            )
             await repo.clear_failures(session, user.id, now)
             for event_type in (SecurityEventType.ACCOUNT_ACTIVATED, SecurityEventType.MFA_ENROLLED):
                 await self._audit.record_security_event(
@@ -962,6 +1127,35 @@ class IdentityService:
         rows = rows[:limit]
         return rows, ((rows[-1].recorded_at, rows[-1].id) if more and rows else None)
 
+    async def list_devices(self, user_id: uuid.UUID) -> Sequence[TrustedDevice]:
+        async with self._db.unit_of_work() as session:
+            return await repo.active_devices(session, user_id, self._clock.now())
+
+    async def revoke_device(self, actor: SessionActor, context: RequestContext, device_id: uuid.UUID) -> None:
+        """Stop trusting one of the actor's devices; its next sign-in is reported as new."""
+        now = self._clock.now()
+        async with self._db.unit_of_work() as session:
+            count = await repo.revoke_devices(
+                session,
+                user_id=actor.user_id,
+                reason=DeviceRevokedReason.REVOKED_BY_USER.value,
+                now=now,
+                device_id=device_id,
+            )
+            if count == 0:
+                raise ProblemError(ProblemType.NOT_FOUND)
+            await self._audit.record_security_event(
+                session,
+                SecurityEvent(
+                    SecurityEventType.DEVICE_REVOKED,
+                    Severity.INFO,
+                    context=context,
+                    user_id=actor.user_id,
+                    session_id=actor.session_id,
+                    details={"device_id": device_id},
+                ),
+            )
+
     # --- administration ------------------------------------------------------------------
 
     async def list_users(self, *, after: uuid.UUID | None, limit: int) -> repo.UserPage:
@@ -987,6 +1181,13 @@ class IdentityService:
                 revoked = await repo.revoke_sessions(
                     session, user_id=user.id, reason=RevokedReason.ACCOUNT_DISABLED, now=now
                 )
+                await devices.revoke_all(
+                    session, user_id=user.id, reason=DeviceRevokedReason.ACCOUNT_DISABLED, now=now
+                )
+                # An outstanding invite stops working too.
+                for purpose in (OneTimePurpose.INVITE, OneTimePurpose.INVITE_ENROLMENT):
+                    await repo.retire_one_time_tokens(session, user.id, purpose, now)
+                await notifications.cancel_invites(session, user.id, now)
                 event_type = SecurityEventType.ACCOUNT_DISABLED
             elif not disabled and user.status == UserStatus.DISABLED:
                 # An account that was never activated goes back to waiting for its invite.
@@ -1049,8 +1250,13 @@ class IdentityService:
             granted = await self._authz.require(session, admin, "auth.session.revoke.all")
             if await repo.lock_user(session, user_id) is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            now = self._clock.now()
             revoked = await repo.revoke_sessions(
-                session, user_id=user_id, reason=RevokedReason.REVOKED_BY_ADMIN, now=self._clock.now()
+                session, user_id=user_id, reason=RevokedReason.REVOKED_BY_ADMIN, now=now
+            )
+            # A security response: every browser is reported as new at its next sign-in.
+            await devices.revoke_all(
+                session, user_id=user_id, reason=DeviceRevokedReason.REVOKED_BY_ADMIN, now=now
             )
             if revoked:
                 await self._session_revoked_event(

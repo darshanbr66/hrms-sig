@@ -118,6 +118,10 @@ class SecurityEventType(StrEnum):
     ACCOUNT_ACTIVATED = "account.activated"
     ACCOUNT_DISABLED = "account.disabled"
     ACCOUNT_ENABLED = "account.enabled"
+    DEVICE_TRUSTED = "device.trusted"
+    DEVICE_REVOKED = "device.revoked"
+    PASSWORD_RESET_REQUESTED = "password_reset.requested"  # noqa: S105 (an event name, not a secret)
+    PASSWORD_RESET_COMPLETED = "password_reset.completed"  # noqa: S105 (an event name, not a secret)
 
 
 def _require_aware(value: datetime, name: str) -> None:

@@ -89,7 +89,7 @@ MFA is mandatory for every account. No endpoint creates a full session from a pa
 | POST | `/auth/invite/{token}/password` | Step 1: set password (policy-checked). Returns `enrolment_token` (30 min), required with the invite token by steps 2 and 3, so the emailed link alone cannot enrol an authenticator. |
 | POST | `/auth/invite/{token}/mfa/totp/setup` · `/confirm` | Step 2: enrol and confirm TOTP. Confirming returns the recovery codes once, marks the account `active`, consumes the invite and creates a full session. |
 | POST | `/auth/mfa-reenrolment/{token}` | After an admin MFA reset: password + emailed re-enrolment token → enrolment-only session. |
-| POST | `/auth/password-reset` | Request; always `202`. |
+| POST | `/auth/password-reset` | Request; always `202` with the same body. 3 per hour per email, 10 per hour per IP (`429`; `503` when the rate-limit store is down). |
 | POST | `/auth/password-reset/{token}` | Complete reset. Revokes sessions. Does not sign the user in; the next sign-in still requires MFA. |
 | POST | `/me/password` | Change password (current + new, step-up). |
 | GET | `/me/mfa/factors` | List own factors (labels, type, last used). |
@@ -97,6 +97,7 @@ MFA is mandatory for every account. No endpoint creates a full session from a pa
 | DELETE | `/me/mfa/factors/{id}` | Remove a factor (step-up). Refused with `409 mfa.last_factor` if it is the last confirmed factor. |
 | POST | `/me/mfa/recovery-codes` | Regenerate (step-up). |
 | GET/DELETE | `/me/sessions`, `/me/sessions/{id}` | Own sessions. `DELETE /me/sessions` signs out every session except the current one and returns `{ "revoked": n }`. |
+| GET/DELETE | `/me/devices`, `/me/devices/{id}` | Own trusted browsers (`current` marks this one). Forgetting one makes its next sign-in reported as new. |
 | GET | `/me/login-history` | Own security events (login subset). |
 
 Mobile clients send `X-Client-Type: mobile` on login to receive tokens in the body instead of cookies. This header is accepted only on `/auth/*` endpoints.
@@ -200,13 +201,13 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /exports/{id}` · `POST /exports/{id}/download`
 
 **Administration**
-- `GET /users` (keyset by ID) · `POST /users/{id}/disable` · `/enable` · `POST /users/{id}/mfa-reset` (E) · `GET/DELETE /users/{id}/sessions`
+- `GET /users` (keyset by ID) · `POST /users` (`user.invite`: `{ email, employee_id? }` → `201`, invite emailed; linking an employee needs `employee.lifecycle.manage` over them and their work email; `409 user.email_in_use`) · `POST /users/{id}/invite` (resend, `202`) · `DELETE /users/{id}/invite` (revoke, `204`) · `POST /users/{id}/disable` · `/enable` · `POST /users/{id}/mfa-reset` (E) · `GET/DELETE /users/{id}/sessions`
 - `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` and creates a `super_admin_assignment` request instead; until grant requests exist (E) it is refused with `409 sod.super_admin_assignment`. Removing a `super_admin` assignment that would leave fewer than two is refused with `409 role.min_super_admins`.)
 - `GET /role-grant-requests?status=` · `POST /role-grant-requests` (`kind: elevation`) · `POST /role-grant-requests/{id}/approve` · `/reject` · `/revoke`
 - `POST /role-grant-requests/break-glass` · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin)
 - `GET /audit-log?actor_id=&subject_employee_id=&action=&from=&to=`
 - `GET /security-events?...`
-- `GET /settings` · `PUT /settings/{key}`
+- `GET /settings` (`settings.read`: every registry setting with value, default, bounds, unit and change permission) · `PUT /settings/{key}` (`{ "value": n | null }`; the route needs `settings.manage`, `security.*` keys also `security.settings.manage`; step-up; `null` restores the default; unknown keys `404`)
 
 **Health** (unauthenticated, no details): `GET /api/health/live`, `GET /api/health/ready`.
 
@@ -243,7 +244,7 @@ Jobs are defined in the owning module and enqueued inside the business transacti
 | `audit.checkpoint(stream)` | daily, plus month-end + 1 h for partition-final | unique checkpoint per partition and kind |
 | `audit.verify(stream)` | daily (recent), monthly (full) | read-only |
 | `audit.retention(stream)` | daily; acts only on eligible partitions | tombstone before drop |
-| `notify.send_email(outbox_id)` | outbox insert | outbox status |
+| `notify.dispatch_email()` | every minute; claims due outbox rows (`SKIP LOCKED`, lease) | idempotency key per event; outbox status |
 | `docs.scan_version(version_id)` | upload | `scan_status` |
 | `exports.generate(export_id)` | export request | job status |
 | `identity.apply_scheduled_deactivations()` | every 5 min | user status |

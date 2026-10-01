@@ -38,6 +38,7 @@ class RevokedReason(StrEnum):
     PASSWORD_CHANGED = "password_changed"  # noqa: S105 (a reason name, not a secret)
     ACCOUNT_DISABLED = "account_disabled"
     TOKEN_REUSE = "token_reuse"  # noqa: S105 (a reason name, not a secret)
+    PASSWORD_RESET = "password_reset"  # noqa: S105 (a reason name, not a secret)
 
 
 class TokenKind(StrEnum):
@@ -49,6 +50,16 @@ class OneTimePurpose(StrEnum):
     INVITE = "invite"
     INVITE_ENROLMENT = "invite_enrolment"
     LOGIN_MFA = "login_mfa"
+    PASSWORD_RESET = "password_reset"  # noqa: S105 (a purpose name, not a secret)
+
+
+class DeviceRevokedReason(StrEnum):
+    REVOKED_BY_USER = "revoked_by_user"
+    REVOKED_BY_ADMIN = "revoked_by_admin"
+    PASSWORD_CHANGED = "password_changed"  # noqa: S105 (a reason name, not a secret)
+    PASSWORD_RESET = "password_reset"  # noqa: S105 (a reason name, not a secret)
+    MFA_CHANGED = "mfa_changed"
+    ACCOUNT_DISABLED = "account_disabled"
 
 
 class User(Base):
@@ -170,3 +181,27 @@ class OneTimeToken(Base):
     used_at: Mapped[datetime | None]
     failed_attempts: Mapped[int] = mapped_column(SmallInteger(), server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class TrustedDevice(Base):
+    """A browser the user has signed in from (docs/security-architecture.md §3.4).
+
+    Identified by a random 256-bit cookie, stored only as its SHA-256 digest. Trust never
+    replaces MFA or step-up; it decides only whether a sign-in is reported as from a new device.
+    """
+
+    __tablename__ = "trusted_devices"
+    __table_args__ = (
+        Index("ix_trusted_devices_user_id", "user_id", postgresql_where=text("revoked_at IS NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary(), unique=True)
+    user_agent: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_seen_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+    revoked_at: Mapped[datetime | None]
+    revoked_reason: Mapped[str | None]

@@ -13,17 +13,19 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.identity import repository as repo
-from app.modules.identity.defaults import ACTIVITY_WRITE_INTERVAL, INVITE_TTL, SESSION_IDLE_TIMEOUT
+from app.modules.identity.defaults import ACTIVITY_WRITE_INTERVAL
 from app.modules.identity.models import OneTimePurpose, OneTimeToken, User, UserStatus
+from app.platform import settings
 from app.platform.authz.context import SessionScope
 from app.platform.security import tokens
+from app.platform.security.emails import canonical_email
 
 # docs/security-architecture.md §3.5. `__Host-` pins the access cookie to this origin and
 # path `/`; the refresh cookie is sent only to the refresh endpoint.
@@ -61,8 +63,11 @@ async def authenticate(
     ):
         return None
     if user_activity and now - auth.last_activity_at >= ACTIVITY_WRITE_INTERVAL:
+        # Each session keeps the idle window it was created with, so a change to the
+        # idle-timeout setting applies to new sessions without a settings read per request.
+        idle_window = auth.idle_expires_at - auth.last_activity_at
         auth.last_activity_at = now
-        auth.idle_expires_at = repo.session_expiry(now, auth.absolute_expires_at, SESSION_IDLE_TIMEOUT)
+        auth.idle_expires_at = repo.session_expiry(now, auth.absolute_expires_at, idle_window)
     return AuthenticatedSession(user.id, auth.id, SessionScope(auth.scope), user.employee_id, auth.step_up_at)
 
 
@@ -79,7 +84,7 @@ async def user_status(session: AsyncSession, user_id: uuid.UUID) -> UserStatus |
 async def create_invited_account(
     session: AsyncSession, email: str, *, employee_id: uuid.UUID | None = None
 ) -> uuid.UUID:
-    user = User(email=email, status=UserStatus.INVITED.value, employee_id=employee_id)
+    user = User(email=canonical_email(email), status=UserStatus.INVITED.value, employee_id=employee_id)
     session.add(user)
     await session.flush()
     return user.id
@@ -90,7 +95,9 @@ async def email_in_use(session: AsyncSession, email: str) -> bool:
 
 
 async def issue_invite(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> str:
-    """A new invite token for an invited account; earlier ones stop working."""
+    """A new invite token for an invited account; earlier ones stop working. Its lifetime is
+    the `security.invite.ttl_hours` setting."""
+    ttl = timedelta(hours=(await settings.load(session))[settings.INVITE_TTL])
     raw = tokens.new_token()
     await repo.retire_one_time_tokens(session, user_id, OneTimePurpose.INVITE, now)
     session.add(
@@ -98,7 +105,7 @@ async def issue_invite(session: AsyncSession, user_id: uuid.UUID, now: datetime)
             user_id=user_id,
             purpose=OneTimePurpose.INVITE.value,
             token_hash=tokens.token_digest(raw),
-            expires_at=now + INVITE_TTL,
+            expires_at=now + ttl,
         )
     )
     return raw

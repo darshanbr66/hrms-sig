@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form } from "react-aria-components";
 import { Controller, useForm } from "react-hook-form";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { z } from "zod";
 
 import { Banner } from "../../design-system/Banner";
@@ -86,7 +86,10 @@ export function SignInPage() {
           </Button>
         </Form>
         <p className="text-sm text-neutral-600">
-          Forgot your password or lost your authenticator? Contact your HR team.
+          <Link className="text-accent-700 underline" to="/password-reset">
+            Forgot your password?
+          </Link>{" "}
+          Lost your authenticator and your recovery codes? Contact your HR team.
         </p>
       </div>
     </AuthLayout>

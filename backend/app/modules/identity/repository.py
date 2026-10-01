@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity.defaults import FAILURE_WINDOW, LOCK_AFTER_FAILURES, LOCK_DURATION
 from app.modules.identity.models import (
     AuthSession,
     Credential,
@@ -25,14 +24,17 @@ from app.modules.identity.models import (
     RevokedReason,
     SessionToken,
     TokenKind,
+    TrustedDevice,
     User,
 )
+from app.platform.security.emails import canonical_email
 
 # --- accounts --------------------------------------------------------------------------
 
 
 async def user_by_email(session: AsyncSession, email: str) -> User | None:
-    return (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    query = select(User).where(User.email == canonical_email(email))
+    return (await session.execute(query)).scalar_one_or_none()
 
 
 async def get_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
@@ -55,11 +57,20 @@ class FailureState:
     locked_until: datetime | None
 
 
-async def register_failure(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> FailureState:
+@dataclass(frozen=True, slots=True)
+class LockoutPolicy:
+    threshold: int
+    window: timedelta
+    duration: timedelta
+
+
+async def register_failure(
+    session: AsyncSession, user_id: uuid.UUID, now: datetime, policy: LockoutPolicy
+) -> FailureState:
     """Count a failed sign-in attempt in the current window; lock at the threshold."""
     window_expired = or_(
         User.failed_login_window_started_at.is_(None),
-        User.failed_login_window_started_at <= now - FAILURE_WINDOW,
+        User.failed_login_window_started_at <= now - policy.window,
     )
     new_count = case((window_expired, 1), else_=User.failed_login_count + 1)
     statement = (
@@ -72,7 +83,7 @@ async def register_failure(session: AsyncSession, user_id: uuid.UUID, now: datet
             ),
             last_failed_login_at=now,
             locked_until=case(
-                (new_count >= LOCK_AFTER_FAILURES, now + LOCK_DURATION), else_=User.locked_until
+                (new_count >= policy.threshold, now + policy.duration), else_=User.locked_until
             ),
         )
         .returning(User.failed_login_count, User.locked_until)
@@ -355,3 +366,78 @@ async def revoke_sessions(
 
 def session_expiry(now: datetime, absolute_expires_at: datetime, idle: timedelta) -> datetime:
     return min(now + idle, absolute_expires_at)
+
+
+async def store_password(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    password_hash: str,
+    now: datetime,
+    *,
+    keep_changed_at: bool = False,
+) -> None:
+    credential = await session.get(Credential, user_id)
+    if credential is None:
+        session.add(Credential(user_id=user_id, password_hash=password_hash, password_changed_at=now))
+        return
+    credential.password_hash = password_hash
+    credential.updated_at = now
+    if not keep_changed_at:
+        credential.password_changed_at = now
+
+
+# --- trusted devices ---------------------------------------------------------------------
+
+
+async def lock_trusted_device(
+    session: AsyncSession, user_id: uuid.UUID, digest: bytes, now: datetime
+) -> TrustedDevice | None:
+    """The user's unrevoked, unexpired device with this cookie, locked."""
+    query = (
+        select(TrustedDevice)
+        .where(
+            TrustedDevice.user_id == user_id,
+            TrustedDevice.token_hash == digest,
+            TrustedDevice.revoked_at.is_(None),
+            TrustedDevice.expires_at > now,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def active_devices(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> Sequence[TrustedDevice]:
+    query = (
+        select(TrustedDevice)
+        .where(
+            TrustedDevice.user_id == user_id,
+            TrustedDevice.revoked_at.is_(None),
+            TrustedDevice.expires_at > now,
+        )
+        .order_by(TrustedDevice.last_seen_at.desc())
+    )
+    return list((await session.execute(query)).scalars())
+
+
+async def revoke_devices(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    reason: str,
+    now: datetime,
+    device_id: uuid.UUID | None = None,
+    except_digest: bytes | None = None,
+) -> int:
+    """Revoke one or all of a user's devices (optionally keeping the one with `except_digest`)."""
+    statement = update(TrustedDevice).where(
+        TrustedDevice.user_id == user_id, TrustedDevice.revoked_at.is_(None)
+    )
+    if device_id is not None:
+        statement = statement.where(TrustedDevice.id == device_id)
+    if except_digest is not None:
+        statement = statement.where(TrustedDevice.token_hash != except_digest)
+    result = await session.execute(
+        statement.values(revoked_at=now, revoked_reason=reason).returning(TrustedDevice.id)
+    )
+    return len(result.all())

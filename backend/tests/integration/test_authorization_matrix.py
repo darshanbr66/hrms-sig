@@ -48,6 +48,26 @@ ROUTES = (
         {"role_key": "hr", "reason": "Matrix test"},
     ),
     Route("DELETE", "/api/v1/users/{target}/roles/{assignment}", "role.assign"),
+    Route(
+        "POST",
+        "/api/v1/users",
+        "user.invite",
+        {"email": "matrix-invite@dev.example"},
+        # The first allowed role creates the account; later ones find the email in use.
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    # The target is an active account, so an allowed caller is told it is not waiting for an invite.
+    Route("POST", "/api/v1/users/{target}/invite", "user.invite", allowed_statuses=frozenset({409})),
+    Route("DELETE", "/api/v1/users/{target}/invite", "user.invite", allowed_statuses=frozenset({409})),
+    Route("GET", "/api/v1/settings", "settings.read"),
+    Route("PUT", "/api/v1/settings/email.delivery.max_attempts", "settings.manage", {"value": None}),
+    Route("GET", "/api/v1/me/devices", "auth.session.read.self"),
+    Route(
+        "DELETE",
+        "/api/v1/me/devices/{device}",
+        "auth.session.revoke.self",
+        allowed_statuses=frozenset({404}),
+    ),
     Route("GET", "/api/v1/audit-log", "audit.read"),
     Route("GET", "/api/v1/security-events", "security.event.read"),
     Route("GET", "/api/v1/me/sessions", "auth.session.read.self"),
@@ -76,7 +96,9 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
         "SELECT id FROM access.user_roles WHERE user_id = :id", id=target.user_id
     )
     [(role,)] = await api.fetch("SELECT id FROM access.roles WHERE key = 'hr'")
-    path = route.path.format(target=target.user_id, assignment=assignment, role=role, session=uuid.uuid4())
+    path = route.path.format(
+        target=target.user_id, assignment=assignment, role=role, session=uuid.uuid4(), device=uuid.uuid4()
+    )
     return await client.request(route.method, path, json=route.body)
 
 

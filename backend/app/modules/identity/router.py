@@ -13,7 +13,10 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.modules.identity import public
 from app.modules.identity import schemas as s
+from app.modules.identity.devices import DEVICE_COOKIE, IssuedDevice, digest_of
+from app.modules.identity.invitations import InvitationService
 from app.modules.identity.models import AuthSession, MfaFactor, User
+from app.modules.identity.password_reset import PasswordResetService
 from app.modules.identity.service import IdentityService, IssuedSession, SessionActor
 from app.platform.audit.records import RequestContext
 from app.platform.authz.context import Actor
@@ -36,7 +39,19 @@ def clock(request: Request) -> Clock:
     return value
 
 
+def password_reset_service(request: Request) -> PasswordResetService:
+    value: PasswordResetService = request.app.state.password_reset_service
+    return value
+
+
+def invitation_service(request: Request) -> InvitationService:
+    value: InvitationService = request.app.state.invitation_service
+    return value
+
+
 Service = Annotated[IdentityService, Depends(service)]
+Resets = Annotated[PasswordResetService, Depends(password_reset_service)]
+Invitations = Annotated[InvitationService, Depends(invitation_service)]
 Engine = Annotated[Authorizer, Depends(authorizer)]
 
 
@@ -65,6 +80,26 @@ def _set_session_cookies(response: Response, issued: IssuedSession, now: datetim
     )
 
 
+def _set_device_cookie(response: Response, device: IssuedDevice | None, now: datetime) -> None:
+    """The trusted-device cookie: a random token, only its digest is stored. It identifies the
+    browser for new-device notices; it is not a credential."""
+    if device is None:
+        return
+    response.set_cookie(
+        DEVICE_COOKIE,
+        device.token,
+        max_age=max(int((device.expires_at - now).total_seconds()), 0),
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _device_token(request: Request) -> str | None:
+    return request.cookies.get(DEVICE_COOKIE)
+
+
 def _clear_session_cookies(response: Response) -> None:
     response.delete_cookie(public.ACCESS_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
     response.delete_cookie(
@@ -86,9 +121,15 @@ async def login_mfa(
     body: s.LoginMfaRequest, request: Request, response: Response, identity: Service
 ) -> s.SignedIn:
     issued = await identity.complete_login(
-        RequestContext.from_request(request), body.mfa_token, code=body.code, recovery_code=body.recovery_code
+        RequestContext.from_request(request),
+        body.mfa_token,
+        code=body.code,
+        recovery_code=body.recovery_code,
+        device_token=_device_token(request),
     )
-    _set_session_cookies(response, issued, clock(request).now())
+    now = clock(request).now()
+    _set_session_cookies(response, issued, now)
+    _set_device_cookie(response, issued.device, now)
     return s.SignedIn(session_scope=issued.scope.value)
 
 
@@ -155,7 +196,11 @@ async def change_password(
 ) -> None:
     engine.require_step_up(actor)
     await identity.change_password(
-        _session_actor(actor), RequestContext.from_request(request), body.current_password, body.new_password
+        _session_actor(actor),
+        RequestContext.from_request(request),
+        body.current_password,
+        body.new_password,
+        device_token=_device_token(request),
     )
 
 
@@ -206,7 +251,11 @@ async def confirm_totp(
     if not actor.enrolment_only:
         engine.require_step_up(actor)
     issued = await identity.confirm_factor(
-        _session_actor(actor), RequestContext.from_request(request), body.factor_id, body.code
+        _session_actor(actor),
+        RequestContext.from_request(request),
+        body.factor_id,
+        body.code,
+        device_token=_device_token(request),
     )
     if issued is not None:
         _set_session_cookies(response, issued, clock(request).now())
@@ -223,7 +272,12 @@ async def remove_factor(
     actor: Annotated[Actor, account()],
 ) -> None:
     engine.require_step_up(actor)
-    await identity.remove_factor(_session_actor(actor), RequestContext.from_request(request), factor_id)
+    await identity.remove_factor(
+        _session_actor(actor),
+        RequestContext.from_request(request),
+        factor_id,
+        device_token=_device_token(request),
+    )
 
 
 @router.post("/me/mfa/recovery-codes", response_model=s.RecoveryCodes)
@@ -232,7 +286,7 @@ async def regenerate_recovery_codes(
 ) -> s.RecoveryCodes:
     engine.require_step_up(actor)
     codes = await identity.regenerate_recovery_codes(
-        _session_actor(actor), RequestContext.from_request(request)
+        _session_actor(actor), RequestContext.from_request(request), device_token=_device_token(request)
     )
     return s.RecoveryCodes(codes=codes)
 
@@ -344,10 +398,69 @@ async def invite_confirm_totp(
     token: str, body: s.InviteConfirmRequest, request: Request, response: Response, identity: Service
 ) -> s.InviteActivated:
     activation = await identity.invite_confirm_factor(
-        RequestContext.from_request(request), token, body.enrolment_token, body.factor_id, body.code
+        RequestContext.from_request(request),
+        token,
+        body.enrolment_token,
+        body.factor_id,
+        body.code,
+        device_token=_device_token(request),
     )
-    _set_session_cookies(response, activation.session, clock(request).now())
+    now = clock(request).now()
+    _set_session_cookies(response, activation.session, now)
+    _set_device_cookie(response, activation.session.device, now)
     return s.InviteActivated(recovery_codes=list(activation.recovery_codes))
+
+
+# --- password reset -----------------------------------------------------------------------
+
+
+@router.post("/auth/password-reset", status_code=status.HTTP_202_ACCEPTED, dependencies=[public_route()])
+async def request_password_reset(body: s.PasswordResetRequest, request: Request, resets: Resets) -> None:
+    """Always 202: the answer never reveals whether the email belongs to an account."""
+    await resets.request(RequestContext.from_request(request), body.email)
+
+
+@router.post(
+    "/auth/password-reset/{token}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[public_route()]
+)
+async def complete_password_reset(
+    token: str, body: s.PasswordResetComplete, request: Request, resets: Resets
+) -> None:
+    """Sets the new password and ends every session. Does not sign in; MFA is still required."""
+    await resets.complete(RequestContext.from_request(request), token, body.password)
+
+
+# --- trusted devices ----------------------------------------------------------------------
+
+
+@router.get("/me/devices", response_model=s.DeviceList)
+async def my_devices(
+    request: Request, identity: Service, actor: Annotated[Actor, requires("auth.session.read.self")]
+) -> s.DeviceList:
+    current = digest_of(_device_token(request))
+    return s.DeviceList(
+        items=[
+            s.DeviceView(
+                id=device.id,
+                current=current is not None and device.token_hash == current,
+                user_agent=device.user_agent,
+                created_at=device.created_at,
+                last_seen_at=device.last_seen_at,
+                expires_at=device.expires_at,
+            )
+            for device in await identity.list_devices(actor.user_id)
+        ]
+    )
+
+
+@router.delete("/me/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_my_device(
+    device_id: uuid.UUID,
+    request: Request,
+    identity: Service,
+    actor: Annotated[Actor, requires("auth.session.revoke.self")],
+) -> None:
+    await identity.revoke_device(_session_actor(actor), RequestContext.from_request(request), device_id)
 
 
 # --- administration -----------------------------------------------------------------------
@@ -426,3 +539,37 @@ async def revoke_user_sessions(
 ) -> s.RevokedCount:
     count = await identity.revoke_sessions_of(actor, RequestContext.from_request(request), user_id)
     return s.RevokedCount(revoked=count)
+
+
+@router.post("/users", response_model=s.UserView, status_code=status.HTTP_201_CREATED)
+async def invite_user(
+    body: s.InviteCreate,
+    request: Request,
+    invitations: Invitations,
+    actor: Annotated[Actor, requires("user.invite")],
+) -> s.UserView:
+    """Create an invited account and queue its invite email. Grants no role."""
+    user = await invitations.invite(actor, RequestContext.from_request(request), body.email, body.employee_id)
+    return _user_view(user, clock(request).now())
+
+
+@router.post("/users/{user_id}/invite", status_code=status.HTTP_202_ACCEPTED)
+async def resend_invite(
+    user_id: uuid.UUID,
+    request: Request,
+    invitations: Invitations,
+    actor: Annotated[Actor, requires("user.invite")],
+) -> None:
+    """Send a new invite link; the previous link stops working now."""
+    await invitations.resend(actor, RequestContext.from_request(request), user_id)
+
+
+@router.delete("/users/{user_id}/invite", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_invite(
+    user_id: uuid.UUID,
+    request: Request,
+    invitations: Invitations,
+    actor: Annotated[Actor, requires("user.invite")],
+) -> None:
+    """Make the outstanding invite link stop working and cancel an invite not yet sent."""
+    await invitations.revoke(actor, RequestContext.from_request(request), user_id)

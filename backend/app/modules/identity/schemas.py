@@ -223,3 +223,42 @@ class AdminSessionView(_Response):
 
 class AdminSessionList(_Response):
     items: list[AdminSessionView]
+
+
+# --- password reset ---------------------------------------------------------------------------
+
+
+class PasswordResetRequest(_Request):
+    email: Annotated[EmailStr, StringConstraints(max_length=254)]
+
+
+class PasswordResetComplete(_Request):
+    password: PasswordInput
+
+
+# --- trusted devices --------------------------------------------------------------------------
+
+
+class DeviceView(_Response):
+    """A browser the account has signed in from. Recognizing it never skips MFA or step-up."""
+
+    id: uuid.UUID
+    current: bool
+    user_agent: str | None
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+
+
+class DeviceList(_Response):
+    items: list[DeviceView]
+
+
+# --- invitations (administration) -------------------------------------------------------------
+
+
+class InviteCreate(_Request):
+    email: Annotated[EmailStr, StringConstraints(max_length=254)]
+    # Links the account to an employee record: needs HR authority over that employee, and the
+    # email must be the employee's work email.
+    employee_id: uuid.UUID | None = None

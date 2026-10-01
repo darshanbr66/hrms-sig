@@ -2,7 +2,7 @@
 # Start with: docker compose --env-file .env -f infra/compose.yaml up -d --wait
 #
 # Services arrive with the checkpoint that first uses them (docs/m1-implementation-plan.md §7):
-# the mail catcher with identity emails, the S3 emulator with audit anchors, ClamAV in M5.
+# the S3 emulator with audit anchors (F), ClamAV in M5.
 
 name: hrms
 
@@ -44,6 +44,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # Local mail catcher: the worker's outbox sends here (SMTP 1025); read mail at http://127.0.0.1:8025.
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
 volumes:
   postgres-data:

@@ -16,7 +16,7 @@ import pytest
 
 from app.modules.identity import public as identity
 from app.platform.logging import JsonFormatter
-from tests.api_support import PASSWORD, Api, refresh_cookie
+from tests.api_support import PASSWORD, Api, link_token, refresh_cookie
 
 NEW_PASSWORD = "another quite long passphrase 77"
 
@@ -123,3 +123,43 @@ async def test_an_unhandled_error_reveals_nothing(api: Api) -> None:
     assert response.status_code == 401
     assert "Traceback" not in response.text
     assert "sql" not in response.text.lower()
+
+
+async def test_email_flow_secrets_stay_in_the_email(api: Api, caplog: pytest.LogCaptureFixture) -> None:
+    """Reset and invite links and the device cookie appear only in the email or the cookie:
+    never in logs (API or worker), audit records, security events or outbox rows."""
+    caplog.set_level(logging.DEBUG)
+    account = await api.create_account()
+    secrets_seen: set[str] = set()
+    async with api.client() as client:
+        await api.sign_in(client, account)
+        secrets_seen.add(client.cookies.get("__Host-sv_dev") or "")
+        await client.post("/api/v1/auth/password-reset", json={"email": account.email})
+    hr = await api.create_account(roles=("hr",))
+    invitee = f"leak-{api.clock.now().timestamp()}@dev.example"
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        await client.post("/api/v1/users", json={"email": invitee})
+    for message in await api.deliver():
+        if "/password-reset/" in message.body or "/invite/" in message.body:
+            secrets_seen.add(link_token(message))
+    secrets_seen.discard("")
+    assert len(secrets_seen) == 3
+
+    formatter = JsonFormatter()
+    server_records = [r for r in caplog.records if not r.name.startswith(("httpx", "httpcore"))]
+    logs = "\n".join(formatter.format(record) for record in server_records)
+    stored = "\n".join(
+        row[0]
+        for row in await api.fetch(
+            "SELECT to_jsonb(a)::text FROM audit.audit_log a "
+            "UNION ALL SELECT to_jsonb(e)::text FROM audit.security_events e "
+            "UNION ALL SELECT to_jsonb(o)::text FROM notify.email_outbox o"
+        )
+    )
+    for secret in secrets_seen:
+        assert secret not in logs
+        assert secret not in stored
+    assert account.email not in logs
+    # Records refer to accounts by ID; the address lives only on the account.
+    assert invitee not in stored

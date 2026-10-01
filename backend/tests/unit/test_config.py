@@ -6,9 +6,17 @@ from pydantic import ValidationError
 from app.platform.config import ApiSettings, AppEnv, MigrationSettings, WorkerSettings, sqlalchemy_url
 
 HMAC_KEY = base64.b64encode(b"k" * 32).decode()
+EMAIL_KEY = base64.b64encode(b"m" * 32).decode()
 FIELD_KEY = base64.b64encode(b"f" * 32).decode()
 FIELD_KEYS = f'{{"1": "{FIELD_KEY}"}}'
 LOCAL_DB = "postgresql://hrms_app:pw@127.0.0.1:5433/hrms"
+SMTP: dict[str, object] = {
+    "app_base_url": "https://hrms.example.com",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587,
+    "smtp_from": "hrms@example.com",
+    "smtp_security": "starttls",
+}
 DEPLOYED_DB = "postgresql://hrms_app:pw@db.internal:5432/hrms?sslmode=verify-full"
 
 
@@ -18,6 +26,7 @@ def api_settings(**overrides: object) -> ApiSettings:
         "database_url_app": LOCAL_DB,
         "redis_url": "redis://hrms_ratelimit:pw@127.0.0.1:6380/0",
         "rate_limit_key_hmac_key": HMAC_KEY,
+        "email_lookup_hmac_key": EMAIL_KEY,
         "app_base_url": "http://localhost:5173",
         "field_encryption_keys": FIELD_KEYS,
         "field_encryption_active_version": 1,
@@ -106,7 +115,7 @@ def test_missing_required_settings_fail_fast(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_worker_and_migration_settings_require_tls_when_deployed() -> None:
     with pytest.raises(ValidationError, match="DATABASE_URL_WORKER"):
-        WorkerSettings(app_env=AppEnv.PRODUCTION, database_url_worker=LOCAL_DB)
+        WorkerSettings.model_validate({"app_env": AppEnv.PRODUCTION, "database_url_worker": LOCAL_DB} | SMTP)
     with pytest.raises(ValidationError, match="DATABASE_URL_MIGRATOR"):
         MigrationSettings(app_env=AppEnv.STAGING, database_url_migrator=LOCAL_DB)
 
@@ -121,3 +130,34 @@ def test_secrets_are_not_shown_in_repr() -> None:
 def test_sqlalchemy_url_selects_psycopg() -> None:
     settings = api_settings()
     assert sqlalchemy_url(settings.database_url_app).startswith("postgresql+psycopg://")
+
+
+def test_worker_refuses_plain_smtp_outside_local_and_test() -> None:
+    with pytest.raises(ValidationError, match="SMTP_SECURITY=none"):
+        WorkerSettings.model_validate(
+            {"app_env": AppEnv.STAGING, "database_url_worker": DEPLOYED_DB}
+            | (SMTP | {"smtp_security": "none"})
+        )
+    WorkerSettings.model_validate(
+        {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (SMTP | {"smtp_security": "none"})
+    )
+    with pytest.raises(ValidationError, match="SMTP_USERNAME and SMTP_PASSWORD"):
+        WorkerSettings.model_validate(
+            {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (SMTP | {"smtp_username": "u"})
+        )
+
+
+def test_email_lookup_key_must_differ_from_the_rate_limit_key() -> None:
+    with pytest.raises(ValidationError, match="one key per purpose"):
+        api_settings(email_lookup_hmac_key=HMAC_KEY)
+    with pytest.raises(ValidationError, match="EMAIL_LOOKUP_HMAC_KEY"):
+        api_settings(email_lookup_hmac_key=base64.b64encode(b"short").decode())
+
+
+def test_blank_smtp_credentials_mean_none() -> None:
+    settings = WorkerSettings.model_validate(
+        {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB, "smtp_username": "", "smtp_password": ""}
+        | SMTP
+    )
+    assert settings.smtp_username is None
+    assert settings.smtp_password is None

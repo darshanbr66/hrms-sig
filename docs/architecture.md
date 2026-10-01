@@ -159,7 +159,7 @@ Each module has the same internal layout:
 
 ## 6. Data flow patterns
 
-- **Write path is transactional.** Business change, audit record, and job enqueue commit together (transactional outbox via Procrastinate on the same connection).
+- **Write path is transactional.** Business change, audit record, and job enqueue commit together (transactional outbox via Procrastinate on the same connection). Email uses its own outbox table (`notify.email_outbox`), written in the business transaction and sent by a per-minute worker job that claims rows with `SKIP LOCKED`, so no email is sent for a change that rolled back and none is lost if a send fails.
 - **Derived data is recomputable.** Attendance day summaries and leave balances are projections from append-only sources (events, ledger). A recompute job can rebuild them.
 - **Policy is data, rules are code.** Attendance and leave rules are pure domain functions parameterized by effective-dated policy records that HR configures (`database-design.md` §4.5, §4.6). For example, `derive_day(events, shift, attendance_policy, calendar_context) -> DaySummary`. No Sigvitas-specific value (grace minutes, thresholds, leave types, accrual amounts, leave year start) appears in code. Recomputing a past day uses the policy version that was effective on that day.
 - **Audit integrity is sealed asynchronously.** Audit rows commit with the business change; a single sealer job hash-chains them within about a minute, with signed, externally anchored checkpoints (`security-architecture.md` §8.1).

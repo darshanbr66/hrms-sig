@@ -4,7 +4,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 
 ## Current phase
 
-**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries) and Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell) are complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
+**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries), Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell) and Checkpoint D (email outbox, admin invites, password reset, security emails, trusted devices, keyed attempted-email hash, settings registry) are complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
 
 ## Read before working
 
@@ -28,7 +28,7 @@ When a change alters behaviour, permissions, schema or API, update the relevant 
 
 - Backend: Python 3.13, FastAPI, Pydantic v2, SQLAlchemy 2.0 async with psycopg 3, Alembic (the single migration runner, also applying the vendored Procrastinate SQL), Procrastinate (PostgreSQL job queue). Tooling: uv, Ruff, mypy strict, pytest + testcontainers.
 - Frontend: React 19, TypeScript strict, Vite, Tailwind CSS v4, React Router (SPA), TanStack Query/Table, React Hook Form + Zod, React Aria Components, Lucide, Motion (sparingly). Tooling: pnpm, ESLint, Prettier, Vitest, Playwright, axe.
-- Data: PostgreSQL 18 (only system of record: data, jobs, sessions, lockout, audit), Redis (ephemeral rate-limit counters only; `docs/architecture.md` §3.1), private S3-compatible storage plus a write-once bucket for audit checkpoint anchors, ClamAV.
+- Data: PostgreSQL 18 (only system of record: data, jobs, sessions, lockout, audit, the email outbox), Redis (ephemeral rate-limit counters only; `docs/architecture.md` §3.1), private S3-compatible storage plus a write-once bucket for audit checkpoint anchors, ClamAV.
 - Deployment: SPA and API on the same origin (`/` and `/api/v1`). No CORS.
 
 ## Rules that must never be broken
@@ -84,6 +84,8 @@ Backend (from `backend/`):
 | Module boundaries | `uv run lint-imports` |
 | Tests (Docker required) | `uv run pytest` |
 | Regenerate `api/openapi.json` | `uv run python -m scripts.export_openapi` |
+
+Local email goes to Mailpit (`http://127.0.0.1:8025`); the worker sends it from the outbox.
 | Create the first two super admins (once) | `uv run --env-file ../.env python -m app.cli bootstrap-super-admins --email A --email B` |
 
 Frontend (from `frontend/`, pnpm through corepack):

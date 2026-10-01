@@ -1,8 +1,8 @@
 """The worker's job app: registered tasks and schedules, run as the worker role."""
 
 from app.platform.audit.partitions import QUEUE, SCHEDULE, TASK_NAME
-from app.platform.config import AppEnv, WorkerSettings
 from app.worker import build_job_app
+from tests.api_support import worker_settings
 from tests.conftest import PostgresServer, database_as, fresh_migrated_database
 
 
@@ -22,7 +22,7 @@ def partition_exists(postgres: PostgresServer, database: str, name: str) -> bool
 
 
 async def test_partition_maintenance_is_scheduled_hourly(migrated_postgres: PostgresServer) -> None:
-    settings = WorkerSettings(app_env=AppEnv.TEST, database_url_worker=migrated_postgres.url("hrms_worker"))
+    settings = worker_settings(migrated_postgres.url("hrms_worker"))
     async with database_as(migrated_postgres, "hrms_worker") as database:
         job_app = build_job_app(settings, database)
     assert TASK_NAME in job_app.tasks
@@ -40,9 +40,7 @@ async def test_partition_maintenance_task_recreates_missing_partitions(postgres:
         for stream in ("audit_log", "security_events"):
             connection.execute(f"DROP TABLE audit.{stream}_p{key}")
 
-    settings = WorkerSettings(
-        app_env=AppEnv.TEST, database_url_worker=postgres.url("hrms_worker", database_name)
-    )
+    settings = worker_settings(postgres.url("hrms_worker", database_name))
     async with database_as(postgres, "hrms_worker", database_name) as database:
         job_app = build_job_app(settings, database)
         async with job_app.open_async():
@@ -51,3 +49,16 @@ async def test_partition_maintenance_task_recreates_missing_partitions(postgres:
 
     for stream in ("audit_log", "security_events"):
         assert partition_exists(postgres, database_name, f"{stream}_p{key}")
+
+
+async def test_the_email_outbox_is_dispatched_every_minute(migrated_postgres: PostgresServer) -> None:
+    settings = worker_settings(migrated_postgres.url("hrms_worker"))
+    async with database_as(migrated_postgres, "hrms_worker") as database:
+        job_app = build_job_app(settings, database)
+    [periodic] = [
+        task
+        for key, task in job_app.periodic_registry.periodic_tasks.items()
+        if key[0] == "notify.dispatch_email"
+    ]
+    assert periodic.cron == "* * * * *"
+    assert job_app.tasks["notify.dispatch_email"].queue == "email"

@@ -18,10 +18,12 @@ Status: Phase 1 (M1, foundation) in progress. See `docs/m1-implementation-plan.m
    ```
 
    The `DATABASE_URL_*` and `REDIS_URL` values use the passwords you chose above and the local ports
-   5433 (PostgreSQL) and 6380 (Redis).
+   5433 (PostgreSQL) and 6380 (Redis). Locally, `SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025` and
+   `SMTP_SECURITY=none` send the worker's email to the mail catcher.
 
-2. Start PostgreSQL 18 and Redis. The first start creates the database roles from
-   `infra/db/bootstrap-roles.sql`.
+2. Start PostgreSQL 18, Redis and the Mailpit mail catcher. The first start creates the database
+   roles from `infra/db/bootstrap-roles.sql`. Email sent by the worker (invites, password resets,
+   security notices) is shown at `http://127.0.0.1:8025`.
 
    ```sh
    docker compose --env-file .env -f infra/compose.yaml up -d --wait
@@ -71,7 +73,7 @@ Status: Phase 1 (M1, foundation) in progress. See `docs/m1-implementation-plan.m
 | Lint | `uv run ruff check .` |
 | Types | `uv run mypy .` |
 | Module boundaries | `uv run lint-imports` |
-| Tests (starts PostgreSQL and Redis containers) | `uv run pytest` |
+| Tests (starts PostgreSQL, Redis and Mailpit containers) | `uv run pytest` |
 | Dependency audit | `uv run pip-audit --strict` |
 | Regenerate the API contract | `uv run python -m scripts.export_openapi` |
 

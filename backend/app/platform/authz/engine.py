@@ -182,7 +182,10 @@ class Authorizer:
                 return actor.employee_id is not None and await self._relationships.is_team_member(
                     session, actor.employee_id, subject, on
                 )
-            case Scope.ALL:
+            case Scope.ALL | None:
+                # An unscoped permission decided for a subject (`employee.lifecycle.manage`,
+                # `employee.create`) reaches every employee, like `all`, and the role
+                # assignment's department or location constraint narrows it the same way.
                 constraints = actor.grants[permission.key]
                 if any(constraint.unrestricted for constraint in constraints):
                     return True
@@ -190,9 +193,6 @@ class Authorizer:
                 return placement is not None and any(
                     _fits(constraint, placement) for constraint in constraints
                 )
-            case None:
-                # An unscoped permission is not about a person's data.
-                return False
 
     # --- list filter -----------------------------------------------------------------
 

@@ -80,6 +80,16 @@ def _check_app_base_url(value: str, app_env: AppEnv) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _decode_hmac_key(value: SecretStr, name: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value.get_secret_value(), validate=True)
+    except binascii.Error as exc:
+        raise ValueError(f"{name} must be base64") from exc
+    if len(decoded) < MIN_HMAC_KEY_BYTES:
+        raise ValueError(f"{name} must decode to at least {MIN_HMAC_KEY_BYTES} bytes")
+    return decoded
+
+
 def _decode_field_keys(value: SecretStr) -> dict[int, bytes]:
     try:
         raw = json.loads(value.get_secret_value())
@@ -108,6 +118,8 @@ class ApiSettings(_WithAppBaseUrl):
     database_url_app: SecretStr
     redis_url: SecretStr
     rate_limit_key_hmac_key: SecretStr
+    # Keyed hash of attempted email addresses (platform/security/emails.py); its own key.
+    email_lookup_hmac_key: SecretStr
     field_encryption_keys: SecretStr
     field_encryption_active_version: int
     hibp_enabled: bool = True
@@ -121,20 +133,19 @@ class ApiSettings(_WithAppBaseUrl):
             return tuple(ipaddress.ip_network(item.strip()) for item in value.split(",") if item.strip())
         return value
 
-    @field_validator("rate_limit_key_hmac_key")
+    @field_validator("rate_limit_key_hmac_key", "email_lookup_hmac_key")
     @classmethod
-    def _check_hmac_key(cls, value: SecretStr) -> SecretStr:
-        try:
-            decoded = base64.b64decode(value.get_secret_value(), validate=True)
-        except binascii.Error as exc:
-            raise ValueError("RATE_LIMIT_KEY_HMAC_KEY must be base64") from exc
-        if len(decoded) < MIN_HMAC_KEY_BYTES:
-            raise ValueError(f"RATE_LIMIT_KEY_HMAC_KEY must decode to at least {MIN_HMAC_KEY_BYTES} bytes")
+    def _check_hmac_key(cls, value: SecretStr, info: ValidationInfo) -> SecretStr:
+        _decode_hmac_key(value, (info.field_name or "key").upper())
         return value
 
     @model_validator(mode="after")
     def _check_deployed_requirements(self) -> Self:
         _require_postgres_url(self.database_url_app, "DATABASE_URL_APP", self.app_env)
+        if self.rate_limit_hmac_key_bytes == self.email_lookup_key_bytes:
+            raise ValueError(
+                "EMAIL_LOOKUP_HMAC_KEY must differ from RATE_LIMIT_KEY_HMAC_KEY (one key per purpose)"
+            )
         if self.field_encryption_active_version not in _decode_field_keys(self.field_encryption_keys):
             raise ValueError("FIELD_ENCRYPTION_ACTIVE_VERSION must name a key in FIELD_ENCRYPTION_KEYS")
         scheme = urlsplit(self.redis_url.get_secret_value()).scheme
@@ -152,6 +163,10 @@ class ApiSettings(_WithAppBaseUrl):
         return base64.b64decode(self.rate_limit_key_hmac_key.get_secret_value())
 
     @property
+    def email_lookup_key_bytes(self) -> bytes:
+        return base64.b64decode(self.email_lookup_hmac_key.get_secret_value())
+
+    @property
     def field_keys(self) -> dict[int, bytes]:
         return _decode_field_keys(self.field_encryption_keys)
 
@@ -167,14 +182,39 @@ class CliSettings(_WithAppBaseUrl):
         return self
 
 
-class WorkerSettings(_Base):
-    """Settings for the worker process."""
+class SmtpSecurity(StrEnum):
+    STARTTLS = "starttls"
+    TLS = "tls"
+    # Plain SMTP, for the local mail catcher only.
+    NONE = "none"
+
+
+class WorkerSettings(_WithAppBaseUrl):
+    """Settings for the worker process. It sends the email outbox, so it holds the SMTP
+    credentials and builds links from APP_BASE_URL (never from a request)."""
 
     database_url_worker: SecretStr
+    smtp_host: str
+    smtp_port: int
+    smtp_from: str
+    smtp_security: SmtpSecurity
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+
+    @field_validator("smtp_username", "smtp_password", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
 
     @model_validator(mode="after")
     def _check_deployed_requirements(self) -> Self:
         _require_postgres_url(self.database_url_worker, "DATABASE_URL_WORKER", self.app_env)
+        if self.smtp_security is SmtpSecurity.NONE and self.app_env not in (AppEnv.LOCAL, AppEnv.TEST):
+            raise ValueError("SMTP_SECURITY=none is allowed only in local and test")
+        if (self.smtp_username is None) != (self.smtp_password is None):
+            raise ValueError("SMTP_USERNAME and SMTP_PASSWORD are set together or not at all")
+        if not 1 <= self.smtp_port <= 65535:
+            raise ValueError("SMTP_PORT must be a TCP port")
         return self
 
 

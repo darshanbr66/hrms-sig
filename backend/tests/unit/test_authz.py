@@ -281,3 +281,19 @@ def test_scopes_are_ordered(engine: Authorizer) -> None:
     assert Authorizer.candidate_keys("user.invite") == ("user.invite",)
     assert Permission("org.read", "x").scope is None
     assert Permission("leave.read.team", "x").scope is Scope.TEAM
+
+
+async def test_an_unscoped_person_permission_reaches_everyone_within_its_constraint(
+    engine: Authorizer,
+) -> None:
+    """`employee.lifecycle.manage` has no scope suffix but is about a person: like `all`."""
+    hr = actor("employee.lifecycle.manage")
+    for subject in (REPORT, OUTSIDER):
+        granted = await engine.require(
+            NO_SESSION, hr, "employee.lifecycle.manage", subject_employee_id=subject
+        )
+        assert granted.key == "employee.lifecycle.manage"
+    hr_for_a = actor("employee.lifecycle.manage", employee_lifecycle_manage=Constraint(department_id=DEPT_A))
+    await engine.require(NO_SESSION, hr_for_a, "employee.lifecycle.manage", subject_employee_id=REPORT)
+    with pytest.raises(AccessDenied):
+        await engine.require(NO_SESSION, hr_for_a, "employee.lifecycle.manage", subject_employee_id=OUTSIDER)

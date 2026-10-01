@@ -160,3 +160,9 @@ async def first_name(session: AsyncSession, employee_id: uuid.UUID) -> str | Non
     )
     value: str | None = (await session.execute(query)).scalar_one_or_none()
     return value
+
+
+async def work_email(session: AsyncSession, employee_id: uuid.UUID) -> tuple[bool, str | None]:
+    """Whether the employee exists, and their work email (`public_internal`)."""
+    row = (await session.execute(select(Employee.work_email).where(Employee.id == employee_id))).one_or_none()
+    return (False, None) if row is None else (True, row.work_email)

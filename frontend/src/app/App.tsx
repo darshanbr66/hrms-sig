@@ -16,7 +16,7 @@ import { Skeleton } from "../design-system/Skeleton";
 import { onSessionEnded } from "../lib/api";
 import { HOME } from "../lib/navigation";
 import { AppShell } from "./AppShell";
-import { ENROLMENT_PATH, RequireSession } from "./guards";
+import { ENROLMENT_PATH, RequirePermission, RequireSession } from "./guards";
 import { NotFound } from "./pages";
 import { StepUpProvider } from "./StepUp";
 
@@ -26,6 +26,15 @@ const SecurityPage = lazy(() =>
 );
 const MfaEnrolmentPage = lazy(() =>
   import("../features/account/MfaEnrolmentPage").then((m) => ({ default: m.MfaEnrolmentPage })),
+);
+const PasswordResetRequestPage = lazy(() =>
+  import("../features/auth/PasswordResetRequestPage").then((m) => ({ default: m.PasswordResetRequestPage })),
+);
+const PasswordResetPage = lazy(() =>
+  import("../features/auth/PasswordResetPage").then((m) => ({ default: m.PasswordResetPage })),
+);
+const SettingsPage = lazy(() =>
+  import("../features/settings/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
 const InvitePage = lazy(() => import("../features/auth/InvitePage").then((m) => ({ default: m.InvitePage })));
 
@@ -56,6 +65,22 @@ export const routes: RouteObject[] = [
       { path: "/sign-in", element: <SignInPage /> },
       { path: "/sign-in/verify", element: <VerifyPage /> },
       {
+        path: "/password-reset",
+        element: (
+          <Page>
+            <PasswordResetRequestPage />
+          </Page>
+        ),
+      },
+      {
+        path: "/password-reset/:token",
+        element: (
+          <Page>
+            <PasswordResetPage />
+          </Page>
+        ),
+      },
+      {
         path: "/invite/:token",
         element: (
           <Page>
@@ -78,6 +103,18 @@ export const routes: RouteObject[] = [
                 <Page>
                   <SecurityPage />
                 </Page>
+              </RequireSession>
+            ),
+          },
+          {
+            path: "/settings",
+            element: (
+              <RequireSession>
+                <RequirePermission permission="settings.read">
+                  <Page>
+                    <SettingsPage />
+                  </Page>
+                </RequirePermission>
               </RequireSession>
             ),
           },
