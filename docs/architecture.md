@@ -96,6 +96,7 @@ Redis is kept in the MVP for one concrete need: the API runs as two or more repl
 backend/
   app/
     main.py                 # app factory, middleware, router registration
+    metadata.py             # every module's models in one MetaData (Alembic, schema drift test)
     platform/               # cross-cutting, no business logic
       config.py             # typed settings from environment
       db.py                 # engine, session, unit of work

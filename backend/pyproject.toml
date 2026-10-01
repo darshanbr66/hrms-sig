@@ -18,6 +18,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28,<0.29",
+    "import-linter>=2.15,<3",
     "mypy>=2.3,<3",
     "pip-audit>=2.10,<3",
     "pytest>=9.1,<10",
@@ -42,7 +43,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "PLR2004"]
+# Tests compose SQL only from their own constants (table names, fixed statements), never input.
+"tests/**" = ["S101", "S105", "S106", "S608", "PLR2004"]
 # Revisions build DDL from identifiers quoted by the dialect and constants defined in code.
 "migrations/**" = ["S608"]
 
@@ -58,6 +60,34 @@ exclude = ['^migrations/vendor/', '^\.venv/']
 [[tool.mypy.overrides]]
 module = ["testcontainers.*", "procrastinate.*"]
 ignore_missing_imports = true
+
+# Module boundaries (docs/architecture.md §4): a module is imported by other modules only
+# through its public.py, and the platform imports no module. app.metadata is the composition
+# root that collects every module's models. Each new module adds one "protected" contract.
+[tool.importlinter]
+root_packages = ["app"]
+
+[[tool.importlinter.contracts]]
+name = "Platform imports no business module"
+type = "forbidden"
+source_modules = ["app.platform"]
+forbidden_modules = ["app.modules"]
+
+[[tool.importlinter.contracts]]
+name = "org is imported only through org.public"
+type = "protected"
+protected_modules = ["app.modules.org"]
+allowed_importers = ["app.modules.org", "app.metadata"]
+ignore_imports = ["app.** -> app.modules.org.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "people is imported only through people.public"
+type = "protected"
+protected_modules = ["app.modules.people"]
+allowed_importers = ["app.modules.people", "app.metadata"]
+ignore_imports = ["app.** -> app.modules.people.public"]
+unmatched_ignore_imports_alerting = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

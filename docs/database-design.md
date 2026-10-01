@@ -44,7 +44,7 @@ Engine: PostgreSQL 18.
 |---|---|
 | `hrms_migrator` | Owner of all schemas and of the Procrastinate objects. Used only by the migration job (§11). Sets default privileges so new tables get the grants below. |
 | `hrms_app` | `SELECT, INSERT, UPDATE, DELETE` on module schemas; on `audit.audit_log` and `audit.security_events`: `SELECT, INSERT` only; on `audit.chain_*`: `SELECT` only; on `payroll`: full DML (application enforces permissions); DML and function execution on Procrastinate objects (to enqueue jobs). `statement_timeout = 5s`, `transaction_timeout = 30s`, `idle_in_transaction_session_timeout = 10s`. |
-| `hrms_worker` | Same as `hrms_app`, plus `INSERT` on `audit.chain_links` and `audit.chain_checkpoints`. `statement_timeout = 5min`, `transaction_timeout = 10min`. Only the worker has the checkpoint signing key (outside the database). |
+| `hrms_worker` | Same as `hrms_app`, plus `INSERT` on `audit.chain_links` and `audit.chain_checkpoints`, and `EXECUTE` on `audit.ensure_partitions` (§4.10). `statement_timeout = 5min`, `transaction_timeout = 10min`. Only the worker has the checkpoint signing key (outside the database). |
 | `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); can detach and drop expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links`; `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). `statement_timeout = 5min`, `transaction_timeout = 10min` (the worker's limits). |
 | `hrms_readonly` (optional) | `SELECT` on non-sensitive schemas for operational reporting; no access to `payroll`, `audit`, `identity`, `people.employee_identifiers`, `people.employee_bank_accounts`, `people.employee_personal`. |
 
@@ -104,19 +104,21 @@ Login attempts are recorded in `audit.security_events`. Account lockout state is
 
 **designations** — `code UNIQUE`, `name`, `level int NULL`, `status`.
 
-No departments, designations or locations are seeded in production. Sigvitas enters its own.
+Codes are unique regardless of case (`citext`). `time_zone` is checked against IANA zone names by the service that writes locations. No departments, designations or locations are seeded in production. Sigvitas enters its own.
 
 ### 4.4 people
 
 **employees** — the HR record.
 - `employee_code text UNIQUE NOT NULL`, `legal_first_name`, `legal_last_name`, `preferred_name`, `work_email citext UNIQUE`, `work_phone`, `photo_document_id NULL`, `date_of_joining date NOT NULL`, `date_of_exit date NULL`, `status` (`pre_joining`, `active`, `on_notice`, `exited`), `version`.
-- `CHECK (date_of_exit IS NULL OR date_of_exit >= date_of_joining)`.
-- Index on `status`; trigram index on name fields for directory search (`pg_trgm`).
+- `CHECK (date_of_exit IS NULL OR date_of_exit >= date_of_joining)`; `CHECK (status <> 'exited' OR date_of_exit IS NOT NULL)`. `legal_last_name` is optional, for people with a single legal name.
+- Directory-search indexes (on `status`, and trigram indexes on the name fields and `employee_code`, `pg_trgm`) are created with the M2 directory query that uses them.
 
 **employee_jobs** — effective-dated job assignment.
 - `employee_id`, `effective_from`, `effective_to`, `department_id`, `designation_id`, `location_id`, `manager_employee_id NULL → employees`, `employment_type` (`full_time`, `part_time`, `contract`, `intern`), `change_reason` (`joining`, `transfer`, `promotion`, `manager_change`, `correction`, `other`), `notes`.
+- `department_id`, `designation_id` and `location_id` are required.
 - `EXCLUDE` non-overlap per employee. `CHECK (manager_employee_id <> employee_id)`.
-- Index `(manager_employee_id) WHERE effective_to IS NULL` for team resolution. Cycle prevention (A manages B manages A) in service layer with a recursive check.
+- Rows are never deleted. An update may change only `effective_to` (closing the row); a trigger rejects any other update, delete or truncate, for every role.
+- Indexes: `(manager_employee_id) WHERE manager_employee_id IS NOT NULL` for team resolution; `(department_id)` and `(location_id)` for role assignments restricted to a department or location. Team resolution selects the rows that apply on a date (`effective_from <= d < effective_to`), not open-ended rows, because a future-dated change leaves the current row closed and the future row open (`authorization-model.md` §7). Cycle prevention (A manages B manages A) in service layer with a recursive check; team resolution also stops at a cycle.
 
 **employee_personal** — 1:1 with employees (`employee_id PK/FK`): `date_of_birth`, `gender` (optional, only if Sigvitas needs it), `personal_email`, `personal_phone`, `current_address jsonb`, `permanent_address jsonb`, `version`. Separate table so `internal` queries never touch personal data.
 
@@ -252,19 +254,23 @@ Views and downloads are recorded in `audit.audit_log`, not a separate table.
 
 The integrity design (sealing, checkpoints, anchoring, verification, retention tombstones) is specified in `security-architecture.md` §8.1. The tables are:
 
-**audit_log** — partitioned by month on `recorded_at` (database insert time, `DEFAULT now()`), so a row always lands in the partition open at write time.
+**audit_log** — partitioned by UTC month on `recorded_at` (database insert time, `DEFAULT now()`), so a row always lands in the partition open at write time. A trigger rejects any other `recorded_at`, so a row cannot be placed in another month's partition, and assigns `id` (`uuidv7()`) itself, overwriting any supplied value, so IDs are unique across partitions. The primary key is `(id, recorded_at)`, because keys on a partitioned table include the partition column. Runtime roles insert through the parent table only; they have no `INSERT` on partitions.
 - `id`, `recorded_at`, `occurred_at`, `actor_user_id NULL`, `actor_type` (`user`, `system`, `job`), `session_id NULL`, `grant_request_id NULL` (set when the actor was acting under an elevation or break-glass), `request_id`, `ip inet`, `user_agent`, `action text` (e.g. `leave.request.approved`, `compensation.viewed`), `permission_used text NULL`, `target_type`, `target_id`, `subject_employee_id NULL`, `outcome` (`success`, `denied`, `failed`), `changes jsonb` (field names; old/new values only for non-sensitive fields), `reason text NULL`.
 - No hash columns: rows are immutable and are never updated, so hashes live in `chain_links`.
 - Indexes: `(subject_employee_id, recorded_at)`, `(actor_user_id, recorded_at)`, `(action, recorded_at)`, `(grant_request_id) WHERE grant_request_id IS NOT NULL`.
-- Trigger rejects `UPDATE`/`DELETE` as a second line of defence behind grants.
+- Trigger rejects `UPDATE`/`DELETE`/`TRUNCATE` as a second line of defence behind grants, for every role including the owner. `TRUNCATE` triggers do not propagate to partitions, so each partition gets its own.
 
-**security_events** — partitioned by month on `recorded_at`. `recorded_at`, `occurred_at`, `event_type` (`login.succeeded`, `login.failed`, `account.locked`, `mfa.enrolled`, `mfa.reset`, `mfa.recovery_code_used`, `token.reuse_detected`, `session.revoked`, `ratelimit.tripped`, `access.denied_sensitive`, `elevation.requested`, `elevation.approved`, `elevation.break_glass`, `audit.chain_mismatch`, …), `user_id NULL`, `email_attempted_hash NULL` (hash, not raw email, for unknown accounts), `ip`, `user_agent`, `severity`, `details jsonb`. Same trigger.
+**security_events** — partitioned by UTC month on `recorded_at`, keyed and protected like `audit_log`. `recorded_at`, `occurred_at`, `event_type` (`login.succeeded`, `login.failed`, `account.locked`, `mfa.enrolled`, `mfa.reset`, `mfa.recovery_code_used`, `token.reuse_detected`, `session.revoked`, `ratelimit.tripped`, `access.denied_sensitive`, `elevation.requested`, `elevation.approved`, `elevation.break_glass`, `audit.chain_mismatch`, …), `user_id NULL`, `session_id NULL`, `request_id NULL` (correlates with the request log), `email_attempted_hash NULL` (keyed 32-byte hash, not raw email, for unknown accounts), `ip`, `user_agent`, `severity` (`info`, `warning`, `high`), `details jsonb` (flat, non-sensitive values). Indexes `(user_id, recorded_at) WHERE user_id IS NOT NULL` (login history) and `(event_type, recorded_at)`. Same triggers.
 
 **chain_links** — insert-only, partitioned to match the audited table's partition. `stream` (`audit_log`, `security_events`), `partition_key` (e.g. `2026-09`), `position bigint`, `record_id uuid`, `digest_version smallint`, `row_digest bytea`, `link_hash bytea`, `sealed_at`. PK `(stream, partition_key, position)`; `UNIQUE (stream, record_id)`. Written only by the sealer job (`hrms_worker`).
 
 **chain_checkpoints** — insert-only, **not partitioned, never deleted**. `stream`, `checkpoint_no bigint`, `kind` (`daily`, `partition_final`, `retention_tombstone`), `partition_key`, `last_position`, `row_count`, `last_link_hash`, `prev_checkpoint_hash`, `checkpoint_hash`, `signature bytea`, `key_id`, `anchor_object_key`, `archive_sha256 NULL` (tombstones), `retention_policy_version NULL`, `created_at`. PK `(stream, checkpoint_no)`; `UNIQUE (stream, partition_key) WHERE kind IN ('partition_final','retention_tombstone')` per kind. Written by the sealer (daily, final) and by the retention job (tombstone).
 
 User-visible login history (AUTH-7) is a filtered read of `security_events` for the user.
+
+**Partitions.** Month partitions are named `<table>_pYYYY_MM` (for example `audit_log_p2026_10`). `audit.ensure_partitions(months_ahead)` creates missing ones for both streams: it is owned by the migrator (only the owner can attach partitions), runs as `SECURITY DEFINER` with a fixed `search_path`, takes one bounded integer and builds every identifier itself, and only `hrms_worker` may execute it. Partitions are created detached and then attached, which does not block concurrent inserts. The migration creates the current month and three ahead; the hourly `audit.ensure_partitions` job keeps it that way. If a table with a partition's name exists but is not attached, the function fails instead of skipping it or attaching it, so the job reports the problem rather than treating the month as covered. A missing partition makes the insert fail, and the audited change rolls back with it, so a change is never committed without its audit row.
+
+**No foreign keys** from audit tables: audit rows record denials against targets that may not exist, and they outlive the rows they describe (retention, anonymization).
 
 ### 4.11 app
 
@@ -315,9 +321,9 @@ locations 1──* location_holiday_calendars *──1 holiday_calendars 1──
 3. One pending correction per employee per day.
 4. Grant-request checks: approver ≠ requester; elevation ≤ 8 h; break-glass ≤ 1 h; no self-granted `user_roles` row without a request.
 5. Payroll four-eyes check constraint.
-6. Append-only triggers on `attendance_events`, `leave_ledger`, `employee_status_history`, and every table in `audit` (`audit_log`, `security_events`, `chain_links`, `chain_checkpoints`).
+6. Append-only triggers on `attendance_events`, `leave_ledger`, `employee_status_history`, and every table in `audit` (`audit_log`, `security_events`, `chain_links`, `chain_checkpoints`). Job history (`employee_jobs`) cannot be deleted or truncated, and only `effective_to` may change.
 7. Finalized payroll immutability trigger.
-8. All foreign keys `ON DELETE RESTRICT` except token/child tables that are purely owned (`session_tokens`, `recovery_codes`, `correction_items`, `leave_request_days`), which cascade.
+8. All foreign keys `ON DELETE RESTRICT` except token/child tables that are purely owned (`session_tokens`, `recovery_codes`, `correction_items`, `leave_request_days`), which cascade. Audit tables have no foreign keys (§4.10).
 
 Business rules that depend on time zones, policies or permissions live in the service layer and are covered by tests.
 

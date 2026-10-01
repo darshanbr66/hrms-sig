@@ -236,6 +236,7 @@ Jobs are defined in the owning module and enqueued inside the business transacti
 | `leave.accrue(period)` | schedule derived from each policy's accrual frequency | unique accrual constraint |
 | `leave.year_end(policy, leave_year)` | each policy's own leave-year start | unique carry-forward/lapse constraint |
 | `access.expire_grants()` | every minute | status transition; permissions already stop applying at `ends_at` because they are resolved per request |
+| `audit.ensure_partitions()` | hourly; keeps the current month and three ahead for both audit streams | creates only missing partitions (advisory lock) |
 | `audit.seal(stream)` | every minute, single instance (advisory lock) | position sequence |
 | `audit.checkpoint(stream)` | daily, plus month-end + 1 h for partition-final | unique checkpoint per partition and kind |
 | `audit.verify(stream)` | daily (recent), monthly (full) | read-only |

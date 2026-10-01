@@ -339,7 +339,7 @@ rows = repo.list_days(filter_, date_range, page)
 
 `scope_filter` returns the union of all scopes the actor holds, expressed as a SQL predicate on `employee_id`. If the actor holds none, it raises 403 before any query runs.
 
-**Team resolution.** The reporting subtree is computed with a recursive CTE over current job records (`people.employee_jobs` where `effective_to IS NULL`). At Sigvitas's expected size this is milliseconds. If it becomes a hotspot, a materialized closure table refreshed on job changes replaces it without changing the engine's interface.
+**Team resolution.** The reporting subtree is computed with a recursive CTE over the job records that apply on a date (`people.employee_jobs` where `effective_from <= d < effective_to`), counting only employees employed on that date. Open-ended rows are not the same thing: a future-dated transfer closes the current row and opens the future one, so selecting `effective_to IS NULL` would move team access before the transfer takes effect. "Now" passes today's date; a historical record passes its own date, which gives the "team at the time of the record" rule in §2. The people module exposes this as `team_member_ids_query` (for scope filters), `is_team_member` (single record, walking up the chain) and `has_direct_reports` (derived `manager` role). At Sigvitas's expected size this is milliseconds. If it becomes a hotspot, a materialized closure table refreshed on job changes replaces it without changing the engine's interface.
 
 ## 8. Error semantics
 

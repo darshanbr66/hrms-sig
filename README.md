@@ -52,6 +52,7 @@ Status: Phase 1 (M1, foundation) in progress. See `docs/m1-implementation-plan.m
 | Format | `uv run ruff format --check .` |
 | Lint | `uv run ruff check .` |
 | Types | `uv run mypy .` |
+| Module boundaries | `uv run lint-imports` |
 | Tests (starts PostgreSQL and Redis containers) | `uv run pytest` |
 | Dependency audit | `uv run pip-audit --strict` |
 | Regenerate the API contract | `uv run python -m scripts.export_openapi` |

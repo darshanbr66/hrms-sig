@@ -94,7 +94,7 @@ Ordered by expected value; to be re-prioritized with Sigvitas after MVP launch.
 | Audit integrity design complexity | Built and tamper-tested in M1, before any business module depends on it |
 | Data import quality | Import tooling with validation report; HR owns corrections |
 | Security review finds structural issues late | M1 builds the security core first; external test booked early for M6 |
-| Single-engineer bus factor on auth/payroll code | Second-engineer review before push, recorded in the commit (`engineering-principles.md` §8); runbooks |
+| Single-engineer bus factor on auth/payroll code | Second-engineer review before push, recorded in the commit; when none is available, an owner-authorized adversarial self-review with the human review still owed (`engineering-principles.md` §8); runbooks |
 
 ## 6. Decisions needing Sigvitas input
 

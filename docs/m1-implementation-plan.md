@@ -34,13 +34,14 @@ hrms/
   backend/
     pyproject.toml  uv.lock  .python-version (3.13)
     alembic.ini
-    importlinter.ini (in pyproject)
+    import-linter contracts          # in pyproject.toml ([tool.importlinter])
     migrations/
       env.py  script.py.mako  support.py  # support: helpers shared by revisions (quoting, role settings, grants)
       versions/0001_foundation.py … (see §3)
       vendor/procrastinate/<pinned-version>/*.sql + CHECKSUMS
     app/
       main.py                        # app factory, middleware, routers
+      metadata.py                    # every module's models in one MetaData (Alembic, drift test)
       cli.py                         # bootstrap-super-admins, audit verify (ops)
       worker.py                      # Procrastinate worker entry point
       platform/
@@ -69,14 +70,17 @@ hrms/
           context.py                 # Actor
           route.py                   # requires()/public_route() + route metadata
         audit/
-          writer.py                  # audit_log + security_events writers (same txn / separate txn for denials)
-          canonical.py               # RFC 8785 canonical row encoding, digest_version
-          sealer.py  checkpoints.py  verify.py  retention.py  partitions.py
+          records.py                 # AuditEvent / SecurityEvent types and validation (no sensitive values)
+          tables.py                  # audit_log + security_events table definitions
+          writer.py                  # writers (same transaction / separate transaction for denials)
+          partitions.py              # hourly audit.ensure_partitions job
+          canonical.py               # RFC 8785 canonical row encoding, digest_version (F)
+          sealer.py  checkpoints.py  verify.py  retention.py   (F)
     app/modules/
       identity/  (router.py schemas.py service.py repository.py models.py policies.py events.py public.py)
       access/    (same layout: roles, assignments, grant requests)
-      org/       (models + public.py only in M1: locations, departments, designations)
-      people/    (models + public.py only in M1: employees, employee_jobs, team resolution)
+      org/       (models only in M1: locations, departments, designations; public.py when another module needs it)
+      people/    (models, repository, public.py in M1: employees, employee_jobs, team resolution)
       audit/     (router for audit-log / security-events read APIs used by tests; UI in M5)
       settings/  (typed setting registry, read/update API)
     scripts/export_openapi.py        # regenerates api/openapi.json
@@ -105,10 +109,10 @@ Columns follow `database-design.md` §4 exactly unless noted.
 | Schema | Tables in M1 | Note |
 |---|---|---|
 | `org` | locations, departments, designations | Tables only, no API/UI (M2). Needed by `people.employee_jobs` FKs. |
-| `people` | employees, employee_jobs | Tables + `people.public.team_of(employee_id)` recursive CTE. No personal/sensitive tables (M2). |
+| `people` | employees, employee_jobs | Tables + team resolution in `people.public` (`team_member_ids_query`, `is_team_member`, `has_direct_reports`), recursive CTEs as of a date. No personal/sensitive tables (M2). |
 | `identity` | users, credentials, mfa_factors, recovery_codes, sessions, session_tokens, one_time_tokens, trusted_devices | Full. Enrolment-only sessions: `sessions.scope` (`full`, `mfa_enrolment`) — the column the docs imply for "enrolment-only session". |
 | `access` | permissions, roles, role_permissions, user_roles, role_grant_requests | Full, with catalog + system roles as data revision. |
-| `audit` | audit_log, security_events (partitioned monthly on `recorded_at`), chain_links (partitioned), chain_checkpoints | Full integrity design. |
+| `audit` | audit_log, security_events (partitioned monthly on `recorded_at`), chain_links (partitioned), chain_checkpoints | Full integrity design. The two streams and their writer come in B; the chain tables with the sealer in F. |
 | `notify` | email_outbox | Only the outbox (emails for invite, reset, re-enrolment, lockout, new device, elevation). In-app notifications are M5. |
 | `app` | settings, idempotency_keys | `export_jobs` is M5. |
 | Procrastinate | vendored schema of the pinned release | Applied by Alembic. |
@@ -121,13 +125,16 @@ Technical setting keys seeded (values are the security defaults already written 
 |---|---|
 | 0001 | Extensions (`citext`, `btree_gist`, `pg_trgm`), schemas, default privileges for `hrms_app`/`hrms_worker`/`hrms_audit_retention`, role session settings (`statement_timeout`, `transaction_timeout`, `idle_in_transaction_session_timeout`) |
 | 0002 | Procrastinate base schema (vendored SQL, checksum-verified) + grants on its objects |
-| 0003 | `org` tables |
-| 0004 | `people.employees`, `people.employee_jobs` (+ exclusion constraint, manager index) |
-| 0005 | `identity` tables |
-| 0006 | `access` tables + CHECK constraints (SOD-3 in DB, grant request limits) |
-| 0007 | Data: permission catalog + system roles + role_permissions (generated from `authz/catalog.py` and `authz/roles.py`) |
-| 0008 | `audit` tables, append-only triggers, initial monthly partitions (current + 3 ahead), audit-specific grants |
-| 0009 | `notify.email_outbox`, `app.settings`, `app.idempotency_keys`; seed technical setting keys |
+| 0003 | `org` tables (B) |
+| 0004 | `people.employees`, `people.employee_jobs` (+ exclusion constraint, manager index, job-history guard) (B) |
+| 0005 | `audit.audit_log`, `audit.security_events`, append-only and `recorded_at` triggers, `audit.ensure_partitions`, initial monthly partitions (current + 3 ahead), audit grants (B) |
+| later | `identity` tables |
+| later | `access` tables + CHECK constraints (SOD-3 in DB, grant request limits); `user_roles` references `identity.users`, so this follows the identity revision |
+| later | Data: permission catalog + system roles + role_permissions (generated from `authz/catalog.py` and `authz/roles.py`) |
+| later | `notify.email_outbox`, `app.settings`, `app.idempotency_keys`; seed technical setting keys |
+| later | `audit.chain_links`, `audit.chain_checkpoints` and the retention role's grants (with the sealer, F) |
+
+Revisions after 0005 are numbered in the order they are written, following their foreign-key dependencies.
 
 `infra/db/bootstrap-roles.sql` (not Alembic, run once per environment by a DB admin): creates login roles `hrms_migrator` (CREATEROLE, owns the database), `hrms_app`, `hrms_worker`, `hrms_audit_retention`, grants `hrms_migrator` ADMIN OPTION on them so migrations can set their session defaults. Passwords are passed as psql variables from the secret store, never committed.
 
@@ -238,6 +245,35 @@ Decisions taken during the checkpoint (documents updated in the same change):
 - SQLAlchemy 2.1 (current release of the 2.x line) is used.
 - On Windows, the API runs with `--loop asyncio:SelectorEventLoop` and the worker selects the selector loop itself, because psycopg's async driver does not support the Proactor loop.
 
-Moved to the checkpoint that first needs them, so nothing unused is shipped: the mail catcher (D), the S3 emulator with object lock (F), import-linter contracts (B, when the first modules exist), the banned-words check on UI copy and the frontend CI job (G).
+Moved to the checkpoint that first needs them, so nothing unused is shipped: the mail catcher (D), the S3 emulator with object lock (F), import-linter contracts (delivered in B), the banned-words check on UI copy and the frontend CI job (G).
 
-Waiting on input: the second engineer who reviews authentication, authorization, payroll, documents and audit code before it is pushed (`engineering-principles.md` §8).
+Open: a second engineer to review authentication, authorization, payroll, documents and audit code (`engineering-principles.md` §8). Until one is available, the project owner authorizes adversarial self-review per checkpoint; the human review of that code is still owed.
+
+### Checkpoint B — audit writer and minimal org/people (done, 2026-10-01)
+
+Delivered: revisions 0003 (`org` tables), 0004 (`people.employees`, `people.employee_jobs` with the exclusion constraint and job-history guard) and 0005 (`audit.audit_log` and `audit.security_events` partitioned by UTC month, append-only and `recorded_at` triggers, `audit.ensure_partitions`, initial partitions, grants); SQLAlchemy models and `app/metadata.py`; the audit writer (`platform/audit`: validated record types, same-transaction and separate-transaction writes); the hourly `audit.ensure_partitions` worker job; team resolution in `people.public`; import-linter contracts in CI. No endpoints, so the OpenAPI contract is unchanged.
+
+Decisions taken during the checkpoint (documents updated in the same change):
+
+- Team resolution uses the job rows that apply on a date, not open-ended rows, so future-dated changes do not move team access early; it counts only employees employed on that date (`authorization-model.md` §7, `database-design.md` §4.4).
+- Job history is guarded in the database: only `effective_to` may change; delete and truncate are refused (`database-design.md` §4.4, §6).
+- Audit rows get their `id` and `recorded_at` from the database only, enforced by a trigger (a supplied `id` is replaced, so the Checkpoint F sealer can key chain links by record ID); the primary key is `(id, recorded_at)`; audit tables have no foreign keys; month partitions are created by a worker-only `SECURITY DEFINER` function, detached then attached (`database-design.md` §3, §4.10).
+- `security_events` also records `session_id` and `request_id`; severities are `info`, `warning`, `high` (`database-design.md` §4.10).
+- The chain tables move to Checkpoint F with the sealer that writes them; directory-search indexes move to M2 with the query that uses them.
+- A schema drift test compares the models with the migrated database on every run.
+- The audit record types refuse values for personal field names (`security-architecture.md` §2) as well as secret ones, refuse contact details and email-shaped values in security event details, and refuse NUL characters.
+
+Deferred with reason: the keyed hash for `email_attempted_hash` is computed by the sign-in flow (D), which also introduces its dedicated key; the writer accepts only a 32-byte digest.
+
+Review (2026-10-01): no second engineer was available, so the project owner authorized an adversarial self-review (`engineering-principles.md` §8). No human has reviewed this checkpoint yet; that review is still owed. Defects found and fixed, each with a regression test:
+
+- Audit rows accepted a caller-supplied `id`, which could duplicate across partitions and later stall the sealer; the insert trigger now always assigns it.
+- Audit changes accepted values for personal field names, and security event details accepted email or phone keys and email-shaped values; both are now refused.
+- NUL characters reached PostgreSQL as unclear errors; they are now refused when the record is built.
+- `audit.ensure_partitions` skipped a same-named table that was not attached, so the job reported success while the month had no partition; it now fails loudly.
+- The back-dating test passed because the earlier month had no partition, not because of the trigger; it now targets existing partitions and checks the trigger's message.
+- `security-architecture.md` §8 wrongly said runtime roles have no privileges on partitions (they read them through the schema's default grant; they cannot insert into them).
+
+Automated verification at commit time: `uv sync --locked`; pytest 269 passed (including the migration gates: single head `0005`, upgrade/downgrade/upgrade, schema drift); Ruff format and lint clean; mypy strict clean; import-linter 3 contracts kept (a planted violation was reported, then removed); pip-audit `--strict` no known vulnerabilities; gitleaks v8.30.1 and Semgrep 1.178.0 (CI's rule sets) no findings; OpenAPI regenerated unchanged; Compose configuration valid.
+
+Future decisions, not made here: rehire (one `employees` row holds one joining and exit date); rules for correcting `effective_to` on historical job rows (the database currently allows any `effective_to` change, M2 write path); connection-pool behaviour of `record_separately` on denial paths under load (C/D).

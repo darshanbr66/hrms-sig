@@ -190,7 +190,7 @@ Guarantees:
 
 1. Written in the same transaction as the change (a failed audit write rolls back the change).
 2. Denied attempts on sensitive resources are also recorded, in a separate short transaction, so a failed request still leaves a trace.
-3. The application roles have `INSERT` and `SELECT` only. `UPDATE`, `DELETE`, `TRUNCATE` are not granted, and an append-only trigger backs up the grants. Retention removes whole expired partitions only, through a separate restricted role and the tombstone procedure in §8.1.
+3. The application roles have `INSERT` and `SELECT` only, and `INSERT` only on the parent tables (never directly into a partition), so every row passes through partition routing and the triggers. `UPDATE`, `DELETE`, `TRUNCATE` are not granted, and append-only triggers back up the grants for every role, including the owner. The database assigns `id` (UUIDv7, overwriting any supplied value) and `recorded_at` (any other value is rejected), so a row cannot be placed in another month's partition or reuse another row's ID. Retention removes whole expired partitions only, through a separate restricted role and the tombstone procedure in §8.1.
 4. Tampering, deletion, insertion and reordering are detectable through the sealed hash chain, signed checkpoints and write-once anchors described in §8.1.
 5. Sensitive values are not copied into the audit log. For a salary change the audit row records which fields changed and the compensation record ID; the values live in the compensation history, protected by payroll permissions. This avoids turning `audit.read` into a backdoor to salary data.
 
@@ -211,6 +211,7 @@ Events audited (minimum): login/logout, failed login, lockout, password change/r
   - The chain **restarts in each partition**. Position 1 of partition *P* uses `genesis(P) = SHA-256("sv-audit-genesis" || stream || P)`. It does not depend on the previous partition, so the previous partition can later be deleted without breaking this one. Partitions are linked at Level 2 instead.
 - Partitioning is by `recorded_at` (database insert time), so a row always lands in the partition that is open when it is written. Chain order is sealing order, which is recorded as `position`.
 - Rows can stay unsealed for up to about a minute. Unsealed rows older than 10 minutes raise an alert.
+- Record identity: the database assigns every row's `id`, so `id` alone identifies a row across partitions and `chain_links` can be unique on `(stream, record_id)`. A row becomes visible only when its transaction commits, which can be later than its `recorded_at` (transaction start), so the sealer finds unsealed rows by their absence from `chain_links`, not by a `recorded_at` watermark.
 
 **Level 2: checkpoint chain across partitions and time.**
 
@@ -231,7 +232,7 @@ Each checkpoint records `stream`, `checkpoint_no`, `kind` (`daily` | `partition_
 `checkpoint_hash = SHA-256(prev_checkpoint_hash || kind || stream || partition_key || last_position || row_count || last_link_hash || created_at)`.
 
 - **Daily checkpoint** for every partition that received rows since the previous checkpoint.
-- **Partition-final checkpoint** once a month partition can no longer receive rows. That is the month boundary plus a safety margin longer than the maximum transaction duration. Application roles have `transaction_timeout` set (API 30 s, worker 10 min), so the margin is one hour. After the final checkpoint, a row appearing in that partition is by definition tampering.
+- **Partition-final checkpoint** once a month partition can no longer receive rows. That is the month boundary plus a safety margin longer than the maximum transaction duration. Application roles have `transaction_timeout` set (API 30 s, worker 10 min), so the margin is one hour. These are role defaults that a session can change, and the migrator and superusers have none, so the margin is not a hard database guarantee; it does not need to be. After the final checkpoint, a row appearing in that partition is by definition tampering and is reported, never sealed.
 - **Signature:** each checkpoint is signed with an Ed25519 key available only to the worker through the secret manager. The key is never stored in the database, and the API process never holds it. A database superuser can recompute SHA-256 chains but cannot produce valid signatures.
 - **External anchor:** after signing, each checkpoint is appended as a small JSON object to a dedicated bucket with object lock in compliance mode. The retention period is the audit retention plus one year, and not even the account owner can shorten it. Credentials for this bucket can write new objects only; they cannot delete objects or change retention.
 
@@ -257,7 +258,7 @@ Each checkpoint records `stream`, `checkpoint_no`, `kind` (`daily` | `partition_
 1. Only partitions older than the retention period for their stream (`database-design.md` §9) are eligible, and only if their `partition_final` checkpoint exists and verifies.
 2. The retention job, running as `hrms_audit_retention`, first verifies the partition in full. If required, it exports the partition to encrypted cold storage and records the export file's SHA-256.
 3. It appends a signed, anchored `retention_tombstone` checkpoint that references the partition's final checkpoint hash, row count, retention policy version and archive hash (if any).
-4. Only then does it detach and drop the partition and its `chain_links` partition.
+4. Only then does it detach and drop the partition and its `chain_links` partition. Only a table's owner can detach a partition, so this runs through a `SECURITY DEFINER` function owned by the migrator and executable only by `hrms_audit_retention`, built like `audit.ensure_partitions` (`database-design.md` §4.10). The append-only triggers act on rows and `TRUNCATE`, not on detaching or dropping a partition, so they do not block it.
 5. Verification treats a partition with a valid tombstone as legitimately removed. The checkpoint chain itself is never deleted, so continuity across the removed period can still be proven. An archived partition can be re-verified against its final checkpoint at any time.
 
 **Accepted limitation:** a superuser who alters a row in the minute before it is sealed is not detected by the chain. Provider-level database audit logging and restricted superuser access (§10) cover that window.
@@ -302,7 +303,7 @@ The same design applies to both streams, so security events are protected like b
 | Dependency and container scanning | Every commit + weekly |
 | Secret scanning | Pre-commit + every commit |
 | DAST: OWASP ZAP baseline against staging | Every release |
-| Manual review of auth, authz, payroll, document and audit code by a second engineer | Before every push that touches them (`Reviewed-by:` trailer, `engineering-principles.md` §8) |
+| Manual review of auth, authz, payroll, document and audit code by a second engineer (or, when the project owner authorizes it because none is available, a recorded adversarial self-review plus the full automated suite, with the human review still owed) | Before every push that touches them (`Reviewed-by:` trailer only for a human review, `engineering-principles.md` §8) |
 | External penetration test | Before production launch, then annually |
 | Restore test from backup | Quarterly |
 | Audit chain verification (recent partitions) | Daily job, alert on mismatch |

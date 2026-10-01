@@ -15,8 +15,8 @@ from alembic import context
 from alembic.runtime.migration import MigrationContext, MigrationInfo
 from sqlalchemy import create_engine, pool, text
 
+from app.metadata import metadata
 from app.platform.config import AppEnv, MigrationSettings, sqlalchemy_url
-from app.platform.db import Base
 from app.platform.logging import configure_logging
 
 MIGRATOR_ROLE = "hrms_migrator"
@@ -78,7 +78,7 @@ def run_migrations_online() -> None:
 
             context.configure(
                 connection=connection,
-                target_metadata=Base.metadata,
+                target_metadata=metadata,
                 transaction_per_migration=True,
                 version_table_schema="public",
                 on_version_apply=_refuse_downgrade_step(settings.app_env),

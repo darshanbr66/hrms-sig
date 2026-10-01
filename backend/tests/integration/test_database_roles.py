@@ -115,3 +115,30 @@ def test_new_functions_are_not_executable_by_public(migrated_postgres: PostgresS
     # A global entry whose ACL omits PUBLIC ("=X/...") means PUBLIC's default EXECUTE is revoked.
     global_functions = default_acl(migrated_postgres)[("*", "f")]
     assert "=X/" not in global_functions.replace("hrms_migrator=X/", "")
+
+
+ORG_PEOPLE_TABLES = (
+    "org.locations",
+    "org.departments",
+    "org.designations",
+    "people.employees",
+    "people.employee_jobs",
+)
+
+
+@pytest.mark.parametrize("table", ORG_PEOPLE_TABLES)
+def test_module_tables_grant_dml_to_runtime_roles_only(migrated_postgres: PostgresServer, table: str) -> None:
+    with migrated_postgres.connect("postgres") as connection:
+
+        def has(role: str, privilege: str) -> bool:
+            row = connection.execute(
+                "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
+            ).fetchone()
+            return bool(row and row[0])
+
+        for role in ("hrms_app", "hrms_worker"):
+            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                assert has(role, privilege), (role, privilege)
+            assert not has(role, "TRUNCATE")
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            assert not has("hrms_audit_retention", privilege)

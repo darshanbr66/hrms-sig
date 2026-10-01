@@ -4,7 +4,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 
 ## Current phase
 
-**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10; Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter) is complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
+**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter) and Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries) are complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
 
 ## Read before working
 
@@ -66,7 +66,7 @@ Sentence case, plain words, no emoji in headings. Never use: seamless, cutting-e
 - IDs: UUIDv7. Timestamps: `timestamptz` UTC. Money: `numeric(14,2)` + currency; `Decimal` in Python; strings in JSON.
 - Errors: RFC 9457 problem details with stable `type` values.
 - Backend module layout: `router.py`, `schemas.py`, `service.py`, `repository.py`, `models.py`, `policies.py`, `events.py`, `public.py`. Cross-module imports only via `public.py`.
-- Git: one branch, `main`. No feature branches, no pull requests, no force push. Commit directly to `main` after the checks in `docs/engineering-principles.md` §8 pass; deployment runs from `main`.
+- Git: one branch, `main`. No feature branches, no pull requests, no force push. Commit directly to `main` after the checks in `docs/engineering-principles.md` §8 pass; deployment runs from `main`. Security-sensitive changes need a second-engineer review, or, only when the project owner authorizes it, a recorded adversarial self-review (§8). Never add a `Reviewed-by:` trailer for a review no human did.
 
 ## Commands
 
@@ -81,6 +81,7 @@ Backend (from `backend/`):
 | API | `uv run --env-file ../.env uvicorn app.main:app_factory --factory --loop asyncio:SelectorEventLoop` |
 | Worker | `uv run --env-file ../.env python -m app.worker` |
 | Format / lint / types | `uv run ruff format .` · `uv run ruff check .` · `uv run mypy .` |
+| Module boundaries | `uv run lint-imports` |
 | Tests (Docker required) | `uv run pytest` |
 | Regenerate `api/openapi.json` | `uv run python -m scripts.export_openapi` |
 

@@ -39,6 +39,8 @@ jobs:
         run: uv run ruff check .
       - name: Types (mypy strict)
         run: uv run mypy .
+      - name: Import boundaries (import-linter)
+        run: uv run lint-imports
       # Runs against real PostgreSQL 18 and Redis containers. Includes the migration gates
       # (single Alembic head, upgrade/downgrade/upgrade, grants and role settings, vendored
       # Procrastinate checksums) and the OpenAPI contract check.

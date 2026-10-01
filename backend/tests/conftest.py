@@ -5,7 +5,8 @@ import asyncio
 import secrets
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.platform.config import AppEnv, MigrationSettings
+from app.platform.db import Database, create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 INFRA_DIR = BACKEND_DIR.parent / "infra"
@@ -131,6 +133,38 @@ def migrated_postgres(postgres: PostgresServer) -> PostgresServer:
     """The `hrms` database at the head revision."""
     command.upgrade(alembic_config(migration_settings(postgres.url("hrms_migrator"))), "head")
     return postgres
+
+
+def fresh_database(postgres: PostgresServer) -> str:
+    """An empty database, as the cluster bootstrap would create it."""
+    name = f"hrms_scratch_{secrets.token_hex(4)}"
+    postgres.create_database(name)
+    return name
+
+
+def fresh_migrated_database(postgres: PostgresServer) -> str:
+    """A database of its own at the head revision, for tests that alter the schema."""
+    name = fresh_database(postgres)
+    command.upgrade(alembic_config(migration_settings(postgres.url("hrms_migrator", name))), "head")
+    return name
+
+
+@asynccontextmanager
+async def database_as(
+    postgres: PostgresServer, role: str, name: str = DATABASE_NAME
+) -> AsyncIterator[Database]:
+    database = Database(create_engine(postgres.url(role, name), application_name=f"test-{role}"))
+    try:
+        yield database
+    finally:
+        await database.dispose()
+
+
+@pytest.fixture(scope="session")
+async def app_database(migrated_postgres: PostgresServer) -> AsyncIterator[Database]:
+    """The shared test database, connected as the API's role."""
+    async with database_as(migrated_postgres, "hrms_app") as database:
+        yield database
 
 
 @dataclass(frozen=True)

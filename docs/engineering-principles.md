@@ -9,7 +9,7 @@ Status: Draft v0.1. These rules apply to every change, human- or AI-written.
 3. No fake implementations: no stubbed endpoints returning canned data, no dead buttons, no placeholder routes, no "coming soon" pages. A feature ships complete or it does not ship.
 4. No `TODO`/`FIXME` in code on `main` for completed features. Deferred work is a tracked issue, referenced by ID in a comment only when the code is intentionally partial and guarded.
 5. No `console.log`/`print` debugging left in code. Use the logger.
-6. Every change to authentication, authorization, payroll, documents or audit is reviewed by a second engineer before it is pushed to `main` (§8).
+6. Every change to authentication, authorization, payroll, documents or audit is reviewed by a second engineer before it is pushed to `main`, or, only when the project owner authorizes it because no second engineer is available, by a recorded adversarial self-review (§8).
 7. Data history is preserved: no destructive updates of attendance events, ledger entries, job history, compensation history or audit records.
 8. No invented business data in the product.
 9. No Sigvitas HR policy value in code, migrations or seed data (ADR-026). Grace periods, thresholds, weekly offs, leave types, accrual amounts, leave year start, identifier types and retention periods are configuration. Tests that need values use fixtures named `TEST – …`.
@@ -107,6 +107,12 @@ Tests never use production data. Fixtures use obviously fake data.
 - The commit message body states what changed, why, permissions affected, data classification affected, migration notes (expand/contract step, lock impact, staging duration), policy parameters added or changed, and test evidence. UI changes are checked at desktop and mobile widths before pushing.
 - Before pushing, run the same checks CI runs and push only when they pass.
 - Changes to authentication, authorization, payroll, documents or audit are reviewed by a second engineer before they are pushed. The commit records that engineer in a `Reviewed-by:` trailer. The trailer names only the person who actually did the review; it is never added for a review that has not happened.
+- **Fallback when no second engineer is available.** The project owner may authorize, for a named checkpoint or change, an adversarial self-review by the implementing engineer (or Claude) instead. It is a workflow fallback, not a relaxation of any security requirement:
+  - The reviewer re-reads every security-sensitive change as if written by someone else (grants, `SECURITY DEFINER` functions, triggers, authorization decisions, audit writes, data classification, error and log output) against `security-architecture.md`, `threat-model.md` and `authorization-model.md`, and fixes what it finds with regression tests.
+  - The complete automated suite passes locally with CI's pinned tools: tests, format, lint, types, import boundaries, migration gates, OpenAPI contract, dependency audit, secret scan and Semgrep.
+  - The findings, fixes and check results are recorded in the checkpoint's entry in `m1-implementation-plan.md` (or the equivalent plan).
+  - The commit message states that the change passed automated verification and adversarial self-review, and does not claim human review. No `Reviewed-by:` trailer is added.
+  - A second-engineer review of the same code remains owed and is done when an engineer is available; it is listed as an open item until then.
 - CI runs on every push to `main`: lint, types, tests, import boundaries, OpenAPI contract, secret scan, dependency audit, banned-words check on UI copy. A commit is deployed only after its CI has passed.
 - `main` is always deployable to staging. A commit that breaks CI is fixed or reverted with a new commit straight away. History on `main` is never rewritten (no force push).
 

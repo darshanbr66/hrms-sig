@@ -1,7 +1,6 @@
 """Migration history rules (docs/database-design.md §11, docs/engineering-principles.md §7)."""
 
 import hashlib
-import secrets
 from importlib import resources
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from alembic import command
 from alembic.script import ScriptDirectory
 
 from app.platform.config import AppEnv, MigrationSettings
-from tests.conftest import BACKEND_DIR, PostgresServer, alembic_config, migration_settings
+from tests.conftest import BACKEND_DIR, PostgresServer, alembic_config, fresh_database, migration_settings
 
 VENDOR_ROOT = BACKEND_DIR / "migrations" / "vendor" / "procrastinate"
 
@@ -42,12 +41,6 @@ def test_vendored_procrastinate_sql_matches_checksums_and_installed_release() ->
         vendored = (version_dir / name).read_bytes()
         assert hashlib.sha256(vendored).hexdigest() == digest
         assert (package_sql / name).read_bytes() == vendored
-
-
-def fresh_database(postgres: PostgresServer) -> str:
-    name = f"hrms_migration_{secrets.token_hex(4)}"
-    postgres.create_database(name)
-    return name
 
 
 def schemas(postgres: PostgresServer, database: str) -> set[str]:
