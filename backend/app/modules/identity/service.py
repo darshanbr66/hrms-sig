@@ -17,6 +17,7 @@ docs/security-architecture.md §3, docs/api-architecture.md §5. Rules that shap
 """
 
 import asyncio
+import math
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
@@ -736,10 +737,25 @@ class IdentityService:
         device_token: str | None = None,
     ) -> None:
         """Current password + a policy-compliant new one. Revokes every other session and every
-        other trusted device, ends pending sign-in challenges, and tells the user by email."""
+        other trusted device, ends pending sign-in challenges, and tells the user by email.
+
+        Wrong current passwords count towards the account lockout, and a locked account's
+        password is not checked here either, so a session cannot be used to keep guessing it."""
         async with self._db.unit_of_work() as session:
             values = await policy.load(session)
+            user = _required(await repo.get_user(session, actor.user_id))
             credential = _required(await repo.credential(session, actor.user_id))
+        now = self._clock.now()
+        if user.locked_until is not None and user.locked_until > now:
+            await self._record_failure(
+                context, actor.user_id, stage="password_change", values=values, count=False
+            )
+            minutes = math.ceil((user.locked_until - now).total_seconds() / 60)
+            raise field_error(
+                "current_password",
+                "account.locked",
+                f"Too many incorrect attempts. Try again in {minutes} minute{'' if minutes == 1 else 's'}.",
+            )
         if not (await passwords.verify_password(credential.password_hash, current_password)).valid:
             await self._record_failure(context, actor.user_id, stage="password_change", values=values)
             raise field_error(

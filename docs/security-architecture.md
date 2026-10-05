@@ -40,7 +40,7 @@ Every column and file category carries a classification. It drives permissions, 
 - Hash: Argon2id via `argon2-cffi` (used directly; it provides hashing, verification and rehash detection), m=64 MiB, t=3, p=1, tuned so a hash takes ~250 ms on production hardware. Parameters stored in the hash string; rehash on login when parameters change. Passwords are NFKC-normalized before hashing. Hashing runs in a worker thread outside any database transaction, at most 4 at a time per API process, so a flood of sign-in attempts queues instead of exhausting memory (each hash uses 64 MiB).
 - Policy: 12–128 characters, Unicode allowed, no composition rules, no forced periodic rotation (NIST SP 800-63B).
 - Breached-password check: a bundled list of common passwords (SecLists NCSC list filtered to 12-128 characters, MIT licence) is always checked; the Have I Been Pwned range API (k-anonymity: only the first 5 characters of the SHA-1 hash leave the server, with response padding) is checked too when `HIBP_ENABLED`. An unreachable range API does not block the password. HTTP client libraries log at WARNING only, so the range URL never reaches the logs.
-- Password change requires the current password and revokes all other sessions.
+- Password change requires step-up and the current password, and revokes all other sessions. Wrong current passwords count towards the account lockout (§3.4), and while the account is locked the current password is not checked at all (`422`, field `current_password`, code `account.locked`), so a session cannot be used to keep guessing the password.
 
 ### 3.3 Multi-factor authentication
 

@@ -1,6 +1,6 @@
 # Sigvitas HRMS — M1 (Phase 1) Implementation Plan
 
-Status: In progress. Checkpoints A, B and C complete (2026-10-01); D–H to do (§10, §12). Scope: `development-roadmap.md` M1 only. Nothing here changes the architecture; where the docs were ambiguous, the choice and its reason are stated in §10.
+Status: In progress. Checkpoints A, B, C and D complete (2026-10-01; D verified again 2026-10-05); E–H to do (§10, §12). Scope: `development-roadmap.md` M1 only. Nothing here changes the architecture; where the docs were ambiguous, the choice and its reason are stated in §10.
 
 ## 0. Environment found
 
@@ -133,6 +133,7 @@ Technical settings (D): declared in the code registry with the security defaults
 | 0008 | `access` tables (permissions, roles, role_permissions, user_roles) + SOD-3 check, derived-role foreign key, assignment history trigger, read-only catalog grants (C) |
 | 0009 | Data: permission catalog + system roles + role_permissions (a frozen copy of `authz/catalog.py` and `authz/roles.py`) (C) |
 | 0010 | `notify.email_outbox`, `identity.trusted_devices`, `app.settings`; `password_reset` added to the one-time token purposes and session revocation reasons (D) |
+| 0011 | `audit.ensure_partitions` also fails for a partition attached for the wrong range and for a default partition (D verification; corrects 0005) |
 | later | `access.role_grant_requests` + `user_roles.grant_request_id` (E); `app.idempotency_keys` (first idempotent endpoint) |
 | later | `audit.chain_links`, `audit.chain_checkpoints` and the retention role's grants (with the sealer, F) |
 
@@ -363,3 +364,27 @@ Automated verification at commit time: backend `uv sync --locked`; pytest 559 pa
 One local full run had a sign-in answer `503` (the rate-limit store missed its 0.5-second timeout, so the limiter failed closed as designed) and a later run stalled near the trusted-device tests; neither repeated in two more full runs and three repeats of the email and sign-in tests. The test helper that drains the outbox is now bounded, so a stall there fails the test instead of hanging the suite.
 
 Remaining risks: email delivery is at least once (a worker stopping between the server's acceptance and the status update resends after the lease); the dispatcher sends one email at a time, which suits current volumes; staging needs a transactional email provider (roadmap §6) before invites and resets work outside development.
+
+#### Checkpoint D final verification (2026-10-05)
+
+Scope: the whole M1 implementation as committed through Checkpoint D, plus the two follow-up commits `8100765` (fixes found while writing the local development guide) and `45fdf26` (`docs/local-development.md`, `run-backend.cmd`, README and CLAUDE.md pointers, `local-logins.md` ignored), before pushing them to `main`. No Checkpoint E work.
+
+Review: adversarial self-review authorized by the project owner (`engineering-principles.md` §8). No human has reviewed this code; the second-engineer review of A–D remains owed. The review re-read the identity, access, audit, notify and settings modules, the authorization engine and route declarations, migrations 0001–0010 (grants, `SECURITY DEFINER` functions, triggers, dynamic SQL), the rate limiter, CSRF and client-address handling, and the local development guide, as an attacker looking for privilege escalation, IDOR, MFA, invite and reset bypasses, session and refresh-token abuse, audit tampering or leakage, and secret leakage.
+
+Fixes from `8100765`, recorded here because the plan did not yet list them:
+
+- `python -m app.cli bootstrap-super-admins` failed on a fresh database: the CLI process did not import every model, so foreign keys into other modules could not be resolved. It now imports `app.metadata`; `tests/unit/test_cli_metadata.py` checks it in a separate interpreter, as the CLI runs.
+- The hourly `audit.ensure_partitions` job always ended in error after its work committed: its log call used the reserved `LogRecord` key `created`. The key is now `partitions_created`; the worker test captures the log at INFO and fails without the fix.
+
+Defects found and fixed in this verification, each with a regression test that failed before the fix:
+
+- `audit.ensure_partitions` accepted a month's partition that was attached for another month's range, and ignored a default partition. Either left a month without its own partition while the job reported success, and a default partition would take rows that must instead fail the audited change. Revision 0011 makes the function fail loudly in both cases (`test_ensure_partitions_fails_for_a_partition_attached_with_the_wrong_range`, `test_ensure_partitions_fails_when_a_default_partition_exists`).
+- `POST /me/password` counted wrong current passwords towards the lockout but kept checking the current password while the account was locked, so a session (after step-up) could keep guessing the password past the lockout. A locked account's password is no longer checked there; the answer is `422` `account.locked` on `current_password` (`test_a_locked_account_cannot_check_its_password_through_a_password_change`).
+
+Checked and found sound: sign-in answers and timing for unknown, locked, disabled and invited accounts; single-use MFA challenge with an attempt limit; TOTP replay protection; recovery codes giving only an enrolment session; refresh rotation with reuse detection and lock order; sign-out and revocation; invite activation (link checked before hashing, enrolment token bound to the browser, invite retired on activation); password reset (one answer for every email, link checked before hashing and again under lock, every session and device revoked); new-device detection (cookie digest only, never skips MFA); route declarations and allow-lists; scope and SoD checks (SOD-3, SOD-4, SOD-8, SOD-10, the two-super-admin minimum); audit append-only triggers, database-assigned IDs and `recorded_at`, personal and contact field refusal, NUL refusal; `SECURITY DEFINER` functions with fixed `search_path` and `format('%I')` identifiers only; no string-built SQL in the application; rate-limit keys HMAC-ed, fail-closed for authentication; `X-Forwarded-For` trusted only from configured proxies; no secrets or personal data in logs, audit details or the outbox; the local development guide, re-run end to end on a fresh Compose project.
+
+Automated verification: backend `uv sync --locked`; pytest 565 passed (including migration gates: single head `0011`, upgrade/downgrade/upgrade, schema drift); Ruff format and lint clean; mypy strict clean; import-linter 8 contracts kept; pip-audit `--strict` no known vulnerabilities; OpenAPI regenerated unchanged. Frontend: pnpm install frozen; 35 tests passed; ESLint, TypeScript strict and Prettier clean; banned-words check passed; build passed; `pnpm audit` no known vulnerabilities; generated API types match the contract. gitleaks v8.30.1 and Semgrep 1.178.0 (CI rule sets) no findings; `docker compose config` valid.
+
+Open decision, not made here: the account lockout is documented for sign-in (§3.4). Step-up failures count towards it, but step-up does not refuse a locked account; it is bounded by its own limit of 5 attempts per 5 minutes per session. Whether a lock should also block step-up (which would let anyone who knows an email address block a signed-in user's step-up by locking the account) is for the project owner to decide.
+
+Remaining risks: the human second-engineer review of A–D is still owed; the risks listed above for D (at-least-once email delivery, one email at a time, no staging email provider yet) are unchanged; Playwright end-to-end and real-browser accessibility tests arrive with G.

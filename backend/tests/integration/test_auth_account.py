@@ -116,6 +116,43 @@ async def test_changing_the_password(api: Api) -> None:
         assert new.status_code == 200
 
 
+async def test_a_locked_account_cannot_check_its_password_through_a_password_change(api: Api) -> None:
+    """Wrong current passwords count towards the lockout, and while the account is locked the
+    current password is not checked at all: a held session is no way around the lockout."""
+    account = await api.create_account()
+    new_password = "a different passphrase 2030"
+    async with api.client() as client:
+        await api.sign_in(client, account)
+        await api.step_up(client, account)
+        wrong = {"current_password": "not it at all", "new_password": new_password}
+        for _ in range(10):  # the default lockout threshold
+            response = await client.post("/api/v1/me/password", json=wrong)
+            assert response.json()["errors"][0]["code"] == "password.incorrect"
+        [(locked_until,)] = await api.fetch(
+            "SELECT locked_until FROM identity.users WHERE id = :id", id=account.user_id
+        )
+        assert locked_until is not None
+
+        right = {"current_password": PASSWORD, "new_password": new_password}
+        locked = await client.post("/api/v1/me/password", json=right)
+        assert locked.status_code == 422
+        assert locked.json()["errors"][0]["field"] == "current_password"
+        assert locked.json()["errors"][0]["code"] == "account.locked"
+        assert "15 minutes" in locked.json()["errors"][0]["message"]
+
+        # The lock ends on time, and the password change then works.
+        api.clock.advance(timedelta(minutes=15, seconds=1))
+        await client.post("/api/v1/auth/refresh")
+        await api.step_up(client, account)
+        assert (await client.post("/api/v1/me/password", json=right)).status_code == 204
+
+    async with api.client() as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"email": account.email, "password": new_password}
+        )
+        assert login.status_code == 200
+
+
 # --- MFA factors and recovery codes ---------------------------------------------------------
 
 

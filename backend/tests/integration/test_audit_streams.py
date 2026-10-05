@@ -295,3 +295,43 @@ def test_audited_insert_fails_when_its_partition_is_missing(postgres: PostgresSe
         pytest.raises(errors.RaiseException, match=r"is not a partition of audit\.audit_log"),
     ):
         connection.execute("SELECT audit.ensure_partitions(3)")
+
+
+@pytest.mark.parametrize("stream", STREAMS)
+def test_ensure_partitions_fails_for_a_partition_attached_with_the_wrong_range(
+    postgres: PostgresServer, stream: str
+) -> None:
+    """A month's partition attached for another month leaves that month uncovered; the
+    maintenance function must not count it as present."""
+    database = fresh_migrated_database(postgres)
+    with postgres.connect("hrms_migrator", database) as connection:
+        last, beyond = month_keys(database_now(connection), 5)[3:]
+        connection.execute(f"ALTER TABLE audit.{stream} DETACH PARTITION audit.{stream}_p{last}")
+        beyond_start = f"{beyond[:4]}-{beyond[5:]}-01 00:00:00+00"
+        connection.execute(
+            f"ALTER TABLE audit.{stream} ATTACH PARTITION audit.{stream}_p{last} "
+            f"FOR VALUES FROM ('{beyond_start}') TO ('{beyond_start}'::timestamptz + interval '1 month')"
+        )
+    with (
+        postgres.connect("hrms_worker", database) as connection,
+        pytest.raises(
+            errors.RaiseException, match=rf"audit\.{stream}_p{last} is attached for the wrong range"
+        ),
+    ):
+        connection.execute("SELECT audit.ensure_partitions(3)")
+
+
+@pytest.mark.parametrize("stream", STREAMS)
+def test_ensure_partitions_fails_when_a_default_partition_exists(
+    postgres: PostgresServer, stream: str
+) -> None:
+    """A default partition would silently take rows for months without a partition, which
+    must instead fail the audited change."""
+    database = fresh_migrated_database(postgres)
+    with postgres.connect("hrms_migrator", database) as connection:
+        connection.execute(f"CREATE TABLE audit.{stream}_default PARTITION OF audit.{stream} DEFAULT")
+    with (
+        postgres.connect("hrms_worker", database) as connection,
+        pytest.raises(errors.RaiseException, match=rf"audit\.{stream} has a default partition"),
+    ):
+        connection.execute("SELECT audit.ensure_partitions(3)")
