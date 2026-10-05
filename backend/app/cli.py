@@ -14,6 +14,8 @@ import asyncio
 import sys
 from collections.abc import Sequence
 
+# Registers every table, so foreign keys into other modules (such as org.locations) resolve.
+import app.metadata  # noqa: F401
 from app.modules.access import public as access
 from app.platform.audit.records import AuditActor, AuditEvent
 from app.platform.audit.writer import AuditWriter

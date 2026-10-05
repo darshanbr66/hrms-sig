@@ -49,4 +49,6 @@ def register_partition_maintenance(job_app: procrastinate.App, database: Databas
     async def ensure_audit_partitions(timestamp: int) -> None:
         async with database.unit_of_work() as session:
             created = await ensure_partitions(session)
-        logger.info("audit.partitions_ensured", extra={"created": created, "months_ahead": MONTHS_AHEAD})
+        logger.info(
+            "audit.partitions_ensured", extra={"partitions_created": created, "months_ahead": MONTHS_AHEAD}
+        )

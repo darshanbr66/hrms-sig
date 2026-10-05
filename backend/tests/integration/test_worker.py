@@ -1,5 +1,9 @@
 """The worker's job app: registered tasks and schedules, run as the worker role."""
 
+import logging
+
+import pytest
+
 from app.platform.audit.partitions import QUEUE, SCHEDULE, TASK_NAME
 from app.worker import build_job_app
 from tests.api_support import worker_settings
@@ -33,7 +37,10 @@ async def test_partition_maintenance_is_scheduled_hourly(migrated_postgres: Post
     assert job_app.tasks[TASK_NAME].queue == QUEUE
 
 
-async def test_partition_maintenance_task_recreates_missing_partitions(postgres: PostgresServer) -> None:
+async def test_partition_maintenance_task_recreates_missing_partitions(
+    postgres: PostgresServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.platform.audit.partitions")
     database_name = fresh_migrated_database(postgres)
     key = last_partition_key(postgres, database_name)
     with postgres.connect("hrms_migrator", database_name) as connection:
@@ -49,6 +56,12 @@ async def test_partition_maintenance_task_recreates_missing_partitions(postgres:
 
     for stream in ("audit_log", "security_events"):
         assert partition_exists(postgres, database_name, f"{stream}_p{key}")
+    # The task logs its outcome; an `extra` key that clashes with a LogRecord attribute fails the job.
+    assert [
+        record.__dict__["partitions_created"]
+        for record in caplog.records
+        if record.msg == "audit.partitions_ensured"
+    ] == [2]
 
 
 async def test_the_email_outbox_is_dispatched_every_minute(migrated_postgres: PostgresServer) -> None:
