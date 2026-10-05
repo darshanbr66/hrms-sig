@@ -56,12 +56,27 @@ async def test_partition_maintenance_task_recreates_missing_partitions(
 
     for stream in ("audit_log", "security_events"):
         assert partition_exists(postgres, database_name, f"{stream}_p{key}")
-    # The task logs its outcome; an `extra` key that clashes with a LogRecord attribute fails the job.
-    assert [
+    # Starting the worker also defers the hourly run for the current slot. Depending on timing
+    # it runs before the worker stops, or stays queued without being attempted: one or two
+    # runs, all legitimate. The invariants: every attempted run succeeded (a failure after the
+    # partitions commit, such as an `extra` key that clashes with a LogRecord attribute, leaves
+    # the job queued for retry with an attempt counted), each run logged its outcome, and
+    # together they created exactly the two missing partitions.
+    with postgres.connect("postgres", database_name) as connection:
+        jobs = connection.execute(
+            "SELECT status::text, attempts FROM procrastinate.procrastinate_jobs WHERE task_name = %s",
+            (TASK_NAME,),
+        ).fetchall()
+    attempted = [status for status, attempts in jobs if not (status == "todo" and attempts == 0)]
+    assert attempted
+    assert set(attempted) == {"succeeded"}
+    created = [
         record.__dict__["partitions_created"]
         for record in caplog.records
         if record.msg == "audit.partitions_ensured"
-    ] == [2]
+    ]
+    assert len(created) == len(attempted)
+    assert sum(created) == 2
 
 
 async def test_the_email_outbox_is_dispatched_every_minute(migrated_postgres: PostgresServer) -> None:

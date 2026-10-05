@@ -1,6 +1,8 @@
 """The email outbox (notify): transactional writes, idempotency, retries, failure, concurrency."""
 
 import asyncio
+import smtplib
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import timedelta
@@ -10,7 +12,7 @@ import pytest
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
-from app.modules.notify.dispatcher import OutboxDispatcher
+from app.modules.notify.dispatcher import BATCH, OutboxDispatcher
 from app.modules.notify.models import EmailTemplate
 from app.modules.notify.public import enqueue
 from app.platform.config import SmtpSecurity
@@ -112,7 +114,8 @@ async def test_delivery_resolves_the_address_at_send_time(api: Api) -> None:
     assert await row(api, key) == ("sent", 1, None)
 
 
-async def test_failures_retry_with_backoff_then_stop_as_failed(api: Api) -> None:
+async def test_failures_retry_with_backoff_then_stop_as_failed(isolated_api: Api) -> None:
+    api = isolated_api
     account = await api.create_account()
     key = f"test:{uuid.uuid4()}"
     await queue(api, account.user_id, key)
@@ -125,15 +128,54 @@ async def test_failures_retry_with_backoff_then_stop_as_failed(api: Api) -> None
         assert error == "ConnectionRefusedError"
         if attempt < 5:
             assert status == "pending"
-            # Not due again until the backoff passes: 1, 2, 4, 8 minutes.
+            # Not due again until the backoff passes: 1, 2, 4, 8 minutes. The clock only moves
+            # when the test moves it, so each step is exact.
             await dispatcher.run_once()
             assert (await row(api, key))[1] == attempt
-            api.clock.advance(timedelta(minutes=2 ** (attempt - 1), seconds=1))
+            api.clock.advance(timedelta(minutes=2 ** (attempt - 1)) - timedelta(seconds=1))
+            await dispatcher.run_once()
+            assert (await row(api, key))[1] == attempt
+            api.clock.advance(timedelta(seconds=1))
     assert await row(api, key) == ("failed", 5, "ConnectionRefusedError")
     # A failed email stays recorded and is not retried.
     api.clock.advance(timedelta(hours=2))
     await dispatcher.run_once()
     assert (await row(api, key))[0] == "failed"
+
+
+async def test_rows_due_together_are_claimed_oldest_first(isolated_api: Api) -> None:
+    """Regression: the claim was ordered by `next_attempt_at` only, so of more rows due at the
+    same moment than one batch takes, the database chose which ones waited."""
+    api = isolated_api
+    account = await api.create_account()
+    keys = [f"test:{uuid.uuid4()}" for _ in range(BATCH + 1)]
+    for key in keys:  # same clock, so every row has the same next_attempt_at
+        await queue(api, account.user_id, key)
+    [(oldest,)] = await api.fetch(
+        "SELECT id FROM notify.email_outbox WHERE user_id = :u ORDER BY id LIMIT 1", u=account.user_id
+    )
+    [(newest,)] = await api.fetch(
+        "SELECT id FROM notify.email_outbox WHERE user_id = :u ORDER BY id DESC LIMIT 1", u=account.user_id
+    )
+    # Move the oldest row to the end of the table and of the index (two changes to an indexed
+    # column that end on its original value), so storage order no longer matches age.
+    for shift in ("+", "-"):
+        await api.execute(
+            f"UPDATE notify.email_outbox SET next_attempt_at = next_attempt_at {shift} interval '1 second' "
+            "WHERE id = :id",
+            id=oldest,
+        )
+
+    assert (await api.dispatcher().run_once()).sent == BATCH
+    after = dict(
+        await api.fetch("SELECT id, status FROM notify.email_outbox WHERE user_id = :u", u=account.user_id)
+    )
+    assert [row_id for row_id, status in after.items() if status != "sent"] == [newest]
+
+    # The row that waited is taken by the next run.
+    assert (await api.dispatcher().run_once()).sent == 1
+    final = await api.fetch("SELECT status FROM notify.email_outbox WHERE user_id = :u", u=account.user_id)
+    assert {status for (status,) in final} == {"sent"}
 
 
 async def test_an_email_that_no_longer_applies_is_cancelled(api: Api) -> None:
@@ -165,7 +207,8 @@ async def test_an_abandoned_claim_is_taken_again_after_its_lease(api: Api) -> No
     assert await row(api, key) == ("sent", 2, None)
 
 
-async def test_concurrent_dispatchers_send_each_email_once(api: Api) -> None:
+async def test_concurrent_dispatchers_send_each_email_once(isolated_api: Api) -> None:
+    api = isolated_api
     accounts = [await api.create_account() for _ in range(6)]
     keys = [f"test:{uuid.uuid4()}" for _ in accounts]
     for account, key in zip(accounts, keys, strict=True):
@@ -190,11 +233,26 @@ def mailpit() -> Iterator[tuple[str, int, int]]:
         .waiting_for(LogMessageWaitStrategy("accessible via"))
     )
     with container:
-        yield (
-            container.get_container_host_ip(),
-            int(container.get_exposed_port(1025)),
-            int(container.get_exposed_port(8025)),
-        )
+        host, smtp_port = container.get_container_host_ip(), int(container.get_exposed_port(1025))
+        wait_for_smtp(host, smtp_port)
+        yield host, smtp_port, int(container.get_exposed_port(8025))
+
+
+def wait_for_smtp(host: str, port: int, timeout_seconds: float = 30) -> None:
+    """Mailpit logs readiness for its web UI; the SMTP listener (and Docker's port proxy in
+    front of it) can still drop the first connection. Wait for a real greeting and NOOP."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            with smtplib.SMTP(host, port, timeout=2) as client:
+                if client.noop()[0] == 250:
+                    return
+        except (smtplib.SMTPException, OSError):
+            if time.monotonic() > deadline:
+                raise
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"no SMTP service on {host}:{port} after {timeout_seconds} s")
+        time.sleep(0.2)
 
 
 async def test_smtp_delivery_to_a_mail_server(mailpit: tuple[str, int, int]) -> None:
@@ -223,8 +281,9 @@ async def test_smtp_failure_reports_only_an_error_class(mailpit: tuple[str, int,
         await unreachable.send(OutgoingEmail(to="person@dev.example", subject="x", body="x"))
 
 
-async def test_a_row_that_cannot_be_rendered_fails_without_stopping_the_batch(api: Api) -> None:
+async def test_a_row_that_cannot_be_rendered_fails_without_stopping_the_batch(isolated_api: Api) -> None:
     """Regression: a renderer error escaped the run, left the batch waiting and retried for ever."""
+    api = isolated_api
     poisoned, healthy = await api.create_account(), await api.create_account()
     bad_key, good_key = f"test:{uuid.uuid4()}", f"test:{uuid.uuid4()}"
     await queue(api, poisoned.user_id, bad_key, EmailTemplate.MFA_CHANGED)

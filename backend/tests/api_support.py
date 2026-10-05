@@ -33,7 +33,7 @@ from app.platform.db import Database, create_engine
 from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
 from app.platform.security import passwords, totp
 from app.platform.security.crypto import FieldCipher
-from tests.conftest import PostgresServer, RedisServer
+from tests.conftest import DATABASE_NAME, PostgresServer, RedisServer
 
 APP_ORIGIN = "https://hrms.test"
 BASE_URL = APP_ORIGIN
@@ -261,13 +261,19 @@ class Api:
 
 
 @asynccontextmanager
-async def running_api(postgres: PostgresServer, redis: RedisServer, **settings: Any) -> AsyncIterator[Api]:
+async def running_api(
+    postgres: PostgresServer, redis: RedisServer, *, database_name: str = DATABASE_NAME, **settings: Any
+) -> AsyncIterator[Api]:
+    """The API on `database_name`: the shared test database unless a test needs one of its own."""
     clock, sleep = FakeClock(), RecordingSleep()
     settings.setdefault("redis_url", SecretStr(redis.url()))
-    app = create_app(api_settings(postgres.url("hrms_app"), **settings), clock=clock, sleep=sleep)
+    app_url = postgres.url("hrms_app", database_name)
+    app = create_app(api_settings(app_url, **settings), clock=clock, sleep=sleep)
     async with app.router.lifespan_context(app):
-        database = Database(create_engine(postgres.url("hrms_app"), application_name="test-support"))
-        worker = Database(create_engine(postgres.url("hrms_worker"), application_name="test-worker"))
+        database = Database(create_engine(app_url, application_name="test-support"))
+        worker = Database(
+            create_engine(postgres.url("hrms_worker", database_name), application_name="test-worker")
+        )
         try:
             yield Api(app, clock, sleep, database, worker)
         finally:

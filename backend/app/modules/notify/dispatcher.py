@@ -5,6 +5,9 @@ A periodic job (every minute) calls `OutboxDispatcher.run_once`:
 1. **Claim.** In one short transaction, take up to BATCH due rows with
    `FOR UPDATE SKIP LOCKED` (pending and due, or sending with an expired lease), mark them
    `sending` with a lease and count the attempt. Several workers never claim the same row.
+   Rows are taken in a fixed order, earliest `next_attempt_at` first and then oldest row
+   (UUIDv7 `id`), so rows due at the same moment are claimed oldest first instead of in
+   whatever order the database returns them.
 2. **Render.** For each claimed row, in its own transaction: re-read and lock the row (it must
    still be ours), then call the template's renderer, which resolves the recipient address
    and may create a link token (only its hash is stored). This commits before the email
@@ -100,7 +103,7 @@ class OutboxDispatcher:
             query = (
                 select(EmailOutbox)
                 .where(due)
-                .order_by(EmailOutbox.next_attempt_at)
+                .order_by(EmailOutbox.next_attempt_at, EmailOutbox.id)
                 .limit(BATCH)
                 .with_for_update(skip_locked=True)
                 .execution_options(populate_existing=True)

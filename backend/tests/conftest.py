@@ -209,3 +209,16 @@ async def api(migrated_postgres: PostgresServer, redis: RedisServer) -> AsyncIte
 
     async with running_api(migrated_postgres, redis) as running:
         yield running
+
+
+@pytest.fixture
+async def isolated_api(migrated_postgres: PostgresServer, redis: RedisServer) -> AsyncIterator["Api"]:
+    """A running API on a database of its own, for tests whose assertions depend on everything
+    in a table, such as which outbox rows one dispatcher run claims. Rows other tests leave in
+    the shared database would otherwise compete for the same batch."""
+    from tests.api_support import running_api  # noqa: PLC0415 (api_support imports this module)
+
+    async with running_api(
+        migrated_postgres, redis, database_name=fresh_migrated_database(migrated_postgres)
+    ) as running:
+        yield running
