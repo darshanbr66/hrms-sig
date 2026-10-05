@@ -21,6 +21,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 | `docs/engineering-principles.md` | Code rules, testing, definition of done |
 | `docs/architecture-decisions.md` | ADRs and industry research |
 | `docs/development-roadmap.md` | Milestones, M1 scope, Sigvitas inputs still needed (§6) |
+| `docs/local-development.md` | Running the system locally, test sign-in, verification commands (the only local setup guide) |
 
 When a change alters behaviour, permissions, schema or API, update the relevant document in the same change.
 

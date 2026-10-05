@@ -23,3 +23,6 @@ frontend/dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local login notes with invite links (secrets)
+local-logins.md
