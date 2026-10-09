@@ -25,7 +25,6 @@ from sqlalchemy import select, text
 
 from app.main import create_app
 from app.modules.access.models import Role, UserRole
-from app.modules.identity.emails import IdentityEmails
 from app.modules.identity.models import Credential, FactorType, MfaFactor, User, UserStatus
 from app.modules.notify.dispatcher import DispatchResult, OutboxDispatcher
 from app.platform.config import ApiSettings, AppEnv, WorkerSettings
@@ -33,6 +32,7 @@ from app.platform.db import Database, create_engine
 from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
 from app.platform.security import passwords, totp
 from app.platform.security.crypto import FieldCipher
+from app.worker import email_renderers
 from tests.conftest import DATABASE_NAME, PostgresServer, RedisServer
 
 APP_ORIGIN = "https://hrms.test"
@@ -126,7 +126,7 @@ class RecordingSender:
         self.sent.append(email)
 
 
-LINK = re.compile(r"https://hrms\.test/(invite|password-reset)/([A-Za-z0-9_-]{43})")
+LINK = re.compile(r"https://hrms\.test/(invite|password-reset|mfa-reenrolment)/([A-Za-z0-9_-]{43})")
 # More than enough for the emails one test produces (each pass handles up to 20).
 DELIVER_PASSES = 50
 
@@ -161,7 +161,7 @@ class Api:
         return OutboxDispatcher(
             database=self.worker_database,
             sender=sender or self.mail,
-            renderers=IdentityEmails(app_base_url=APP_ORIGIN, clock=self.clock).renderers(),
+            renderers=email_renderers(APP_ORIGIN, self.clock),
             clock=self.clock,
         )
 

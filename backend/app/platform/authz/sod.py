@@ -1,7 +1,7 @@
 """Separation-of-duties rules enforced regardless of permissions held (docs/authorization-model.md §6).
 
-Rules that belong to later modules (leave, attendance, payroll, elevation) are added with
-them. Each refusal carries a stable code so the client can explain it.
+Rules that belong to later modules (leave, attendance, payroll) are added with them. Each
+refusal carries a stable code so the client can explain it.
 """
 
 import uuid
@@ -14,7 +14,7 @@ from app.platform.authz.engine import AccessDenied
 class SodRule(StrEnum):
     OWN_ROLES = "sod.own_roles"  # SOD-3
     OWN_ACCOUNT = "sod.own_account"  # SOD-4
-    SUPER_ADMIN_ASSIGNMENT = "sod.super_admin_assignment"  # SOD-8
+    OWN_REQUEST = "sod.own_request"  # SOD-8, SOD-9: nobody decides a request they made or that is about them
     SUPER_ADMIN_DATA_ROLE = "sod.super_admin_data_role"  # SOD-10
 
 

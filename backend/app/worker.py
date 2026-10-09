@@ -5,10 +5,15 @@ import sys
 
 import procrastinate
 
+# Registers every table, so foreign keys into other modules (such as org.locations) resolve.
+import app.metadata  # noqa: F401
+from app.modules.access.public import AccessEmails, register_grant_expiry
 from app.modules.identity.emails import IdentityEmails
 from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
+from app.modules.notify.public import EmailTemplate, Renderer
 from app.platform.audit.partitions import register_partition_maintenance
-from app.platform.clock import SystemClock
+from app.platform.audit.writer import AuditWriter
+from app.platform.clock import Clock, SystemClock
 from app.platform.config import WorkerSettings
 from app.platform.db import Database, create_engine
 from app.platform.email import EmailSender, SmtpSender
@@ -29,6 +34,14 @@ def smtp_sender(settings: WorkerSettings) -> SmtpSender:
     )
 
 
+def email_renderers(app_base_url: str, clock: Clock) -> dict[EmailTemplate, Renderer]:
+    """Every email template's renderer (the dispatcher refuses to start with one missing)."""
+    return {
+        **IdentityEmails(app_base_url=app_base_url, clock=clock).renderers(),
+        **AccessEmails(app_base_url=app_base_url).renderers(),
+    }
+
+
 def build_job_app(
     settings: WorkerSettings, database: Database, *, sender: EmailSender | None = None
 ) -> procrastinate.App:
@@ -36,10 +49,11 @@ def build_job_app(
     job_app = create_job_app(settings.database_url_worker, application_name=APPLICATION_NAME)
     register_partition_maintenance(job_app, database)
     clock = SystemClock()
+    register_grant_expiry(job_app, database, clock, AuditWriter(clock))
     dispatcher = OutboxDispatcher(
         database=database,
         sender=sender or smtp_sender(settings),
-        renderers=IdentityEmails(app_base_url=settings.app_base_url, clock=clock).renderers(),
+        renderers=email_renderers(settings.app_base_url, clock),
         clock=clock,
     )
     register_email_dispatch(job_app, dispatcher)

@@ -150,6 +150,14 @@ INVITE_TTL: Final = IntSetting(
 PASSWORD_RESET_TTL: Final = IntSetting(
     "security.password_reset.ttl_minutes", "How long a password reset link works", 30, 10, 60, Unit.MINUTES
 )
+MFA_REENROLMENT_TTL: Final = IntSetting(
+    "security.mfa_reenrolment.ttl_hours",
+    "How long the re-enrolment link sent after an MFA reset works",
+    24,
+    1,
+    72,
+    Unit.HOURS,
+)
 TRUSTED_DEVICE_LIFETIME: Final = IntSetting(
     "security.trusted_device.lifetime_days",
     "How long a browser stays recognized before a sign-in from it is reported as new again",
@@ -179,6 +187,7 @@ REGISTRY: Final[dict[str, IntSetting]] = {
         SESSION_ABSOLUTE,
         INVITE_TTL,
         PASSWORD_RESET_TTL,
+        MFA_REENROLMENT_TTL,
         TRUSTED_DEVICE_LIFETIME,
         EMAIL_MAX_ATTEMPTS,
     )

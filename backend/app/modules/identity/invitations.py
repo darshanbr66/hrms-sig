@@ -29,7 +29,7 @@ from app.modules.identity import public as identity
 from app.modules.identity import repository as repo
 from app.modules.identity.models import OneTimePurpose, User, UserStatus
 from app.modules.people import public as people
-from app.platform.audit.records import AuditActor, AuditEvent, RequestContext, ValueChange
+from app.platform.audit.records import AuditEvent, RequestContext, ValueChange
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
@@ -76,7 +76,7 @@ class InvitationService:
                 session,
                 AuditEvent(
                     action="identity.user.invited",
-                    actor=AuditActor.user(admin.user_id, session_id=admin.session_id),
+                    actor=admin.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
@@ -154,7 +154,7 @@ class InvitationService:
                 session,
                 AuditEvent(
                     action=action,
-                    actor=AuditActor.user(admin.user_id, session_id=admin.session_id),
+                    actor=admin.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",

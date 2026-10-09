@@ -7,7 +7,7 @@ an account's factors or sessions lock the account row first (`lock_user`).
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -26,6 +26,7 @@ from app.modules.identity.models import (
     TokenKind,
     TrustedDevice,
     User,
+    UserStatus,
 )
 from app.platform.security.emails import canonical_email
 
@@ -186,6 +187,29 @@ async def use_recovery_code(session: AsyncSession, user_id: uuid.UUID, digest: b
         .returning(RecoveryCode.id)
     )
     return (await session.execute(statement)).scalar_one_or_none() is not None
+
+
+async def revoke_all_factors(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> int:
+    """Revoke every factor of an account, confirmed or pending (an administrator's MFA reset).
+    The caller sets `mfa_reenrolment_required` in the same transaction, or the database's MFA
+    invariant refuses the commit."""
+    result = await session.execute(
+        update(MfaFactor)
+        .where(MfaFactor.user_id == user_id, MfaFactor.revoked_at.is_(None))
+        .values(revoked_at=now, updated_at=now)
+        .returning(MfaFactor.id)
+    )
+    return len(result.all())
+
+
+async def revoke_recovery_codes(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+    await session.execute(
+        update(RecoveryCode)
+        .where(
+            RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None), RecoveryCode.revoked_at.is_(None)
+        )
+        .values(revoked_at=now)
+    )
 
 
 async def replace_recovery_codes(
@@ -441,3 +465,13 @@ async def revoke_devices(
         statement.values(revoked_at=now, revoked_reason=reason).returning(TrustedDevice.id)
     )
     return len(result.all())
+
+
+async def active_user_ids(session: AsyncSession, user_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
+    """The given accounts that are active, in ID order."""
+    if not user_ids:
+        return []
+    query = (
+        select(User.id).where(User.id.in_(user_ids), User.status == UserStatus.ACTIVE.value).order_by(User.id)
+    )
+    return list((await session.execute(query)).scalars())

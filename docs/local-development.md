@@ -185,8 +185,15 @@ reset.
 
 Redis holds only short-lived, HMAC-keyed rate-limit counters with a time-to-live. It is not a
 system of record: it never holds data, sessions, permissions, lockout state, audit, jobs or
-caches of personal data. If Redis is down, rate limiting degrades and the API stays up. For
-this reason the readiness check does not include Redis.
+caches of personal data. If Redis is down, the general API limits fail open and the rest of
+the API keeps working, so the readiness check does not include Redis. The authentication
+limits fail closed: sign-in, step-up, password reset, invite activation and MFA re-enrolment
+answer `503 temporarily-unavailable`, which the web app shows as "Sign-in is temporarily
+unavailable. Try again in a minute." The API log shows `ratelimit.store_unavailable` with
+`"failure_mode": "closed"`.
+
+The Compose services have no restart policy. After Docker Desktop or the computer restarts,
+they stay stopped until you run the Compose command in 3.1 again (or `run-backend.cmd`).
 
 - Start: started by the Compose command in 3.1, on `127.0.0.1:6380`, with the ACL user
   `hrms_ratelimit`.
@@ -230,8 +237,9 @@ these headers yourself.
 
 - Start (`backend/`): `uv run --env-file ../.env python -m app.worker`
 - What it does: every minute it sends pending emails from the outbox (`notify.dispatch_email`)
-  to Mailpit. Every hour it creates audit-log partitions ahead of time
-  (`audit.ensure_partitions`).
+  to Mailpit, and records expired access requests and ended elevations
+  (`access.expire_grants`; access already stops at the end time without it). Every hour it
+  creates audit-log partitions ahead of time (`audit.ensure_partitions`).
 - Check it is running: its log shows `Starting worker on all queues`. About once a minute it
   shows `Job notify.dispatch_email[...] ended with status: Success`. Emails such as password
   resets reach `http://127.0.0.1:8025` within about a minute. On Windows it also logs
@@ -338,8 +346,17 @@ recovery codes.
 ### 9.6 What a super admin sees
 
 `super_admin` has no access to employee data. After signing in, a test super admin sees the
-Security page (`/account/security`: sessions, devices, authenticators, recovery codes) and can
-read Settings (`/settings`).
+Security page (`/account/security`: sessions, devices, authenticators, recovery codes), can
+read Settings (`/settings`) and sees Access requests (`/admin/access-requests`): request a
+time-bound role, approve or reject another super admin's request, end temporary access,
+break-glass to `system_admin` for up to an hour, and acknowledge another super admin's
+break-glass. Each step asks for an authenticator code (step-up). Testing an approval needs both
+test super admins signed in, for example in two browser profiles. Notification emails reach
+Mailpit.
+
+An administrator's MFA reset (`POST /users/{id}/mfa-reset`, `system_admin`) emails a
+re-enrolment link to Mailpit. The link opens `/mfa-reenrolment/<token>`, which asks for the
+password and then a new authenticator, and shows new recovery codes.
 
 ## 10. Sign-in test checklist (browser)
 
@@ -380,7 +397,9 @@ Run through these with the web app, API and worker running.
 | API or worker fails at start-up with a settings validation error | A required variable is missing or invalid, such as a key that is not base64 or shorter than 32 bytes, or a non-`http(s)` `APP_BASE_URL`. The error names the variable. Fix it in `.env`. |
 | PostgreSQL unavailable (`/api/health/ready` returns 503, or `connection refused` on 5433) | Run `docker compose --env-file .env -f infra/compose.yaml ps`. If `postgres` is not healthy, run `up -d --wait` again and read `docker compose --env-file .env -f infra/compose.yaml logs postgres`. |
 | `password authentication failed for user "hrms_..."` | The role passwords in `.env` changed after the volume was created. Put the old values back, or reset the local database (4.4). |
-| Redis unavailable | Check with the `ping` in section 5 and `docker compose ... logs redis`. The API keeps working with degraded rate limiting. Restart with `up -d --wait`. |
+| Sign-in says "Sign-in is temporarily unavailable. Try again in a minute." (API answers `503`, log shows `ratelimit.store_unavailable`) | Redis is not reachable, and the sign-in limits fail closed by design (section 5). Usually the Compose services stopped when Docker Desktop or the computer restarted. Run `docker compose --env-file .env -f infra/compose.yaml up -d --wait` (or `run-backend.cmd`), check with the `ping` in section 5, then sign in again. The API does not need a restart. `/api/health/ready` stays `ok` because it checks only PostgreSQL. |
+| Sign-in or other requests fail with "We couldn't complete this request" after updating the code (API log shows `UndefinedColumn` or `UndefinedTable`) | The database is behind the code. Apply the migrations (3.2) to every local database you use, for example `hrms` and `hrms_acceptance`, then retry. |
+| Sign-in says the email "is not a valid email address" for an `@example.test` account | The `.test` domain is a special-use name that address validation refuses. Use accounts on `example.com` (section 9.2). |
 | Migration fails | Check that PostgreSQL is healthy and that `DATABASE_URL_MIGRATOR` uses `hrms_migrator` and port 5433. Read the error. A half-applied local database can be reset (4.4). Never fix it with `alembic downgrade` or `procrastinate schema --apply`. |
 | Port 8000, 5173, 5433, 6380, 1025 or 8025 already in use | Find the process with `Get-NetTCPConnection -LocalPort 8000 -State Listen \| Select-Object OwningProcess`, then stop it with `Stop-Process -Id <pid>` if it is an old API or Vite instance. On macOS or Linux, use `lsof -i :8000`. Vite refuses to pick another port, because the origin must match `APP_BASE_URL`. |
 | API start fails with a Proactor or event-loop error on Windows | Include `--loop asyncio:SelectorEventLoop` in the uvicorn command (3.3). |
@@ -435,7 +454,7 @@ must be empty unless you changed the API on purpose. CI fails on a stale contrac
 
 ## 13. Project status
 
-Current checkpoint: **M1 Checkpoint D** (complete; see `docs/m1-implementation-plan.md` §10).
+Current checkpoint: **M1 Checkpoint E** (complete; see `docs/m1-implementation-plan.md` §10 and §12).
 
 Update this document in the same change whenever any of these change: local setup, commands,
 ports, environment variables, the bootstrap process or the test sign-in flow.

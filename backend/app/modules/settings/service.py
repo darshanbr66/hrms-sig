@@ -13,7 +13,7 @@
 from dataclasses import dataclass
 
 from app.platform import settings as registry
-from app.platform.audit.records import AuditActor, AuditEvent, RequestContext, ValueChange
+from app.platform.audit.records import AuditEvent, RequestContext, ValueChange
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
@@ -66,7 +66,7 @@ class SettingsService:
                 session,
                 AuditEvent(
                     action="settings.value.changed",
-                    actor=AuditActor.user(actor.user_id, session_id=actor.session_id),
+                    actor=actor.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="setting",

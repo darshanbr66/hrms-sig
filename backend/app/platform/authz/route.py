@@ -40,6 +40,7 @@ PUBLIC_ROUTES: Final = frozenset(
         "/api/v1/auth/invite/{token}/mfa/totp/confirm",
         "/api/v1/auth/password-reset",
         "/api/v1/auth/password-reset/{token}",
+        "/api/v1/auth/mfa-reenrolment/{token}",
         "/api/health/live",
         "/api/health/ready",
     }
@@ -57,6 +58,7 @@ ACCOUNT_ROUTES: Final = frozenset(
         "/api/v1/me/mfa/totp/setup",
         "/api/v1/me/mfa/totp/confirm",
         "/api/v1/me/mfa/recovery-codes",
+        "/api/v1/me/elevation",
     }
 )
 

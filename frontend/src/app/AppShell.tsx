@@ -1,18 +1,20 @@
 /**
  * The application shell: skip link, header, navigation and the account menu.
  *
- * Navigation lists only what the user may open (ui-ux-guidelines.md §2). In this checkpoint
- * the only screen is the user's own account; later checkpoints add items with the permission
- * each needs. Showing or hiding an item is cosmetic: the API decides every request.
+ * Navigation lists only what the user may open (ui-ux-guidelines.md §2), each item with the
+ * permission it needs. While an elevation or break-glass applies, a banner says which role and
+ * until when. Showing or hiding anything here is cosmetic: the API decides every request.
  */
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router";
+import { Link, NavLink, Outlet, useNavigate } from "react-router";
 
+import { Banner } from "../design-system/Banner";
 import { Button } from "../design-system/Button";
 import { client, unwrap } from "../lib/api";
-import { hasPermission, useMe, type Me } from "./session";
+import { formatDateTime } from "../lib/format";
+import { ELEVATION_KEY, hasPermission, useMe, type Me } from "./session";
 
 interface NavItem {
   to: string;
@@ -22,6 +24,7 @@ interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { to: "/account/security", label: "Account security", permission: null },
+  { to: "/admin/access-requests", label: "Access requests", permission: "role.read" },
   { to: "/settings", label: "Settings", permission: "settings.read" },
 ];
 
@@ -89,9 +92,37 @@ export function AppShell() {
           </ul>
         </nav>
         <main id="main" className="min-w-0 flex-1 md:max-w-[720px]">
+          <ElevationBanner me={me.data} />
           <Outlet />
         </main>
       </div>
+    </div>
+  );
+}
+
+/** Temporary access is always visible while it lasts (docs/authorization-model.md §4.3). */
+function ElevationBanner({ me }: { me: Me | null | undefined }) {
+  const fullSession = me?.session_scope === "full";
+  const elevation = useQuery({
+    queryKey: ELEVATION_KEY,
+    queryFn: () => unwrap(client.GET("/api/v1/me/elevation")),
+    enabled: fullSession,
+    staleTime: 30_000,
+  });
+  const current = fullSession ? elevation.data?.elevation : null;
+  if (!current?.ends_at) return null;
+  const kind = current.kind === "break_glass" ? "break-glass" : "temporary";
+  return (
+    <div className="mb-4">
+      <Banner tone="warning">
+        You have {kind} {current.role_key} access until {formatDateTime(current.ends_at)}. Everything you do
+        is recorded against it.{" "}
+        {hasPermission(me, "role.read") ? (
+          <Link className="underline" to="/admin/access-requests">
+            See access requests
+          </Link>
+        ) : null}
+      </Banner>
     </div>
   );
 }

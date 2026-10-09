@@ -6,12 +6,15 @@
   (docs/security-architecture.md §3.5).
 - `rotate_user_sessions` ends the outstanding access tokens of every session of a user, so
   each session must refresh, which issues new tokens. Used when the user's roles change.
-- `user_status` lets other modules check an account exists without reading its secrets.
+- `user_status` lets other modules check an account exists without reading its secrets;
+  `active_user_ids`, `active_email` and `emails_of` let them address and name accounts
+  (work email is `public_internal`) without reading anything else.
 - `create_invited_account` and `issue_invite` start the account lifecycle: an `invited`
   account and its 72-hour, single-use invite token (docs/security-architecture.md §3.1).
 """
 
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
@@ -60,6 +63,9 @@ async def authenticate(
         or auth.idle_expires_at <= now
         or auth.absolute_expires_at <= now
         or user.status != UserStatus.ACTIVE
+        # An account waiting to re-enrol after an MFA reset has only enrolment sessions (the
+        # database refuses a full one too).
+        or (user.mfa_reenrolment_required and auth.scope != SessionScope.MFA_ENROLMENT.value)
     ):
         return None
     if user_activity and now - auth.last_activity_at >= ACTIVITY_WRITE_INTERVAL:
@@ -79,6 +85,24 @@ async def rotate_user_sessions(session: AsyncSession, user_id: uuid.UUID, now: d
 async def user_status(session: AsyncSession, user_id: uuid.UUID) -> UserStatus | None:
     status = (await session.execute(select(User.status).where(User.id == user_id))).scalar_one_or_none()
     return UserStatus(status) if status is not None else None
+
+
+async def active_user_ids(session: AsyncSession, user_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
+    """The given accounts that are active, in ID order."""
+    return await repo.active_user_ids(session, user_ids)
+
+
+async def active_email(session: AsyncSession, user_id: uuid.UUID) -> str | None:
+    """The address of an active account, for an email the worker is about to send."""
+    query = select(User.email).where(User.id == user_id, User.status == UserStatus.ACTIVE.value)
+    return (await session.execute(query)).scalar_one_or_none()
+
+
+async def emails_of(session: AsyncSession, user_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, str]:
+    if not user_ids:
+        return {}
+    rows = (await session.execute(select(User.id, User.email).where(User.id.in_(user_ids)))).all()
+    return {row.id: row.email for row in rows}
 
 
 async def create_invited_account(

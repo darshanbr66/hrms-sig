@@ -250,17 +250,18 @@ async def confirm_totp(
 ) -> s.TotpConfirmed:
     if not actor.enrolment_only:
         engine.require_step_up(actor)
-    issued = await identity.confirm_factor(
+    confirmation = await identity.confirm_factor(
         _session_actor(actor),
         RequestContext.from_request(request),
         body.factor_id,
         body.code,
         device_token=_device_token(request),
     )
-    if issued is not None:
-        _set_session_cookies(response, issued, clock(request).now())
-        return s.TotpConfirmed(session_scope=issued.scope.value)
-    return s.TotpConfirmed(session_scope=actor.session_scope.value)
+    codes = list(confirmation.recovery_codes) if confirmation.recovery_codes is not None else None
+    if confirmation.session is not None:
+        _set_session_cookies(response, confirmation.session, clock(request).now())
+        return s.TotpConfirmed(session_scope=confirmation.session.scope.value, recovery_codes=codes)
+    return s.TotpConfirmed(session_scope=actor.session_scope.value, recovery_codes=codes)
 
 
 @router.delete("/me/mfa/factors/{factor_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -430,6 +431,20 @@ async def complete_password_reset(
     await resets.complete(RequestContext.from_request(request), token, body.password)
 
 
+# --- MFA re-enrolment after an administrator's reset ---------------------------------------
+
+
+@router.post("/auth/mfa-reenrolment/{token}", response_model=s.SignedIn, dependencies=[public_route()])
+async def start_mfa_reenrolment(
+    token: str, body: s.MfaReenrolmentRequest, request: Request, response: Response, identity: Service
+) -> s.SignedIn:
+    """The emailed link and the password open an enrolment-only session; the new authenticator
+    is then set up with `/me/mfa/totp/setup` and `/me/mfa/totp/confirm`."""
+    issued = await identity.start_reenrolment(RequestContext.from_request(request), token, body.password)
+    _set_session_cookies(response, issued, clock(request).now())
+    return s.SignedIn(session_scope=issued.scope.value)
+
+
 # --- trusted devices ----------------------------------------------------------------------
 
 
@@ -473,6 +488,7 @@ def _user_view(user: User, now: datetime) -> s.UserView:
         status=user.status,
         employee_id=user.employee_id,
         locked=user.locked_until is not None and user.locked_until > now,
+        mfa_reenrolment_required=user.mfa_reenrolment_required,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
     )
@@ -505,6 +521,19 @@ async def enable_user(
 ) -> s.UserView:
     user = await identity.set_disabled(actor, RequestContext.from_request(request), user_id, disabled=False)
     return _user_view(user, clock(request).now())
+
+
+@router.post("/users/{user_id}/mfa-reset", status_code=status.HTTP_202_ACCEPTED)
+async def reset_user_mfa(
+    user_id: uuid.UUID,
+    body: s.MfaResetRequest,
+    request: Request,
+    identity: Service,
+    actor: Annotated[Actor, requires("security.mfa.reset")],
+) -> None:
+    """Remove every authenticator and recovery code of another account, sign it out everywhere
+    and email a re-enrolment link. Step-up; never one's own account."""
+    await identity.reset_mfa(actor, RequestContext.from_request(request), user_id, body.reason)
 
 
 @router.get("/users/{user_id}/sessions", response_model=s.AdminSessionList)

@@ -10,16 +10,23 @@ same short transaction:
   have a direct report today;
 - the account baseline every active account holds (own sessions and login history).
 
+An elevation or break-glass whose assignment applies now is named on the actor
+(`grant_request_id`), so the audit records of the elevated session carry it.
+
 Nothing is cached, so revocations, expiries and reporting-line changes apply on the next
 request. The transaction closes before the route runs, so a route never holds two pooled
 connections at once.
 
+`AccountRoles` tells identity which roles an account holds (identity cannot import access).
+
 `bootstrap_super_admins` is the installation step that creates the first two super admins
-(docs/authorization-model.md §4.3, bootstrap).
+(docs/authorization-model.md §4.3, bootstrap). The worker registers `register_grant_expiry`
+and the `AccessEmails` renderers.
 """
 
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import Request
@@ -27,6 +34,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access import repository as repo
+from app.modules.access.emails import AccessEmails
+from app.modules.access.grant_requests import register_grant_expiry
 from app.modules.access.models import UserRole
 from app.modules.identity import public as identity
 from app.modules.people import public as people
@@ -37,10 +46,25 @@ from app.platform.db import Database
 from app.platform.errors import ProblemError, ProblemType
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveAccess:
+    grants: dict[str, tuple[Constraint, ...]]
+    role_keys: frozenset[str]
+    # The elevation or break-glass in effect (at most one applies at a time, database index).
+    grant_request_id: uuid.UUID | None
+
+
 async def effective_grants(
     session: AsyncSession, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
 ) -> tuple[dict[str, tuple[Constraint, ...]], frozenset[str]]:
     """Permission key -> constraints, and the role keys held, for an account now."""
+    access = await effective_access(session, user_id, employee_id, now)
+    return access.grants, access.role_keys
+
+
+async def effective_access(
+    session: AsyncSession, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
+) -> EffectiveAccess:
     today = now.date()
     derived: list[str] = []
     if employee_id is not None and await people.is_employed(session, employee_id, today):
@@ -58,7 +82,12 @@ async def effective_grants(
         key: (UNRESTRICTED,) if UNRESTRICTED in held else tuple(sorted(held, key=str))
         for key, held in constraints.items()
     }
-    return grants, frozenset({row.role_key for row in rows} | set(derived))
+    elevations = sorted({row.grant_request_id for row in rows if row.grant_request_id and row.time_bound})
+    return EffectiveAccess(
+        grants,
+        frozenset({row.role_key for row in rows} | set(derived)),
+        elevations[-1] if elevations else None,
+    )
 
 
 class SessionActorProvider:
@@ -77,19 +106,48 @@ class SessionActorProvider:
             if auth is None:
                 raise ProblemError(ProblemType.UNAUTHENTICATED)
             if auth.scope is SessionScope.FULL:
-                grants, role_keys = await effective_grants(session, auth.user_id, auth.employee_id, now)
+                access = await effective_access(session, auth.user_id, auth.employee_id, now)
             else:
                 # Enrolment-only sessions hold no permissions at all.
-                grants, role_keys = {}, frozenset()
+                access = EffectiveAccess({}, frozenset(), None)
         return Actor(
             user_id=auth.user_id,
             session_id=auth.session_id,
             session_scope=auth.scope,
             employee_id=auth.employee_id,
-            grants=grants,
-            role_keys=role_keys,
+            grants=access.grants,
+            role_keys=access.role_keys,
             step_up_at=auth.step_up_at,
+            grant_request_id=access.grant_request_id,
         )
+
+
+__all__ = [
+    "BOOTSTRAP_LOCK",
+    "AccessEmails",
+    "AccountRoles",
+    "BootstrapRefusedError",
+    "EffectiveAccess",
+    "SessionActorProvider",
+    "bootstrap_super_admins",
+    "effective_access",
+    "effective_grants",
+    "register_grant_expiry",
+]
+
+
+class AccountRoles:
+    """`identity.service.AccountRoles`: the roles an account holds, for the administrator
+    account rules when disabling (docs/authorization-model.md §6)."""
+
+    async def role_keys(self, session: AsyncSession, user_id: uuid.UUID, now: datetime) -> frozenset[str]:
+        return frozenset(key for _, key in await repo.active_assignments(session, user_id, now))
+
+    async def lock_super_admins(self, session: AsyncSession, now: datetime) -> set[uuid.UUID]:
+        role = await repo.role_by_key(session, RoleKey.SUPER_ADMIN.value)
+        if role is None:
+            raise RuntimeError("the super_admin role is missing from the catalog")
+        return {holder.user_id for holder in await repo.lock_role_holders(session, role.id, now)}
 
 
 class BootstrapRefusedError(Exception):

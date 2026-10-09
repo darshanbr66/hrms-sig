@@ -96,14 +96,13 @@ async def test_the_database_refuses_a_self_granted_role(api: Api) -> None:
         )
 
 
-async def test_derived_super_admin_and_unknown_roles_are_refused(api: Api) -> None:
+async def test_derived_and_unknown_roles_are_refused(api: Api) -> None:
     target = await api.create_account()
     async with api.client() as client:
         await super_admin(api, client)
         for role, status, code in (
             ("employee", 409, "role.derived"),
             ("manager", 409, "role.derived"),
-            ("super_admin", 409, "sod.super_admin_assignment"),
         ):
             response = await assign(client, target.user_id, role)
             assert response.status_code == status, role

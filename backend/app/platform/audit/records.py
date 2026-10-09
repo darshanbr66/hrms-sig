@@ -122,6 +122,18 @@ class SecurityEventType(StrEnum):
     DEVICE_REVOKED = "device.revoked"
     PASSWORD_RESET_REQUESTED = "password_reset.requested"  # noqa: S105 (an event name, not a secret)
     PASSWORD_RESET_COMPLETED = "password_reset.completed"  # noqa: S105 (an event name, not a secret)
+    MFA_REENROLMENT_STARTED = "mfa.reenrolment_started"
+    MFA_REENROLMENT_COMPLETED = "mfa.reenrolment_completed"
+    ELEVATION_REJECTED = "elevation.rejected"
+    ELEVATION_REVOKED = "elevation.revoked"
+    ELEVATION_ENDED = "elevation.ended"
+    ELEVATION_EXPIRED = "elevation.expired"
+    BREAK_GLASS_ACKNOWLEDGED = "elevation.break_glass_acknowledged"
+    SUPER_ADMIN_REQUESTED = "super_admin.requested"
+    SUPER_ADMIN_APPROVED = "super_admin.approved"
+    SUPER_ADMIN_REJECTED = "super_admin.rejected"
+    SUPER_ADMIN_REVOKED = "super_admin.revoked"
+    SUPER_ADMIN_EXPIRED = "super_admin.expired"
 
 
 def _require_aware(value: datetime, name: str) -> None:

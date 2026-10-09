@@ -205,3 +205,8 @@ DATA_ROLES: Final = frozenset(
 
 # docs/security-architecture.md §9: there must be at least two super admins.
 MIN_SUPER_ADMINS: Final = 2
+
+# Administrator accounts: only a `system_admin` holder may disable or enable them, and
+# disabling a super admin must leave at least MIN_SUPER_ADMINS active ones (decided by the
+# project owner for Checkpoint E, docs/authorization-model.md §6).
+ADMIN_ACCOUNT_ROLES: Final = frozenset({RoleKey.SYSTEM_ADMIN, RoleKey.SUPER_ADMIN})

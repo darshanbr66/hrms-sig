@@ -3,6 +3,10 @@
 An Actor is built once per request from PostgreSQL (session, role assignments, derived
 roles); nothing is cached between requests, so a revocation or an expired assignment applies
 on the next request (docs/authorization-model.md §1).
+
+While an elevation or break-glass applies, `grant_request_id` names it, and every audit
+record the actor writes carries it (`audit_actor`), so an elevated session can be reviewed
+as a whole (docs/authorization-model.md §4.3, step 5).
 """
 
 import uuid
@@ -10,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+
+from app.platform.audit.records import AuditActor
 
 
 class SessionScope(StrEnum):
@@ -43,6 +49,8 @@ class Actor:
     grants: Mapping[str, tuple[Constraint, ...]] = field(default_factory=dict)
     role_keys: frozenset[str] = frozenset()
     step_up_at: datetime | None = None
+    # The elevation or break-glass whose role applies now, if any (at most one at a time).
+    grant_request_id: uuid.UUID | None = None
 
     def holds(self, key: str) -> bool:
         return key in self.grants
@@ -54,3 +62,9 @@ class Actor:
     @property
     def enrolment_only(self) -> bool:
         return self.session_scope is SessionScope.MFA_ENROLMENT
+
+    def audit_actor(self) -> AuditActor:
+        """This actor in an audit record: account, session and any elevation in effect."""
+        return AuditActor.user(
+            self.user_id, session_id=self.session_id, grant_request_id=self.grant_request_id
+        )

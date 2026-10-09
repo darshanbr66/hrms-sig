@@ -289,7 +289,9 @@ describe("redirect safety", () => {
     ["https://evil.example/", "/account/security"],
     ["//evil.example/account/", "/account/security"],
     ["/\\evil.example", "/account/security"],
-    ["/admin/elsewhere", "/account/security"],
+    ["/admin/access-requests", "/admin/access-requests"],
+    ["/elsewhere/admin/", "/account/security"],
+    ["/administrator", "/account/security"],
     [null, "/account/security"],
   ])("safeNext(%s) is %s", (next, expected) => {
     expect(safeNext(next)).toBe(expected);

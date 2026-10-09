@@ -7,6 +7,7 @@ import { ApiError } from "../lib/problem";
 export type Me = components["schemas"]["Me"];
 
 export const meQueryKey = ["identity", "me"] as const;
+export const ELEVATION_KEY = ["access", "elevation"] as const;
 
 /** The signed-in account, or null when there is no session. */
 export async function fetchMe(): Promise<Me | null> {

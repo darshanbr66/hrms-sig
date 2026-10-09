@@ -15,7 +15,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import ColumnElement, Select, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.platform.audit.records import AuditActor, AuditEvent, RequestContext
+from app.platform.audit.records import AuditEvent, RequestContext
 from app.platform.audit.tables import audit_log, security_events
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
@@ -118,7 +118,7 @@ async def _record_read(
         session,
         AuditEvent(
             action=action,
-            actor=AuditActor.user(actor.user_id, session_id=actor.session_id),
+            actor=actor.audit_actor(),
             context=RequestContext.from_request(request),
             permission_used=permission,
         ),

@@ -4,8 +4,10 @@ import logging
 
 import pytest
 
+from app.modules.notify.public import EmailTemplate
 from app.platform.audit.partitions import QUEUE, SCHEDULE, TASK_NAME
-from app.worker import build_job_app
+from app.platform.clock import SystemClock
+from app.worker import build_job_app, email_renderers
 from tests.api_support import worker_settings
 from tests.conftest import PostgresServer, database_as, fresh_migrated_database
 
@@ -90,3 +92,20 @@ async def test_the_email_outbox_is_dispatched_every_minute(migrated_postgres: Po
     ]
     assert periodic.cron == "* * * * *"
     assert job_app.tasks["notify.dispatch_email"].queue == "email"
+
+
+async def test_grant_expiry_runs_every_minute(migrated_postgres: PostgresServer) -> None:
+    settings = worker_settings(migrated_postgres.url("hrms_worker"))
+    async with database_as(migrated_postgres, "hrms_worker") as database:
+        job_app = build_job_app(settings, database)
+    [periodic] = [
+        task
+        for key, task in job_app.periodic_registry.periodic_tasks.items()
+        if key[0] == "access.expire_grants"
+    ]
+    assert periodic.cron == "* * * * *"
+    assert job_app.tasks["access.expire_grants"].queue == "access"
+
+
+def test_every_email_template_has_a_renderer() -> None:
+    assert set(email_renderers("https://hrms.test", SystemClock())) == set(EmailTemplate)

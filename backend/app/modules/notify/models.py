@@ -34,6 +34,8 @@ class EmailTemplate(StrEnum):
     ACCOUNT_LOCKED = "identity.account_locked"
     RECOVERY_CODE_USED = "identity.recovery_code_used"
     MFA_CHANGED = "identity.mfa_changed"
+    MFA_RESET = "identity.mfa_reset"
+    GRANT_REQUEST = "access.grant_request"
 
 
 class EmailOutbox(Base):

@@ -120,5 +120,17 @@ async def mfa_changed(session: AsyncSession, user_id: uuid.UUID, change: str, no
     )
 
 
+async def mfa_reset(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+    """Queue the re-enrolment email of an administrator's MFA reset; only the newest link works."""
+    await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.MFA_RESET], now=now)
+    await enqueue(
+        session,
+        user_id=user_id,
+        template=EmailTemplate.MFA_RESET,
+        idempotency_key=f"mfa_reset:{uuid.uuid4()}",
+        now=now,
+    )
+
+
 async def cancel_invites(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
     await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.INVITE], now=now)

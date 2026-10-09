@@ -843,6 +843,59 @@
         }
       }
     },
+    "/api/v1/auth/mfa-reenrolment/{token}": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Start Mfa Reenrolment",
+        "description": "The emailed link and the password open an enrolment-only session; the new authenticator\nis then set up with `/me/mfa/totp/setup` and `/me/mfa/totp/confirm`.",
+        "operationId": "start_mfa_reenrolment_api_v1_auth_mfa_reenrolment__token__post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaReenrolmentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedIn"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/devices": {
       "get": {
         "tags": [
@@ -1072,6 +1125,58 @@
                 "schema": {
                   "$ref": "#/components/schemas/UserView"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/mfa-reset": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Reset User Mfa",
+        "description": "Remove every authenticator and recovery code of another account, sign it out everywhere\nand email a re-enrolment link. Step-up; never one's own account.",
+        "operationId": "reset_user_mfa_api_v1_users__user_id__mfa_reset_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -1389,7 +1494,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AssignmentView"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AssignmentView"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GrantRequestView"
+                    }
+                  ],
+                  "title": "Response Assign Role Api V1 Users  User Id  Roles Post"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "For `super_admin`: a request that a second super admin must approve.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
                 }
               }
             }
@@ -1446,6 +1569,390 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "List Grant Requests",
+        "operationId": "list_grant_requests_api_v1_role_grant_requests_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "expired",
+                    "active",
+                    "ended",
+                    "revoked"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Request Elevation",
+        "description": "Ask for a role for yourself for a limited time. Another super admin must approve it.",
+        "operationId": "request_elevation_api_v1_role_grant_requests_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElevationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests/break-glass": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Break Glass",
+        "description": "Emergency only: `system_admin` for yourself for at most an hour, without approval.",
+        "operationId": "break_glass_api_v1_role_grant_requests_break_glass_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BreakGlassCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests/{request_id}/approve": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Approve Grant Request",
+        "operationId": "approve_grant_request_api_v1_role_grant_requests__request_id__approve_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests/{request_id}/reject": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Reject Grant Request",
+        "operationId": "reject_grant_request_api_v1_role_grant_requests__request_id__reject_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests/{request_id}/revoke": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Revoke Grant Request",
+        "description": "Withdraw a pending request, or end an active elevation or break-glass now.",
+        "operationId": "revoke_grant_request_api_v1_role_grant_requests__request_id__revoke_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/role-grant-requests/{request_id}/acknowledge": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Acknowledge Break Glass",
+        "description": "Record the post-incident review of a break-glass use (by another super admin).",
+        "operationId": "acknowledge_break_glass_api_v1_role_grant_requests__request_id__acknowledge_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/elevation": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "My Elevation",
+        "operationId": "my_elevation_api_v1_me_elevation_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentElevation"
                 }
               }
             }
@@ -2026,6 +2533,18 @@
             "type": "string",
             "title": "Grant Reason"
           },
+          "grant_request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Request Id"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2043,6 +2562,7 @@
           "valid_until",
           "granted_by",
           "grant_reason",
+          "grant_request_id",
           "created_at"
         ],
         "title": "AssignmentView"
@@ -2268,10 +2788,51 @@
         ],
         "title": "AuditRecord"
       },
+      "BreakGlassCreate": {
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Duration Minutes",
+            "default": 60
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "BreakGlassCreate"
+      },
       "CodeInput": {
         "type": "string",
         "maxLength": 32,
         "minLength": 1
+      },
+      "CurrentElevation": {
+        "properties": {
+          "elevation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GrantRequestView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "elevation"
+        ],
+        "title": "CurrentElevation",
+        "description": "The elevation or break-glass that applies to the signed-in account now, if any."
       },
       "DeviceList": {
         "properties": {
@@ -2341,6 +2902,57 @@
         "title": "DeviceView",
         "description": "A browser the account has signed in from. Recognizing it never skips MFA or step-up."
       },
+      "ElevationCreate": {
+        "properties": {
+          "role_key": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Role Key"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "maximum": 480.0,
+            "minimum": 1.0,
+            "title": "Duration Minutes",
+            "default": 120
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role_key",
+          "reason"
+        ],
+        "title": "ElevationCreate"
+      },
       "Factor": {
         "properties": {
           "id": {
@@ -2402,6 +3014,277 @@
           "items"
         ],
         "title": "FactorList"
+      },
+      "GrantDecision": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Reason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GrantDecision"
+      },
+      "GrantRequestPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GrantRequestView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "GrantRequestPage"
+      },
+      "GrantRequestView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "elevation",
+              "super_admin_assignment",
+              "break_glass"
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "expired",
+              "active",
+              "ended",
+              "revoked"
+            ],
+            "title": "Status"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/UserRef"
+          },
+          "role_key": {
+            "type": "string",
+            "title": "Role Key"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "duration_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Minutes"
+          },
+          "requested_by": {
+            "$ref": "#/components/schemas/UserRef"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          },
+          "decide_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decide By"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ends At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "acknowledged_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "subject",
+          "role_key",
+          "department_id",
+          "location_id",
+          "reason",
+          "duration_minutes",
+          "requested_by",
+          "requested_at",
+          "decide_by",
+          "decided_by",
+          "decided_at",
+          "decision_note",
+          "starts_at",
+          "ends_at",
+          "revoked_by",
+          "revoked_at",
+          "acknowledged_by",
+          "acknowledged_at"
+        ],
+        "title": "GrantRequestView"
       },
       "HTTPValidationError": {
         "properties": {
@@ -2790,6 +3673,36 @@
         ],
         "title": "Me"
       },
+      "MfaReenrolmentRequest": {
+        "properties": {
+          "password": {
+            "$ref": "#/components/schemas/PasswordInput"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "MfaReenrolmentRequest"
+      },
+      "MfaResetRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "MfaResetRequest",
+        "description": "Why the reset is needed, recorded in the audit log. Record the identity check that was\ndone (docs/runbooks), not personal details."
+      },
       "PasswordChange": {
         "properties": {
           "current_password": {
@@ -2840,6 +3753,11 @@
           "email"
         ],
         "title": "PasswordResetRequest"
+      },
+      "Reason": {
+        "type": "string",
+        "maxLength": 500,
+        "minLength": 1
       },
       "RecoveryCodes": {
         "properties": {
@@ -3336,6 +4254,20 @@
               "mfa_enrolment"
             ],
             "title": "Session Scope"
+          },
+          "recovery_codes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Codes"
           }
         },
         "additionalProperties": false,
@@ -3421,6 +4353,33 @@
         ],
         "title": "UserPage"
       },
+      "UserRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "email"
+        ],
+        "title": "UserRef"
+      },
       "UserView": {
         "properties": {
           "id": {
@@ -3457,6 +4416,10 @@
             "type": "boolean",
             "title": "Locked"
           },
+          "mfa_reenrolment_required": {
+            "type": "boolean",
+            "title": "Mfa Reenrolment Required"
+          },
           "last_login_at": {
             "anyOf": [
               {
@@ -3483,6 +4446,7 @@
           "status",
           "employee_id",
           "locked",
+          "mfa_reenrolment_required",
           "last_login_at",
           "created_at"
         ],

@@ -66,6 +66,38 @@ async def test_step_up_attempts_are_limited_per_session(api: Api) -> None:
         assert (await client.post(STEP_UP, json={"code": account.code(api.clock.now())})).status_code == 429
 
 
+async def test_a_locked_account_still_steps_up_and_step_up_failures_count(api: Api) -> None:
+    """Decision (docs/security-architecture.md §3.4, §3.6): the lockout guards password checks;
+    it does not block step-up in a session that already passed both factors. Otherwise anyone
+    who knows an address could lock a signed-in administrator out of incident response by
+    typing wrong passwords. Step-up keeps its own per-session limit, and its failures still
+    count towards the lockout, so a stolen session guessing codes locks new sign-ins and
+    emails the owner."""
+    account = await api.create_account()
+    async with api.client() as client, api.client() as attacker:
+        await api.sign_in(client, account)
+        for _ in range(10):
+            await attacker.post(
+                "/api/v1/auth/login", json={"email": account.email, "password": "wrong guess 123"}
+            )
+        [(locked_until, failures)] = await api.fetch(
+            "SELECT locked_until, failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
+        )
+        assert locked_until is not None
+        assert locked_until > api.clock.now()
+        # The locked account's own session can still step up with its authenticator.
+        assert (await api.step_up(client, account)).status_code == 200
+        # A wrong step-up code counts like any failed attempt.
+        assert (await client.post(STEP_UP, json={"code": "000000"})).status_code == 422
+        [(after,)] = await api.fetch(
+            "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
+        )
+        assert after == failures + 1
+        # And the lock still refuses sign-in.
+        login = await attacker.post("/api/v1/auth/login", json={"email": account.email, "password": PASSWORD})
+        assert login.status_code == 401
+
+
 async def test_the_old_refresh_token_is_retired_by_step_up(api: Api) -> None:
     account = await api.create_account()
     async with api.client() as client:

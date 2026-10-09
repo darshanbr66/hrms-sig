@@ -70,6 +70,48 @@ ROUTES = (
     ),
     Route("GET", "/api/v1/audit-log", "audit.read"),
     Route("GET", "/api/v1/security-events", "security.event.read"),
+    Route(
+        "POST",
+        "/api/v1/users/{target}/mfa-reset",
+        "security.mfa.reset",
+        {"reason": "Matrix test"},
+        allowed_statuses=frozenset({202}),
+    ),
+    Route("GET", "/api/v1/role-grant-requests", "role.read"),
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests",
+        "role.elevation.request",
+        {"role_key": "auditor", "reason": "Matrix test"},
+        allowed_statuses=frozenset({201}),
+    ),
+    # {grant_request} does not exist: an allowed caller learns only that.
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests/{grant_request}/approve",
+        "role.elevation.approve",
+        {},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests/{grant_request}/reject",
+        "role.elevation.approve",
+        {},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests/{grant_request}/revoke",
+        "role.elevation.approve",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests/{grant_request}/acknowledge",
+        "role.elevation.approve",
+        allowed_statuses=frozenset({404}),
+    ),
     Route("GET", "/api/v1/me/sessions", "auth.session.read.self"),
     Route("GET", "/api/v1/me/login-history", "auth.session.read.self"),
     Route("DELETE", "/api/v1/me/sessions", "auth.session.revoke.self"),
@@ -78,6 +120,14 @@ ROUTES = (
         "/api/v1/me/sessions/{session}",
         "auth.session.revoke.self",
         allowed_statuses=frozenset({404}),
+    ),
+    # Last: activating break-glass rotates the caller's tokens (its role changed).
+    Route(
+        "POST",
+        "/api/v1/role-grant-requests/break-glass",
+        "role.elevation.break_glass",
+        {"reason": "Matrix test"},
+        allowed_statuses=frozenset({201}),
     ),
 )
 
@@ -97,7 +147,12 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
     )
     [(role,)] = await api.fetch("SELECT id FROM access.roles WHERE key = 'hr'")
     path = route.path.format(
-        target=target.user_id, assignment=assignment, role=role, session=uuid.uuid4(), device=uuid.uuid4()
+        target=target.user_id,
+        assignment=assignment,
+        role=role,
+        session=uuid.uuid4(),
+        device=uuid.uuid4(),
+        grant_request=uuid.uuid4(),
     )
     return await client.request(route.method, path, json=route.body)
 

@@ -39,6 +39,9 @@ INVITE_PER_IP: Final = RateLimitRule(RateLimitScope.AUTH, "invite.ip", 20, timed
 PASSWORD_RESET_COMPLETE_PER_IP: Final = RateLimitRule(
     RateLimitScope.AUTH, "reset.complete.ip", 20, timedelta(minutes=5)
 )
+MFA_REENROLMENT_PER_IP: Final = RateLimitRule(
+    RateLimitScope.AUTH, "mfa_reenrolment.ip", 20, timedelta(minutes=5)
+)
 
 # §3.3 MFA.
 MAX_ACTIVE_FACTORS: Final = 5

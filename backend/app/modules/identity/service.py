@@ -1,4 +1,4 @@
-"""Sign-in, sessions, step-up, password and MFA management, invite activation.
+"""Sign-in, sessions, step-up, password and MFA management, invite activation, MFA reset.
 
 docs/security-architecture.md §3, docs/api-architecture.md §5. Rules that shape the code:
 
@@ -14,6 +14,15 @@ docs/security-architecture.md §3, docs/api-architecture.md §5. Rules that shap
   counts.
 - Refresh tokens are single-use. Presenting a used one revokes the whole session.
 - Audit and security records are written in the same transaction as the change.
+- The account lockout guards every password check (sign-in, password change, re-enrolment
+  after an MFA reset): while locked, the password is not checked at all. It does not block
+  step-up, which re-verifies the authenticator inside a session that already passed both
+  factors: step-up has its own per-session limit, and its failures count towards the lockout
+  (docs/security-architecture.md §3.4, §3.6).
+- An administrator's MFA reset (`security.mfa.reset`) revokes every factor, recovery code,
+  session and trusted device, and emails a re-enrolment link. The link and the password
+  together open an enrolment-only session; confirming a new authenticator there ends the
+  reset and returns new recovery codes (§3.3, threat model T17).
 """
 
 import asyncio
@@ -22,7 +31,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Final
+from typing import Final, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +66,8 @@ from app.platform.audit.records import (
 )
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor, SessionScope
-from app.platform.authz.engine import Authorizer
+from app.platform.authz.engine import AccessDenied, Authorizer
+from app.platform.authz.roles import ADMIN_ACCOUNT_ROLES, MIN_SUPER_ADMINS, RoleKey
 from app.platform.authz.sod import SodRule, refuse_self
 from app.platform.clock import Clock
 from app.platform.db import Database
@@ -120,12 +130,33 @@ class Activation:
 
 
 @dataclass(frozen=True, slots=True)
+class FactorConfirmation:
+    # New session tokens when an enrolment-only session became a full one.
+    session: IssuedSession | None
+    # New recovery codes, shown once, when this confirmation completed a re-enrolment after
+    # an administrator's MFA reset (the reset revoked the old ones).
+    recovery_codes: Sequence[str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionActor:
     """The parts of the acting session the identity service needs."""
 
     user_id: uuid.UUID
     session_id: uuid.UUID
     scope: SessionScope
+
+
+class AccountRoles(Protocol):
+    """The roles an account holds, provided by the access module (wired in `app.main`,
+    because access depends on identity and not the other way round)."""
+
+    async def role_keys(self, session: AsyncSession, user_id: uuid.UUID, now: datetime) -> frozenset[str]: ...
+
+    async def lock_super_admins(self, session: AsyncSession, now: datetime) -> set[uuid.UUID]:
+        """Every account holding `super_admin` now, with the assignments locked, so a count of
+        who remains is not raced by a concurrent removal or disable."""
+        ...
 
 
 class IdentityService:
@@ -140,6 +171,7 @@ class IdentityService:
         audit: AuditWriter,
         authorizer: Authorizer,
         email_hasher: EmailHasher,
+        account_roles: AccountRoles,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._db = database
@@ -150,6 +182,7 @@ class IdentityService:
         self._audit = audit
         self._authz = authorizer
         self._email_hasher = email_hasher
+        self._roles = account_roles
         self._sleep = sleep
 
     # --- sign-in: password step ----------------------------------------------------------
@@ -177,7 +210,9 @@ class IdentityService:
 
         await self._progressive_delay(user, now, values)
         verification = await passwords.verify_password(credential.password_hash, password)
-        if not verification.valid or user.status != UserStatus.ACTIVE:
+        # An account waiting to re-enrol after an MFA reset signs in only through its emailed
+        # link; it answers like any other refused sign-in.
+        if not verification.valid or user.status != UserStatus.ACTIVE or user.mfa_reenrolment_required:
             await self._record_ip_failure(context, values)
             await self._record_failure(context, user.id, stage="password", values=values)
             raise InvalidCredentials
@@ -228,8 +263,10 @@ class IdentityService:
                 failure = "login.challenge_expired"
             else:
                 user = _required(await repo.lock_user(session, challenge.user_id))
-                if user.status != UserStatus.ACTIVE or (
-                    user.locked_until is not None and user.locked_until > now
+                if (
+                    user.status != UserStatus.ACTIVE
+                    or user.mfa_reenrolment_required
+                    or (user.locked_until is not None and user.locked_until > now)
                 ):
                     challenge.used_at = now
                     failure = "login.failed"
@@ -750,12 +787,7 @@ class IdentityService:
             await self._record_failure(
                 context, actor.user_id, stage="password_change", values=values, count=False
             )
-            minutes = math.ceil((user.locked_until - now).total_seconds() / 60)
-            raise field_error(
-                "current_password",
-                "account.locked",
-                f"Too many incorrect attempts. Try again in {minutes} minute{'' if minutes == 1 else 's'}.",
-            )
+            raise _locked("current_password", user.locked_until, now)
         if not (await passwords.verify_password(credential.password_hash, current_password)).valid:
             await self._record_failure(context, actor.user_id, stage="password_change", values=values)
             raise field_error(
@@ -850,13 +882,15 @@ class IdentityService:
         code: str,
         *,
         device_token: str | None = None,
-    ) -> IssuedSession | None:
+    ) -> FactorConfirmation:
         """Confirm a new factor. In an enrolment-only session this completes the recovery:
-        the session becomes a full one, with new tokens."""
+        the session becomes a full one, with new tokens. After an administrator's MFA reset
+        it also ends the reset and makes new recovery codes (the reset revoked the old ones)."""
         now = self._clock.now()
         issued: IssuedSession | None = None
+        codes: list[str] | None = None
         async with self._db.unit_of_work() as session:
-            await self._confirm_factor(session, actor.user_id, factor_id, code, now)
+            user = await self._confirm_factor(session, actor.user_id, factor_id, code, now)
             await self._audit.record_security_event(
                 session,
                 SecurityEvent(
@@ -867,6 +901,21 @@ class IdentityService:
                     session_id=actor.session_id,
                 ),
             )
+            if user.mfa_reenrolment_required:
+                user.mfa_reenrolment_required = False
+                user.updated_at = now
+                user.version += 1
+                codes = await self._new_recovery_codes(session, user.id)
+                await self._audit.record_security_event(
+                    session,
+                    SecurityEvent(
+                        SecurityEventType.MFA_REENROLMENT_COMPLETED,
+                        Severity.INFO,
+                        context=context,
+                        user_id=actor.user_id,
+                        session_id=actor.session_id,
+                    ),
+                )
             await self._mfa_changed(session, actor.user_id, "authenticator_added", now, device_token)
             if actor.scope is SessionScope.MFA_ENROLMENT:
                 record = _required(
@@ -876,12 +925,12 @@ class IdentityService:
                 )
                 record.scope = SessionScope.FULL.value
                 issued = await self.rotate(session, record, now)
-        return issued
+        return FactorConfirmation(issued, codes)
 
     async def _confirm_factor(
         self, session: AsyncSession, user_id: uuid.UUID, factor_id: uuid.UUID, code: str, now: datetime
-    ) -> None:
-        await repo.lock_user(session, user_id)
+    ) -> User:
+        user = _required(await repo.lock_user(session, user_id))
         factor = await repo.pending_factor(
             session, user_id, factor_id, now - defaults.FACTOR_CONFIRMATION_TTL
         )
@@ -897,6 +946,7 @@ class IdentityService:
         factor.last_used_step = step
         factor.last_used_at = now
         factor.updated_at = now
+        return user
 
     async def _mfa_changed(
         self, session: AsyncSession, user_id: uuid.UUID, change: str, now: datetime, device_token: str | None
@@ -1182,16 +1232,38 @@ class IdentityService:
         self, admin: Actor, context: RequestContext, user_id: uuid.UUID, *, disabled: bool
     ) -> User:
         """Disable an account, revoking every session in the same transaction, or re-enable
-        it. Step-up, audited, never one's own account (SOD-4)."""
+        it. Step-up, audited, never one's own account (SOD-4).
+
+        An administrator account (`system_admin` or `super_admin`) is disabled or enabled only
+        by a `system_admin` holder, and disabling a super admin must leave at least two active
+        ones, so nobody holding `user.disable` for HR work can lock the administrators out."""
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, admin, "user.disable")
             refuse_self(admin, user_id, SodRule.OWN_ACCOUNT)
+            held = await self._roles.role_keys(session, user_id, now)
+            if held & ADMIN_ACCOUNT_ROLES and RoleKey.SYSTEM_ADMIN not in admin.role_keys:
+                raise AccessDenied(code="user.admin_account")
+            # The super admin assignments are locked before the account, in the order role
+            # removal takes them, so the two cannot deadlock.
+            super_admins = (
+                await self._roles.lock_super_admins(session, now)
+                if disabled and RoleKey.SUPER_ADMIN in held
+                else set()
+            )
             user = await repo.lock_user(session, user_id)
             if user is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             before = user.status
             revoked: list[uuid.UUID] = []
+            if disabled and user.status != UserStatus.DISABLED and super_admins:
+                remaining = await repo.active_user_ids(session, super_admins - {user.id})
+                if len(remaining) < MIN_SUPER_ADMINS:
+                    raise conflict(
+                        "user.min_super_admins",
+                        f"There must always be at least {MIN_SUPER_ADMINS} active super admins. "
+                        "Make another super admin active before disabling this account.",
+                    )
             if disabled and user.status != UserStatus.DISABLED:
                 user.status = UserStatus.DISABLED.value
                 revoked = await repo.revoke_sessions(
@@ -1227,7 +1299,7 @@ class IdentityService:
                 session,
                 AuditEvent(
                     action="identity.user.disabled" if disabled else "identity.user.enabled",
-                    actor=AuditActor.user(admin.user_id, session_id=admin.session_id),
+                    actor=admin.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
@@ -1237,6 +1309,124 @@ class IdentityService:
                 ),
             )
             return user
+
+    async def reset_mfa(self, admin: Actor, context: RequestContext, user_id: uuid.UUID, reason: str) -> None:
+        """An administrator's MFA reset, for someone who lost every factor and recovery code
+        (docs/security-architecture.md §3.3). Step-up, a recorded reason, never one's own
+        account (SOD-4); the identity check before it is a documented process, not code.
+
+        In one transaction: every factor and unused recovery code is revoked, the account is
+        marked as waiting to re-enrol, every session and trusted device is revoked, pending
+        sign-in challenges and earlier re-enrolment links stop working, and the re-enrolment
+        email is queued (the worker creates its link). The account stays active but can
+        reach only the re-enrolment flow."""
+        now = self._clock.now()
+        async with self._db.unit_of_work() as session:
+            granted = await self._authz.require(session, admin, "security.mfa.reset")
+            refuse_self(admin, user_id, SodRule.OWN_ACCOUNT)
+            user = await repo.lock_user(session, user_id)
+            if user is None:
+                raise ProblemError(ProblemType.NOT_FOUND)
+            if user.status != UserStatus.ACTIVE:
+                raise conflict(
+                    "user.not_active",
+                    "Only an active account has an authenticator to reset. Check the account's status.",
+                )
+            factors = await repo.revoke_all_factors(session, user.id, now)
+            await repo.revoke_recovery_codes(session, user.id, now)
+            user.mfa_reenrolment_required = True
+            user.updated_at = now
+            user.version += 1
+            revoked = await repo.revoke_sessions(
+                session, user_id=user.id, reason=RevokedReason.MFA_RESET, now=now
+            )
+            for purpose in (OneTimePurpose.LOGIN_MFA, OneTimePurpose.MFA_REENROLMENT):
+                await repo.retire_one_time_tokens(session, user.id, purpose, now)
+            await devices.revoke_all(
+                session, user_id=user.id, reason=DeviceRevokedReason.MFA_CHANGED, now=now
+            )
+            await notifications.mfa_reset(session, user.id, now)
+            await self._audit.record_security_event(
+                session,
+                SecurityEvent(
+                    SecurityEventType.MFA_RESET,
+                    Severity.HIGH,
+                    context=context,
+                    user_id=user.id,
+                    details={
+                        "by_user_id": admin.user_id,
+                        "factors_revoked": factors,
+                        "sessions_revoked": len(revoked),
+                    },
+                ),
+            )
+            await self._audit.record(
+                session,
+                AuditEvent(
+                    action="identity.mfa.reset",
+                    actor=admin.audit_actor(),
+                    context=context,
+                    permission_used=granted.key,
+                    target_type="user",
+                    target_id=user.id,
+                    subject_employee_id=user.employee_id,
+                    changes={"mfa_reenrolment_required": ValueChange(False, True)},
+                    reason=reason,
+                ),
+            )
+
+    async def start_reenrolment(
+        self, context: RequestContext, link_token: str, password: str
+    ) -> IssuedSession:
+        """The emailed re-enrolment link plus the account's password open an enrolment-only
+        session, in which the user sets up a new authenticator (`/me/mfa/totp/*`). The link is
+        used up here. Wrong passwords count towards the account lockout, and while the account
+        is locked the password is not checked, so a stolen link cannot be used to guess it."""
+        if context.ip is not None:
+            await self._limiter.enforce(defaults.MFA_REENROLMENT_PER_IP, str(context.ip))
+        if not tokens.looks_like_token(link_token):
+            raise _reenrolment_invalid()
+        digest = tokens.token_digest(link_token)
+        now = self._clock.now()
+        # A cheap check first: an invalid link never costs an Argon2 verification.
+        async with self._db.unit_of_work() as session:
+            values = await policy.load(session)
+            link = await repo.find_one_time_token(session, digest, OneTimePurpose.MFA_REENROLMENT, now)
+            user = await repo.get_user(session, link.user_id) if link else None
+            credential = await repo.credential(session, user.id) if user else None
+        if user is None or credential is None or not _awaiting_reenrolment(user):
+            raise _reenrolment_invalid()
+        if user.locked_until is not None and user.locked_until > now:
+            await self._record_failure(context, user.id, stage="mfa_reenrolment", values=values, count=False)
+            raise _locked("password", user.locked_until, now)
+        if not (await passwords.verify_password(credential.password_hash, password)).valid:
+            await self._record_failure(context, user.id, stage="mfa_reenrolment", values=values)
+            raise field_error("password", "password.incorrect", "Your password is not correct.")
+        now = self._clock.now()
+        async with self._db.unit_of_work() as session:
+            # Re-checked under the lock: a concurrent use, a newer link or a lock since the
+            # first check makes this one fail.
+            link = await repo.lock_one_time_token(session, digest, OneTimePurpose.MFA_REENROLMENT, now)
+            user = await repo.lock_user(session, link.user_id) if link else None
+            if link is None or user is None or not _awaiting_reenrolment(user):
+                raise _reenrolment_invalid()
+            if user.locked_until is not None and user.locked_until > now:
+                raise _locked("password", user.locked_until, now)
+            link.used_at = now
+            issued = await self._open_session(
+                session, user, SessionScope.MFA_ENROLMENT, context, now=now, values=values
+            )
+            await self._audit.record_security_event(
+                session,
+                SecurityEvent(
+                    SecurityEventType.MFA_REENROLMENT_STARTED,
+                    Severity.WARNING,
+                    context=context,
+                    user_id=user.id,
+                    session_id=issued.session_id,
+                ),
+            )
+        return issued
 
     async def sessions_of(
         self, admin: Actor, context: RequestContext, user_id: uuid.UUID
@@ -1251,7 +1441,7 @@ class IdentityService:
                 session,
                 AuditEvent(
                     action="identity.sessions.read",
-                    actor=AuditActor.user(admin.user_id, session_id=admin.session_id),
+                    actor=admin.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
@@ -1287,7 +1477,7 @@ class IdentityService:
                 session,
                 AuditEvent(
                     action="identity.sessions.revoked",
-                    actor=AuditActor.user(admin.user_id, session_id=admin.session_id),
+                    actor=admin.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
@@ -1311,6 +1501,30 @@ def _session_usable(record: AuthSession, user: User, now: datetime) -> bool:
         and record.idle_expires_at > now
         and record.absolute_expires_at > now
         and user.status == UserStatus.ACTIVE
+        and (not user.mfa_reenrolment_required or record.scope == SessionScope.MFA_ENROLMENT.value)
+    )
+
+
+def _awaiting_reenrolment(user: User) -> bool:
+    return user.status == UserStatus.ACTIVE and user.mfa_reenrolment_required
+
+
+def _locked(field: str, locked_until: datetime, now: datetime) -> ProblemError:
+    minutes = math.ceil((locked_until - now).total_seconds() / 60)
+    return field_error(
+        field,
+        "account.locked",
+        f"Too many incorrect attempts. Try again in {minutes} minute{'' if minutes == 1 else 's'}.",
+    )
+
+
+def _reenrolment_invalid() -> ProblemError:
+    return ProblemError(
+        ProblemType.CONFLICT,
+        detail=(
+            "This link has expired or was already used. Ask your HR team to reset your authenticator again."
+        ),
+        extensions={"code": "mfa_reenrolment.invalid"},
     )
 
 

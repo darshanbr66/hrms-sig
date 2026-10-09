@@ -42,7 +42,7 @@ A higher scope does not imply a lower one automatically in the catalog; the engi
 | `auth.session.revoke.all` | Revoke any user's sessions | SU, R |
 | `user.read.all` | List user accounts and account state | |
 | `user.invite` | Create accounts, resend and revoke invites. Grants no role; linking an employee record also needs `employee.lifecycle.manage` over that employee and their work email. | R |
-| `user.disable` | Disable / re-enable accounts | SU, R, SoD (not self) |
+| `user.disable` | Disable / re-enable accounts. An administrator account (`system_admin`, `super_admin`) only by a `system_admin` holder, keeping at least two active super admins (§6) | SU, R, SoD (not self) |
 | `security.mfa.reset` | Reset another user's MFA | SU, R, SoD (not self) |
 | `security.event.read` | Read security events and login history of all users | R |
 | `security.settings.manage` | Password, session, lockout, IP policies | SU, R |
@@ -273,7 +273,7 @@ A super admin is usually also an employee and holds the `employee` role for thei
 
 ### 4.3 Privilege elevation
 
-Elevation is the only way a super admin obtains a role that grants data access. It is stored in `access.role_elevations` (`database-design.md` §4.2).
+Elevation is the only way a super admin obtains a role that grants data access. It is stored in `access.role_grant_requests` (kind `elevation`, `database-design.md` §4.2), together with super admin assignment requests and break-glass uses.
 
 1. **Request** (`role.elevation.request`): role, reason (required, free text), duration (default 2 h, maximum 8 h), optional department/location constraint. Requires step-up. All super admins are notified.
 2. **Approve or reject** (`role.elevation.approve`): by a **different** super admin, with step-up. Requests not decided within 24 hours expire.
@@ -286,6 +286,8 @@ Elevation is the only way a super admin obtains a role that grants data access. 
 Elevation to `super_admin` itself is not possible; assigning `super_admin` goes through `role.assign` with SOD-8.
 
 **Bootstrap:** the one-time installation CLI invites the first **two** super admins together, because SOD-8 cannot be satisfied with fewer than two. SOD-8 applies to every assignment after that.
+
+**Implementation notes (Checkpoint E):** every grant-request action also requires the acting account to hold `super_admin`, whatever else grants its permissions. Approval starts an elevation at once, for exactly the requested duration. Approving a super admin assignment needs `role.assign` as well as `role.elevation.approve`, by a super admin who is neither the assigner nor the assignee, and re-checks SOD-10. Any super admin, including the requester, can withdraw a pending request or end an active elevation or break-glass early (`revoke`); an approved super admin assignment is removed as a role assignment instead. Removing someone's `super_admin` role ends their temporary access and withdraws their pending requests. The limits are also CHECK constraints and triggers in the database (`database-design.md` §4.2).
 
 **No standing data roles for super admins** (SOD-10): a user who holds `super_admin` cannot also hold a permanent assignment of `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor`. They get those only through time-bound elevation. If a person needs one of those roles for daily work, they should not be a super admin. Sigvitas should pick super admins with this in mind (roadmap §6).
 
@@ -311,6 +313,8 @@ Enforced in `platform/authz` regardless of permissions held:
 | SOD-8 Assigning the `super_admin` role requires approval by a second super admin (not the assigner, not the assignee) | `role.assign` for `super_admin` |
 | SOD-9 An elevation request cannot be approved by its requester; break-glass is limited to `system_admin` for 1 hour | `role.elevation.*` |
 | SOD-10 A `super_admin` holder cannot hold standing (non-elevated) `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor` assignments, and those roles cannot be assigned to a user while they hold `super_admin` | `role.assign` |
+
+**Administrator accounts** (decided by the project owner for Checkpoint E): an account holding `system_admin` or `super_admin` (including through an elevation or break-glass) is disabled or enabled only by an actor holding `system_admin` (`403 user.admin_account` otherwise), so `user.disable` held for HR work cannot lock the administrators out. Disabling a super admin is refused when fewer than two active super admins would remain (`409 user.min_super_admins`), and removing the `super_admin` role counts only active accounts in the same way (`409 role.min_super_admins`). Both checks lock the `super_admin` assignments first, so concurrent requests cannot both pass.
 
 When the approver for a request is also its subject (e.g. a manager with no manager), the request routes to `hr` holders with `.approve.all`.
 

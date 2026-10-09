@@ -39,6 +39,7 @@ class RevokedReason(StrEnum):
     ACCOUNT_DISABLED = "account_disabled"
     TOKEN_REUSE = "token_reuse"  # noqa: S105 (a reason name, not a secret)
     PASSWORD_RESET = "password_reset"  # noqa: S105 (a reason name, not a secret)
+    MFA_RESET = "mfa_reset"
 
 
 class TokenKind(StrEnum):
@@ -51,6 +52,8 @@ class OneTimePurpose(StrEnum):
     INVITE_ENROLMENT = "invite_enrolment"
     LOGIN_MFA = "login_mfa"
     PASSWORD_RESET = "password_reset"  # noqa: S105 (a purpose name, not a secret)
+    # The emailed link of an administrator's MFA reset (24 h by default, single use).
+    MFA_REENROLMENT = "mfa_reenrolment"
 
 
 class DeviceRevokedReason(StrEnum):
@@ -78,6 +81,9 @@ class User(Base):
     failed_login_window_started_at: Mapped[datetime | None]
     last_failed_login_at: Mapped[datetime | None]
     locked_until: Mapped[datetime | None]
+    # Set by an administrator's MFA reset: the account has no factor and can reach only the
+    # re-enrolment flow until a new authenticator is confirmed (revision 0012).
+    mfa_reenrolment_required: Mapped[bool] = mapped_column(server_default=text("false"))
     version: Mapped[int] = mapped_column(server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

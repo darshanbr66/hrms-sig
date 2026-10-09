@@ -122,6 +122,9 @@ class TotpConfirmRequest(_Request):
 
 class TotpConfirmed(_Response):
     session_scope: SessionScopeValue
+    # Shown once: new recovery codes when this confirmation finished a re-enrolment after an
+    # administrator's MFA reset (the reset revoked the old codes). Null otherwise.
+    recovery_codes: list[str] | None = None
 
 
 class RecoveryCodes(_Response):
@@ -203,6 +206,8 @@ class UserView(_Response):
     status: Literal["invited", "active", "disabled"]
     employee_id: uuid.UUID | None
     locked: bool
+    # After an MFA reset, until the person sets up a new authenticator through the emailed link.
+    mfa_reenrolment_required: bool
     last_login_at: datetime | None
     created_at: datetime
 
@@ -233,6 +238,20 @@ class PasswordResetRequest(_Request):
 
 
 class PasswordResetComplete(_Request):
+    password: PasswordInput
+
+
+# --- MFA reset and re-enrolment ---------------------------------------------------------------
+
+
+class MfaResetRequest(_Request):
+    """Why the reset is needed, recorded in the audit log. Record the identity check that was
+    done (docs/runbooks), not personal details."""
+
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class MfaReenrolmentRequest(_Request):
     password: PasswordInput
 
 

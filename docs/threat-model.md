@@ -82,7 +82,8 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 - Attack: a super admin wants to read salaries; two colluding super admins approve each other's elevations; break-glass is used as a routine shortcut.
 - Controls: super admin has no data permissions (`authorization-model.md` §4.2); data roles only via elevation approved by a different super admin, time-bound (≤ 8 h), with step-up on both sides and notification to all super admins; every action under an elevation carries its ID in the audit log; break-glass reaches only `system_admin` (no employee data) for ≤ 1 h and needs acknowledgement by another super admin; the auditor role and all super admins see every elevation in the security center; quarterly access review (Phase 2).
 - Residual risk: two colluding super admins can grant each other a data role. The result is fully visible to the auditor and the third super admin, if any. Sigvitas should choose super admins with this in mind and, ideally, appoint an auditor who is not a super admin.
-- Test: self-approval refused; break-glass refused for any role other than `system_admin`; elevation stops applying at `ends_at` without a job running.
+- Additional control (Checkpoint E): an administrator account (`system_admin`, `super_admin`) is disabled or enabled only by a `system_admin` holder, and at least two active super admins always remain, so an `hr` user holding `user.disable` cannot lock the administrators out and nobody can disable super admins down to one who could no longer get approvals.
+- Test: self-approval refused; break-glass refused for any role other than `system_admin`; elevation stops applying at `ends_at` without a job running (`tests/integration/test_grant_requests.py`); database CHECKs and triggers refuse forged grants; HR refused on administrator accounts and concurrent disables keep two super admins (`tests/integration/test_admin_account_disable.py`).
 
 ### T7. Mass assignment
 - Attack: `PATCH /api/v1/me/profile` with `{"status":"active","role":"hr_admin","department_id":...}`.
@@ -129,7 +130,8 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 
 ### T17. MFA reset social engineering
 - Attack: attacker calls IT pretending to be an employee who lost their phone.
-- Controls: `security.mfa.reset` limited to system admins; requires step-up and reason; affected user emailed; all sessions revoked; re-enrolment needs the password **and** a single-use emailed link, so a caller who only knows the password cannot enrol their own authenticator; documented identity verification procedure (process, not code).
+- Controls: `security.mfa.reset` limited to system admins; requires step-up and reason; affected user emailed; all sessions revoked; re-enrolment needs the password **and** a single-use emailed link, so a caller who only knows the password cannot enrol their own authenticator; documented identity verification procedure (process, not code). The reset also revokes recovery codes and trusted devices; re-enrolment counts wrong passwords towards the lockout and does not check a locked account's password; the database refuses a full session while re-enrolment is pending.
+- Test: `tests/integration/test_mfa_reset.py`.
 
 ### T18. Audit tampering
 - Attack: admin deletes evidence of their actions.

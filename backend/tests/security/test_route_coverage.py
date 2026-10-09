@@ -19,10 +19,6 @@ from tests.integration.test_authorization_matrix import ROUTES as MATRIX_ROUTES
 
 # Permissions whose routes or service methods arrive later (m1-implementation-plan.md §10).
 NOT_YET_USED = {
-    "security.mfa.reset": "E (MFA reset and re-enrolment)",
-    "role.elevation.request": "E (grant requests)",
-    "role.elevation.approve": "E (grant requests)",
-    "role.elevation.break_glass": "E (grant requests)",
     "audit.export": "M5 (exports)",
 }
 # Permissions a service checks beyond the route's own (the route-level rule is broader).
@@ -128,6 +124,7 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{role}": "{role_id}",
         "{session}": "{session_id}",
         "{device}": "{device_id}",
+        "{grant_request}": "{request_id}",
         # The matrix changes one concrete setting.
         "email.delivery.max_attempts": "{key}",
     }

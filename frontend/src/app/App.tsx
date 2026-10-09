@@ -36,6 +36,12 @@ const PasswordResetPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import("../features/settings/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
+const MfaReenrolmentPage = lazy(() =>
+  import("../features/auth/MfaReenrolmentPage").then((m) => ({ default: m.MfaReenrolmentPage })),
+);
+const AccessRequestsPage = lazy(() =>
+  import("../features/admin/AccessRequestsPage").then((m) => ({ default: m.AccessRequestsPage })),
+);
 const InvitePage = lazy(() => import("../features/auth/InvitePage").then((m) => ({ default: m.InvitePage })));
 
 function Page({ children }: { children: ReactNode }) {
@@ -49,7 +55,8 @@ function SessionEndedRedirect() {
   useEffect(
     () =>
       onSessionEnded(() => {
-        if (location.pathname.startsWith("/sign-in") || location.pathname.startsWith("/invite/")) return;
+        const publicPaths = ["/sign-in", "/invite/", "/mfa-reenrolment/", "/password-reset"];
+        if (publicPaths.some((prefix) => location.pathname.startsWith(prefix))) return;
         const next = encodeURIComponent(location.pathname + location.search);
         void navigate(`/sign-in?expired=1&next=${next}`, { replace: true });
       }),
@@ -77,6 +84,14 @@ export const routes: RouteObject[] = [
         element: (
           <Page>
             <PasswordResetPage />
+          </Page>
+        ),
+      },
+      {
+        path: "/mfa-reenrolment/:token",
+        element: (
+          <Page>
+            <MfaReenrolmentPage />
           </Page>
         ),
       },
@@ -113,6 +128,18 @@ export const routes: RouteObject[] = [
                 <RequirePermission permission="settings.read">
                   <Page>
                     <SettingsPage />
+                  </Page>
+                </RequirePermission>
+              </RequireSession>
+            ),
+          },
+          {
+            path: "/admin/access-requests",
+            element: (
+              <RequireSession>
+                <RequirePermission permission="role.read">
+                  <Page>
+                    <AccessRequestsPage />
                   </Page>
                 </RequirePermission>
               </RequireSession>

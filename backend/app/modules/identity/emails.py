@@ -49,6 +49,7 @@ class IdentityEmails:
             EmailTemplate.ACCOUNT_LOCKED: self.account_locked,
             EmailTemplate.RECOVERY_CODE_USED: self.recovery_code_used,
             EmailTemplate.MFA_CHANGED: self.mfa_changed,
+            EmailTemplate.MFA_RESET: self.mfa_reset,
         }
 
     async def _link_token(
@@ -106,6 +107,30 @@ class IdentityEmails:
                 f"password does not change your authenticator app: you will still need it to sign "
                 f"in.\n\nIf you didn't ask for this, you can ignore this email; your password stays "
                 f"the same.{SIGN_OFF}"
+            ),
+        )
+
+    async def mfa_reset(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+        """The re-enrolment link after an administrator's MFA reset. It works only together
+        with the account's password (docs/security-architecture.md §3.3, threat model T17)."""
+        user = await repo.lock_user(session, item.user_id)
+        if user is None or user.status != UserStatus.ACTIVE or not user.mfa_reenrolment_required:
+            return None
+        hours = (await settings.load(session))[settings.MFA_REENROLMENT_TTL]
+        now = self._clock.now()
+        token = await self._link_token(
+            session, user, OneTimePurpose.MFA_REENROLMENT, timedelta(hours=hours), now
+        )
+        return OutgoingEmail(
+            to=user.email,
+            subject=f"Set up your authenticator app again for {PRODUCT}",
+            body=(
+                f"Hello,\n\nAn administrator reset the authenticator app of your {PRODUCT} account, "
+                f"and you have been signed out everywhere. To sign in again, set up an authenticator "
+                f"app with this link:\n\n{self._base}/mfa-reenrolment/{token}\n\nYou will need your "
+                f"password. The link works once and stops working after {hours} hours. Your old "
+                f"recovery codes no longer work; you will get new ones.\n\nIf you didn't ask for "
+                f"this, contact your HR team straight away.{SIGN_OFF}"
             ),
         )
 

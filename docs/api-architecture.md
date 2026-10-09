@@ -99,6 +99,7 @@ MFA is mandatory for every account. No endpoint creates a full session from a pa
 | GET/DELETE | `/me/sessions`, `/me/sessions/{id}` | Own sessions. `DELETE /me/sessions` signs out every session except the current one and returns `{ "revoked": n }`. |
 | GET/DELETE | `/me/devices`, `/me/devices/{id}` | Own trusted browsers (`current` marks this one). Forgetting one makes its next sign-in reported as new. |
 | GET | `/me/login-history` | Own security events (login subset). |
+| GET | `/me/elevation` | The elevation or break-glass that applies to the signed-in account now (`{ "elevation": null }` when none), for the elevation banner. |
 
 Mobile clients send `X-Client-Type: mobile` on login to receive tokens in the body instead of cookies. This header is accepted only on `/auth/*` endpoints.
 
@@ -201,10 +202,10 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /exports/{id}` · `POST /exports/{id}/download`
 
 **Administration**
-- `GET /users` (keyset by ID) · `POST /users` (`user.invite`: `{ email, employee_id? }` → `201`, invite emailed; linking an employee needs `employee.lifecycle.manage` over them and their work email; `409 user.email_in_use`) · `POST /users/{id}/invite` (resend, `202`) · `DELETE /users/{id}/invite` (revoke, `204`) · `POST /users/{id}/disable` · `/enable` · `POST /users/{id}/mfa-reset` (E) · `GET/DELETE /users/{id}/sessions`
-- `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` and creates a `super_admin_assignment` request instead; until grant requests exist (E) it is refused with `409 sod.super_admin_assignment`. Removing a `super_admin` assignment that would leave fewer than two is refused with `409 role.min_super_admins`.)
-- `GET /role-grant-requests?status=` · `POST /role-grant-requests` (`kind: elevation`) · `POST /role-grant-requests/{id}/approve` · `/reject` · `/revoke`
-- `POST /role-grant-requests/break-glass` · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin)
+- `GET /users` (keyset by ID) · `POST /users` (`user.invite`: `{ email, employee_id? }` → `201`, invite emailed; linking an employee needs `employee.lifecycle.manage` over them and their work email; `409 user.email_in_use`) · `POST /users/{id}/invite` (resend, `202`) · `DELETE /users/{id}/invite` (revoke, `204`) · `POST /users/{id}/disable` · `/enable` (an administrator account only by a `system_admin` holder, `403 user.admin_account`; disabling a super admin that would leave fewer than two active ones `409 user.min_super_admins`) · `POST /users/{id}/mfa-reset` (`security.mfa.reset`, step-up, `{ reason }` → `202`, re-enrolment link emailed; own account `403`; not active `409 user.not_active`) · `GET/DELETE /users/{id}/sessions`
+- `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` with the `super_admin_assignment` request instead of an assignment. Removing a `super_admin` assignment that would leave fewer than two active super admins is refused with `409 role.min_super_admins`; temporary access from a request is ended through the request, `409 role.temporary_access`.)
+- `GET /role-grant-requests?status=&cursor=&limit=` (`role.read`, newest first) · `POST /role-grant-requests` (elevation: `{ role_key, reason, duration_minutes, department_id?, location_id? }`, at most 480 minutes) · `POST /role-grant-requests/{id}/approve` · `/reject` (`{ note? }`) · `/revoke`. Every action needs step-up and an account holding `super_admin`; nobody decides a request they made or that names them (`403 sod.own_request`); deciding one that is no longer pending `409 grant_request.not_pending`; a second pending request of the same kind `409 grant_request.pending_exists`.
+- `POST /role-grant-requests/break-glass` (`{ reason, duration_minutes }`, at most 60; `system_admin` only, active at once) · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin)
 - `GET /audit-log?actor_id=&subject_employee_id=&action=&from=&to=`
 - `GET /security-events?...`
 - `GET /settings` (`settings.read`: every registry setting with value, default, bounds, unit and change permission) · `PUT /settings/{key}` (`{ "value": n | null }`; the route needs `settings.manage`, `security.*` keys also `security.settings.manage`; step-up; `null` restores the default; unknown keys `404`)

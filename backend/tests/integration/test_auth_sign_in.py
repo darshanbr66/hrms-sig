@@ -256,7 +256,8 @@ async def test_recovery_code_gives_an_enrolment_only_session(api: Api) -> None:
         confirmed = await client.post(
             "/api/v1/me/mfa/totp/confirm", json={"factor_id": setup["factor_id"], "code": code}
         )
-        assert confirmed.json() == {"session_scope": "full"}
+        # Remaining recovery codes stay valid; new ones come only after an administrator reset.
+        assert confirmed.json() == {"session_scope": "full", "recovery_codes": None}
         assert (await client.get("/api/v1/me/sessions")).status_code == 200
 
     # A recovery code works once.

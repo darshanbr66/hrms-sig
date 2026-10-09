@@ -15,8 +15,11 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
+# Registers every table, so foreign keys into other modules (such as org.locations) resolve.
+import app.metadata  # noqa: F401
 from app.modules.access import router as access_router
-from app.modules.access.public import SessionActorProvider
+from app.modules.access.grant_requests import GrantRequestService
+from app.modules.access.public import AccountRoles, SessionActorProvider
 from app.modules.access.service import AccessService
 from app.modules.audit import router as audit_router
 from app.modules.identity import router as identity_router
@@ -94,6 +97,7 @@ def create_app(settings: ApiSettings, *, clock: Clock | None = None, sleep: Slee
             audit=audit,
             authorizer=authorizer,
             email_hasher=email_hasher,
+            account_roles=AccountRoles(),
             sleep=sleep or asyncio.sleep,
         )
         app.state.password_reset_service = PasswordResetService(
@@ -110,8 +114,16 @@ def create_app(settings: ApiSettings, *, clock: Clock | None = None, sleep: Slee
         app.state.settings_service = SettingsService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
-        app.state.access_service = AccessService(
+        grant_requests = GrantRequestService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer
+        )
+        app.state.grant_request_service = grant_requests
+        app.state.access_service = AccessService(
+            database=database,
+            clock=app_clock,
+            audit=audit,
+            authorizer=authorizer,
+            grant_requests=grant_requests,
         )
         try:
             yield

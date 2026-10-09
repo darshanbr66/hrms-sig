@@ -405,6 +405,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/mfa-reenrolment/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Mfa Reenrolment
+         * @description The emailed link and the password open an enrolment-only session; the new authenticator
+         *     is then set up with `/me/mfa/totp/setup` and `/me/mfa/totp/confirm`.
+         */
+        post: operations["start_mfa_reenrolment_api_v1_auth_mfa_reenrolment__token__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/devices": {
         parameters: {
             query?: never;
@@ -488,6 +509,27 @@ export interface paths {
         put?: never;
         /** Enable User */
         post: operations["enable_user_api_v1_users__user_id__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{user_id}/mfa-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset User Mfa
+         * @description Remove every authenticator and recovery code of another account, sign it out everywhere
+         *     and email a re-enrolment link. Step-up; never one's own account.
+         */
+        post: operations["reset_user_mfa_api_v1_users__user_id__mfa_reset_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -600,6 +642,138 @@ export interface paths {
         post?: never;
         /** Remove Role */
         delete: operations["remove_role_api_v1_users__user_id__roles__assignment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Grant Requests */
+        get: operations["list_grant_requests_api_v1_role_grant_requests_get"];
+        put?: never;
+        /**
+         * Request Elevation
+         * @description Ask for a role for yourself for a limited time. Another super admin must approve it.
+         */
+        post: operations["request_elevation_api_v1_role_grant_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests/break-glass": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Break Glass
+         * @description Emergency only: `system_admin` for yourself for at most an hour, without approval.
+         */
+        post: operations["break_glass_api_v1_role_grant_requests_break_glass_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests/{request_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Grant Request */
+        post: operations["approve_grant_request_api_v1_role_grant_requests__request_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests/{request_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Grant Request */
+        post: operations["reject_grant_request_api_v1_role_grant_requests__request_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests/{request_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Grant Request
+         * @description Withdraw a pending request, or end an active elevation or break-glass now.
+         */
+        post: operations["revoke_grant_request_api_v1_role_grant_requests__request_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/role-grant-requests/{request_id}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge Break Glass
+         * @description Record the post-incident review of a break-glass use (by another super admin).
+         */
+        post: operations["acknowledge_break_glass_api_v1_role_grant_requests__request_id__acknowledge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/elevation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Elevation */
+        get: operations["my_elevation_api_v1_me_elevation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -754,6 +928,8 @@ export interface components {
             granted_by: string | null;
             /** Grant Reason */
             grant_reason: string;
+            /** Grant Request Id */
+            grant_request_id: string | null;
             /**
              * Created At
              * Format: date-time
@@ -817,7 +993,23 @@ export interface components {
             /** Reason */
             reason: string | null;
         };
+        /** BreakGlassCreate */
+        BreakGlassCreate: {
+            reason: components["schemas"]["Reason"];
+            /**
+             * Duration Minutes
+             * @default 60
+             */
+            duration_minutes: number;
+        };
         CodeInput: string;
+        /**
+         * CurrentElevation
+         * @description The elevation or break-glass that applies to the signed-in account now, if any.
+         */
+        CurrentElevation: {
+            elevation: components["schemas"]["GrantRequestView"] | null;
+        };
         /** DeviceList */
         DeviceList: {
             /** Items */
@@ -853,6 +1045,21 @@ export interface components {
              */
             expires_at: string;
         };
+        /** ElevationCreate */
+        ElevationCreate: {
+            /** Role Key */
+            role_key: string;
+            reason: components["schemas"]["Reason"];
+            /**
+             * Duration Minutes
+             * @default 120
+             */
+            duration_minutes: number;
+            /** Department Id */
+            department_id?: string | null;
+            /** Location Id */
+            location_id?: string | null;
+        };
         /** Factor */
         Factor: {
             /**
@@ -879,6 +1086,69 @@ export interface components {
         FactorList: {
             /** Items */
             items: components["schemas"]["Factor"][];
+        };
+        /** GrantDecision */
+        GrantDecision: {
+            note?: components["schemas"]["Reason"] | null;
+        };
+        /** GrantRequestPage */
+        GrantRequestPage: {
+            /** Items */
+            items: components["schemas"]["GrantRequestView"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** GrantRequestView */
+        GrantRequestView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "elevation" | "super_admin_assignment" | "break_glass";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "approved" | "rejected" | "expired" | "active" | "ended" | "revoked";
+            subject: components["schemas"]["UserRef"];
+            /** Role Key */
+            role_key: string;
+            /** Department Id */
+            department_id: string | null;
+            /** Location Id */
+            location_id: string | null;
+            /** Reason */
+            reason: string;
+            /** Duration Minutes */
+            duration_minutes: number | null;
+            requested_by: components["schemas"]["UserRef"];
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Decide By */
+            decide_by: string | null;
+            decided_by: components["schemas"]["UserRef"] | null;
+            /** Decided At */
+            decided_at: string | null;
+            /** Decision Note */
+            decision_note: string | null;
+            /** Starts At */
+            starts_at: string | null;
+            /** Ends At */
+            ends_at: string | null;
+            revoked_by: components["schemas"]["UserRef"] | null;
+            /** Revoked At */
+            revoked_at: string | null;
+            acknowledged_by: components["schemas"]["UserRef"] | null;
+            /** Acknowledged At */
+            acknowledged_at: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1019,6 +1289,19 @@ export interface components {
             /** Permissions */
             permissions: string[];
         };
+        /** MfaReenrolmentRequest */
+        MfaReenrolmentRequest: {
+            password: components["schemas"]["PasswordInput"];
+        };
+        /**
+         * MfaResetRequest
+         * @description Why the reset is needed, recorded in the audit log. Record the identity check that was
+         *     done (docs/runbooks), not personal details.
+         */
+        MfaResetRequest: {
+            /** Reason */
+            reason: string;
+        };
         /** PasswordChange */
         PasswordChange: {
             current_password: components["schemas"]["PasswordInput"];
@@ -1037,6 +1320,7 @@ export interface components {
              */
             email: string;
         };
+        Reason: string;
         /**
          * RecoveryCodes
          * @description Shown once. Each code works once; the previous unused codes stop working.
@@ -1227,6 +1511,8 @@ export interface components {
              * @enum {string}
              */
             session_scope: "full" | "mfa_enrolment";
+            /** Recovery Codes */
+            recovery_codes?: string[] | null;
         };
         /**
          * TotpSetup
@@ -1263,6 +1549,16 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** UserRef */
+        UserRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string | null;
+        };
         /** UserView */
         UserView: {
             /**
@@ -1281,6 +1577,8 @@ export interface components {
             employee_id: string | null;
             /** Locked */
             locked: boolean;
+            /** Mfa Reenrolment Required */
+            mfa_reenrolment_required: boolean;
             /** Last Login At */
             last_login_at: string | null;
             /**
@@ -1977,6 +2275,41 @@ export interface operations {
             };
         };
     };
+    start_mfa_reenrolment_api_v1_auth_mfa_reenrolment__token__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaReenrolmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedIn"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     my_devices_api_v1_me_devices_get: {
         parameters: {
             query?: never;
@@ -2140,6 +2473,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_user_mfa_api_v1_users__user_id__mfa_reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2378,7 +2746,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AssignmentView"];
+                    "application/json": components["schemas"]["AssignmentView"] | components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description For `super_admin`: a request that a second super admin must approve. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
                 };
             };
             /** @description Validation Error */
@@ -2418,6 +2795,257 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_grant_requests_api_v1_role_grant_requests_get: {
+        parameters: {
+            query?: {
+                status?: ("pending" | "approved" | "rejected" | "expired" | "active" | "ended" | "revoked") | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_elevation_api_v1_role_grant_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ElevationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    break_glass_api_v1_role_grant_requests_break_glass_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BreakGlassCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_grant_request_api_v1_role_grant_requests__request_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_grant_request_api_v1_role_grant_requests__request_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_grant_request_api_v1_role_grant_requests__request_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    acknowledge_break_glass_api_v1_role_grant_requests__request_id__acknowledge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_elevation_api_v1_me_elevation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CurrentElevation"];
                 };
             };
         };

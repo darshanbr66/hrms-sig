@@ -5,12 +5,13 @@ regardless of permissions held:
 
 - SOD-3: nobody assigns or removes their own roles (also a database check).
 - Derived roles (`employee`, `manager`) are never assigned (also a database check).
-- SOD-8: `super_admin` is assigned only with a second super admin's approval. That approval
-  workflow arrives with grant requests; until then assigning it is refused, and the only
-  super admins are the two the bootstrap command creates.
+- SOD-8: `super_admin` is assigned only with a second super admin's approval: assigning it
+  creates a grant request (`grant_requests.py`) and nothing is assigned until it is approved.
 - SOD-10: a super admin holds no standing data role (`hr`, `hr_admin`, `payroll_admin`,
   `system_admin`, `auditor`).
 - At least two super admins remain (docs/security-architecture.md §9).
+- An assignment that came from an elevation or break-glass is ended through its request
+  (`revoke`), never removed here, so the request and the assignment stay consistent.
 
 A change to a user's roles ends their sessions' access tokens, so each session refreshes and
 gets new tokens (session rotation on role change, docs/security-architecture.md §3.5).
@@ -26,9 +27,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access import repository as repo
-from app.modules.access.models import Role, UserRole
+from app.modules.access.grant_requests import GrantRequestService
+from app.modules.access.models import GrantKind, Role, RoleGrantRequest, UserRole
 from app.modules.identity import public as identity
-from app.platform.audit.records import AuditActor, AuditEvent, RequestContext, ValueChange
+from app.platform.audit.records import AuditEvent, RequestContext, ValueChange
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
@@ -73,12 +75,19 @@ def _field(field: str, code: str, message: str) -> ProblemError:
 
 class AccessService:
     def __init__(
-        self, *, database: Database, clock: Clock, audit: AuditWriter, authorizer: Authorizer
+        self,
+        *,
+        database: Database,
+        clock: Clock,
+        audit: AuditWriter,
+        authorizer: Authorizer,
+        grant_requests: GrantRequestService,
     ) -> None:
         self._db = database
         self._clock = clock
         self._audit = audit
         self._authz = authorizer
+        self._grant_requests = grant_requests
 
     async def list_roles(self) -> list[RoleWithPermissions]:
         async with self._db.unit_of_work() as session:
@@ -102,7 +111,8 @@ class AccessService:
 
     async def assign(
         self, actor: Actor, context: RequestContext, user_id: uuid.UUID, request: AssignmentRequest
-    ) -> Assignment:
+    ) -> Assignment | RoleGrantRequest:
+        """A new assignment, or, for `super_admin`, a request a second super admin must approve."""
         now = self._clock.now()
         if request.valid_until is not None and request.valid_until <= now:
             raise _field("valid_until", "role.valid_until_past", "Choose an end time in the future.")
@@ -118,9 +128,20 @@ class AccessService:
                     "role.derived", "This role is given automatically from employment and reporting lines."
                 )
             if role.key == RoleKey.SUPER_ADMIN:
-                raise _conflict(
-                    SodRule.SUPER_ADMIN_ASSIGNMENT.value,
-                    "Assigning the super admin role needs approval by a second super admin.",
+                if request.department_id or request.location_id or request.valid_until:
+                    raise _field(
+                        "role_key",
+                        "role.super_admin_unrestricted",
+                        "The super admin role has no department, location or end time.",
+                    )
+                return await self._grant_requests.request_super_admin(
+                    session,
+                    actor,
+                    context,
+                    user_id=user_id,
+                    role=role,
+                    reason=request.reason,
+                    granted=granted,
                 )
             held = {key for _, key in await repo.active_assignments(session, user_id, now)}
             if RoleKey.SUPER_ADMIN in held and role.key in DATA_ROLES:
@@ -144,7 +165,7 @@ class AccessService:
                 session,
                 AuditEvent(
                     action="access.role.assigned",
-                    actor=AuditActor.user(actor.user_id, session_id=actor.session_id),
+                    actor=actor.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
@@ -162,6 +183,15 @@ class AccessService:
         return Assignment(record, role.key)
 
     async def _insert(self, session: AsyncSession, record: UserRole) -> None:
+        # A lapsed assignment of the same role still holds the unique slot until it is closed.
+        await repo.close_lapsed(
+            session,
+            self._clock.now(),
+            user_id=record.user_id,
+            role_id=record.role_id,
+            department_id=record.department_id,
+            location_id=record.location_id,
+        )
         try:
             async with session.begin_nested():
                 session.add(record)
@@ -191,26 +221,38 @@ class AccessService:
             role = await repo.role(session, candidate.role_id)
             if role is None:
                 raise RuntimeError("a role assignment references a missing role")
+            if candidate.grant_request_id is not None and await repo.request_kind(
+                session, candidate.grant_request_id
+            ) in (GrantKind.ELEVATION, GrantKind.BREAK_GLASS):
+                raise _conflict(
+                    "role.temporary_access",
+                    "This is temporary access from an access request. End it from the access requests page.",
+                )
             if role.key == RoleKey.SUPER_ADMIN:
-                # Lock every holder first (in ID order), then count who would remain.
+                # Lock every holder first (in ID order), then count the active accounts that
+                # would remain (a disabled super admin cannot act, as when disabling one).
                 holders = await repo.lock_role_holders(session, role.id, now)
-                remaining = {holder.user_id for holder in holders if holder.id != assignment_id}
+                remaining = await identity.active_user_ids(
+                    session, {holder.user_id for holder in holders if holder.id != assignment_id}
+                )
                 if len(remaining) < MIN_SUPER_ADMINS:
                     raise _conflict(
                         "role.min_super_admins",
-                        f"There must always be at least {MIN_SUPER_ADMINS} super admins.",
+                        f"There must always be at least {MIN_SUPER_ADMINS} active super admins.",
                     )
             record = await repo.lock_assignment(session, assignment_id)
             if record is None or record.revoked_at is not None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             record.revoked_at = now
             record.revoked_by = actor.user_id
+            if role.key == RoleKey.SUPER_ADMIN:
+                await self._grant_requests.end_for_former_super_admin(session, actor, context, user_id)
             await identity.rotate_user_sessions(session, user_id, now)
             await self._audit.record(
                 session,
                 AuditEvent(
                     action="access.role.removed",
-                    actor=AuditActor.user(actor.user_id, session_id=actor.session_id),
+                    actor=actor.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="user",
