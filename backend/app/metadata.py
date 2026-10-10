@@ -6,7 +6,9 @@ this composition root is the one place that imports them all.
 """
 
 from app.modules.access import models as access_models
+from app.modules.attendance import models as attendance_models
 from app.modules.identity import models as identity_models
+from app.modules.leave import models as leave_models
 from app.modules.notify import models as notify_models
 from app.modules.org import models as org_models
 from app.modules.people import models as people_models
@@ -18,8 +20,10 @@ metadata = Base.metadata
 
 __all__ = [
     "access_models",
+    "attendance_models",
     "audit_tables",
     "identity_models",
+    "leave_models",
     "metadata",
     "notify_models",
     "org_models",

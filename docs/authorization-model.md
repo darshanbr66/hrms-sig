@@ -205,7 +205,7 @@ Deriving `manager` from reporting lines removes a common failure: a manager is m
 | audit.export | | | | | | | | ● |
 | settings.read | | | | ● | | ● | ● | |
 | settings.manage | | | | | | ● | | |
-| org.read | ● | | | | | | | |
+| org.read | ● | | ● | ● | | | | |
 | org.manage | | | | ● | | | | |
 | employee.directory.read | ● | | | | | | | |
 | employee.profile.read | self | team | all | all | all | | | |
@@ -234,7 +234,7 @@ Deriving `manager` from reporting lines removes a common failure: a manager is m
 | leave.balance.adjust | | | ● | ● | | | | |
 | leave.policy.manage | | | | ● | | | | |
 | leave.export | | | ● | ● | ● | | | |
-| holiday.read | ● | | | | | | | |
+| holiday.read | ● | | ● | ● | | | | |
 | holiday.manage | | | | ● | | | | |
 | compensation.read | self | | | | all | | | |
 | compensation.update / export | | | | | ● | | | |
@@ -255,6 +255,8 @@ Roles are additive: an HR person is also an `employee` and possibly a `manager`.
 - `super_admin` has **no** compensation, payroll, personal, sensitive, document or message access (§4.2).
 - `hr` and `hr_admin` have **no** compensation access unless also `payroll_admin`.
 - `manager` has **no** personal, sensitive or compensation access to team members.
+
+`org.read` and `holiday.read` were added to `hr` and `hr_admin` by revision 0014 (2026-10-10): both roles create employees and maintain the organization and holiday calendars, which needs the departments, designations, locations and calendars to choose from, and an HR account is not always linked to an employee record. Neither permission reaches personal data.
 
 The least-privilege boundaries above are fixed architecture. The exact grants in the matrix are a proposed default for Sigvitas HR to confirm before M2 (see roadmap §6). Changing them is a data migration, not a code change.
 
@@ -343,7 +345,9 @@ rows = repo.list_days(filter_, date_range, page)
 
 `scope_filter` returns the union of all scopes the actor holds, expressed as a SQL predicate on `employee_id`. If the actor holds none, it raises 403 before any query runs.
 
-Implementation (`platform/authz`): `requires(permission)` on the route is the fast fail (held at some scope) and records a denial of an R-flagged permission as an `access.denied_sensitive` security event, in its own short transaction before the route opens one. The service calls `Authorizer.require(...)` for the full decision: the narrowest held scope that covers the subject wins and is the `permission_used` in the audit row; step-up is checked only after the permission, so a user without it learns nothing about step-up. Permissions not about a person's data (`user.disable`, `auth.session.revoke.all`) are decided by their exact key. A permission without a scope suffix that is decided for a subject employee (`employee.lifecycle.manage`, `employee.create`) reaches every employee like `all`, narrowed the same way by the assignment's department or location constraint. The engine reaches reporting lines and placements through a `Relationships` protocol that the people module implements, so the platform imports no module. "Today" is the UTC date in M1; per-location dates arrive with location time zones (M2), and until then a change effective on a date applies from UTC midnight.
+Implementation (`platform/authz`): `requires(permission)` on the route is the fast fail (held at some scope) and records a denial of an R-flagged permission as an `access.denied_sensitive` security event, in its own short transaction before the route opens one. The service calls `Authorizer.require(...)` for the full decision: the narrowest held scope that covers the subject wins and is the `permission_used` in the audit row; step-up is checked only after the permission, so a user without it learns nothing about step-up. Permissions not about a person's data (`user.disable`, `auth.session.revoke.all`) are decided by their exact key. A permission without a scope suffix that is decided for a subject employee (`employee.lifecycle.manage`, `employee.create`) reaches every employee like `all`, narrowed the same way by the assignment's department or location constraint. The engine reaches reporting lines and placements through a `Relationships` protocol that the people module implements, so the platform imports no module. "Today" for authorization is the UTC date; attendance work dates use the employee's location time zone (M3), but role scopes, job placements and statistics still resolve on the UTC date, so a change effective on a date applies from UTC midnight.
+
+**Implementation notes (M2–M4 slice, 2026-10-10):** list routes for employee records and team attendance build their query from `scope_filter`; single records use `require(..., hide_existence=True)`, so a record outside every held scope answers `404`. A route can name a permission base (`employee.profile.read`, `attendance.read`), held at any scope, and the service decides the scope. Managers see job history without HR's notes, and never the personal tier. An HR assignment restricted to a department or location creates employees and records job changes only into that department or location (`403 employee.outside_assignment`). Reads of another person's personal details (`employee.personal.read.all`) are audited. Self-service profile, personal and attendance routes live under `/me` and take no employee ID.
 
 **Team resolution.** The reporting subtree is computed with a recursive CTE over the job records that apply on a date (`people.employee_jobs` where `effective_from <= d < effective_to`), counting only employees employed on that date. Open-ended rows are not the same thing: a future-dated transfer closes the current row and opens the future one, so selecting `effective_to IS NULL` would move team access before the transfer takes effect. "Now" passes today's date; a historical record passes its own date, which gives the "team at the time of the record" rule in §2. The people module exposes this as `team_member_ids_query` (for scope filters), `is_team_member` (single record, walking up the chain) and `has_direct_reports` (derived `manager` role). At Sigvitas's expected size this is milliseconds. If it becomes a hotspot, a materialized closure table refreshed on job changes replaces it without changing the engine's interface.
 

@@ -5,7 +5,7 @@ import pytest
 
 from tests.conftest import PostgresServer
 
-MODULE_SCHEMAS = ("identity", "access", "org", "people", "notify", "app")
+MODULE_SCHEMAS = ("identity", "access", "org", "people", "notify", "app", "attendance", "leave")
 ALL_SCHEMAS = (*MODULE_SCHEMAS, "audit", "procrastinate", "public")
 
 

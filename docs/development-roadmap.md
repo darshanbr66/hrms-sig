@@ -31,17 +31,23 @@ Nothing user-facing beyond sign-in, MFA and the app shell, but everything else d
 
 ### M2 — Organization and people · M
 
+Progress (2026-10-10): locations, departments, designations; employee create and edit; effective-dated job history with reporting lines and cycle checks; the personal tier; status changes including exit (the account is disabled through the existing account action on the same screen); the directory with search; the self-service profile; the user and role administration screens. Remaining: identifier types, identifiers and bank accounts (waiting for Sigvitas's identifier types), emergency contacts, exit with a single combined revocation call, rehire (open decision).
+
 Locations (with time zones), departments, designations; employee create/edit; effective-dated job history and reporting lines; personal tier; identifier-type catalogue, employee identifiers and bank accounts with encryption and masking; status changes including exit with immediate access revocation; directory with search; self-service profile; HR and role administration screens.
 
 **Exit:** HR can set up Sigvitas's real structure and employee records; managers see exactly their team; exit revokes access.
 
 ### M3 — Attendance, breaks, shifts, corrections · L
 
+Progress (2026-10-10): clock in and out and breaks with server time, sequence checks and idempotency; work dates in the location's time zone; today view, own history, team and HR today view with counts. Remaining: everything that needs Sigvitas's shift and attendance policy values (shifts, assignments, policies, `derive_day`, the day projection, corrections, locks, setup status).
+
 Shift and attendance-policy configuration screens (effective-dated, versioned, with preview against recorded days) and the setup-gap view; shift assignments; clock in/out and breaks with server time and idempotency; `derive_day` as a pure, policy-parameterized function; day projection and recompute jobs (including recompute-from-effective-date on policy change); nightly materialization and incomplete detection; today view; self and team attendance views; correction request/approval with side-by-side timelines; HR-initiated corrections; attendance locks.
 
 **Exit:** with Sigvitas's configured shifts and policies, a full month of attendance for all employees matches hand-checked cases, including midnight-crossing shifts and missing clock-outs. The same test suite also passes against deliberately different test policies, which proves that no value is hard-coded.
 
 ### M4 — Leave and holidays · L
+
+Progress (2026-10-10): holiday calendars per location and year, with the employee's view of their location's holidays. Remaining: everything that needs Sigvitas's leave policy values (leave types, policies, ledger, requests, approvals, team calendar).
 
 Leave type and leave policy configuration screens (leave year, accrual, carry-forward, lapse, negative balance, half-day, attachment, day-counting rules); ledger with opening-balance import, accruals, adjustments, carry-forward, carry-forward expiry and lapse jobs; request with preview, overlap constraint and configured day counting; manager approval; cancellation flows; team leave calendar; holiday calendars per location; integration with attendance day status.
 

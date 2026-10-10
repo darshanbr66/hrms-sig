@@ -21,12 +21,20 @@ from app.modules.access import router as access_router
 from app.modules.access.grant_requests import GrantRequestService
 from app.modules.access.public import AccountRoles, SessionActorProvider
 from app.modules.access.service import AccessService
+from app.modules.attendance import router as attendance_router
+from app.modules.attendance.service import AttendanceService
 from app.modules.audit import router as audit_router
 from app.modules.identity import router as identity_router
 from app.modules.identity.invitations import InvitationService
 from app.modules.identity.password_reset import PasswordResetService
 from app.modules.identity.service import IdentityService, Sleep
+from app.modules.leave import router as leave_router
+from app.modules.leave.holidays import HolidayService
+from app.modules.org import router as org_router
+from app.modules.org.service import OrgService
 from app.modules.people import public as people
+from app.modules.people import router as people_router
+from app.modules.people.service import PeopleService
 from app.modules.settings import router as settings_router
 from app.modules.settings.service import SettingsService
 from app.platform import health
@@ -66,6 +74,10 @@ def _build(*, docs_enabled: bool, lifespan: Any = None) -> FastAPI:
     app.include_router(access_router.router)
     app.include_router(audit_router.router)
     app.include_router(settings_router.router)
+    app.include_router(org_router.router)
+    app.include_router(people_router.router)
+    app.include_router(attendance_router.router)
+    app.include_router(leave_router.router)
     return app
 
 
@@ -112,6 +124,18 @@ def create_app(settings: ApiSettings, *, clock: Clock | None = None, sleep: Slee
             database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
         app.state.settings_service = SettingsService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
+        )
+        app.state.org_service = OrgService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
+        )
+        app.state.people_service = PeopleService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
+        )
+        app.state.attendance_service = AttendanceService(
+            database=database, clock=app_clock, authorizer=authorizer, rate_limiter=limiter
+        )
+        app.state.holiday_service = HolidayService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
         grant_requests = GrantRequestService(

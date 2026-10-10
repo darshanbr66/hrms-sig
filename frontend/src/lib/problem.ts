@@ -83,3 +83,27 @@ export function toApiError(error: unknown, response: Response): ApiError {
   const problem = isProblem(error) ? error : networkProblem();
   return new ApiError(problem, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null);
 }
+
+/** The text to show for a failed action: the first field message for a validation error,
+ * else the problem's own message, else the fallback. */
+export function problemText(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.is("validation-error")) {
+    return error.problem.errors?.[0]?.message ?? fallback;
+  }
+  return error instanceof ApiError ? error.message : fallback;
+}
+
+/** Field messages of a validation error, keyed by the API's field name. */
+export function fieldMessages(error: unknown): Record<string, string> {
+  if (!(error instanceof ApiError) || !error.is("validation-error")) return {};
+  const messages: Record<string, string> = {};
+  for (const item of error.problem.errors ?? []) {
+    if (item.field) messages[item.field] ??= item.message;
+  }
+  return messages;
+}
+
+/** The `If-Match` value for a record at a version (docs/api-architecture.md §3). */
+export function ifMatch(version: number): string {
+  return `"${version}"`;
+}

@@ -7,13 +7,16 @@ export interface TextFieldProps {
   value: string;
   onChange: (value: string) => void;
   onBlur?: () => void;
-  type?: "text" | "email" | "password";
+  type?: "text" | "email" | "password" | "date" | "tel";
   autoComplete?: string;
   description?: string;
   error?: string | undefined;
   inputMode?: "text" | "numeric";
   maxLength?: number;
   inputRef?: Ref<HTMLInputElement>;
+  isRequired?: boolean;
+  min?: string;
+  max?: string;
 }
 
 /** Label above the field, help text below it, and the error linked to the input. */
@@ -30,6 +33,9 @@ export function TextField({
   inputMode,
   maxLength,
   inputRef,
+  isRequired = false,
+  min,
+  max,
 }: TextFieldProps) {
   return (
     <AriaTextField
@@ -42,6 +48,7 @@ export function TextField({
       {...(inputMode ? { inputMode } : {})}
       {...(maxLength ? { maxLength } : {})}
       isInvalid={Boolean(error)}
+      isRequired={isRequired}
       // Forms validate with React Hook Form and the API; the browser must not block a resubmit.
       validationBehavior="aria"
       className="flex flex-col gap-1"
@@ -54,6 +61,8 @@ export function TextField({
       ) : null}
       <Input
         {...(inputRef ? { ref: inputRef } : {})}
+        {...(min ? { min } : {})}
+        {...(max ? { max } : {})}
         className="min-h-10 rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 text-base text-neutral-900 invalid:border-danger-700"
       />
       <FieldError className="text-sm text-danger-700">{error}</FieldError>

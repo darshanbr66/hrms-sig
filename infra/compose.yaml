@@ -2,7 +2,7 @@
 # Start with: docker compose --env-file .env -f infra/compose.yaml up -d --wait
 #
 # Services arrive with the checkpoint that first uses them (docs/m1-implementation-plan.md §7):
-# the S3 emulator with audit anchors (F), ClamAV in M5.
+# ClamAV in M5.
 
 name: hrms
 
@@ -52,5 +52,26 @@ services:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
 
+  # Local S3 with Object Lock in compliance mode, for the audit checkpoint anchors
+  # (docs/security-architecture.md §8.1). RustFS, Apache-2.0, pinned by digest. Locally the
+  # worker uses the emulator's root credentials; staging and production use credentials that
+  # can only write and read objects. Create the bucket once with
+  # backend/scripts/create_local_anchor_bucket.py (docs/local-development.md).
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    environment:
+      RUSTFS_ACCESS_KEY: ${AUDIT_ANCHOR_ACCESS_KEY_ID:?set AUDIT_ANCHOR_ACCESS_KEY_ID in .env}
+      RUSTFS_SECRET_KEY: ${AUDIT_ANCHOR_SECRET_ACCESS_KEY:?set AUDIT_ANCHOR_SECRET_ACCESS_KEY in .env}
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   postgres-data:
+  rustfs-data:

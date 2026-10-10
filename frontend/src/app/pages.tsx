@@ -8,8 +8,8 @@ export function AccessDenied() {
       <PageHeader title="You don't have access to this page" />
       <p className="text-sm text-neutral-700">
         If you need it for your work, ask your HR team.{" "}
-        <Link className="text-accent-700 underline" to="/account/security">
-          Go to your account
+        <Link className="text-accent-700 underline" to="/">
+          Go to the dashboard
         </Link>
       </p>
     </div>
@@ -22,8 +22,8 @@ export function NotFound() {
       <PageHeader title="Page not found" />
       <p className="text-sm text-neutral-700">
         Check the address, or{" "}
-        <Link className="text-accent-700 underline" to="/account/security">
-          go to your account
+        <Link className="text-accent-700 underline" to="/">
+          go to the dashboard
         </Link>
         .
       </p>

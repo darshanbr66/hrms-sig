@@ -42,11 +42,13 @@ Not a metrics dashboard. It answers "what do I need to do now?":
 
 Anything else lives on its own page.
 
+As built (2026-10-10), Home is the dashboard at `/`. It opens with a greeting and the date, then today's clock (employees), the next holidays, and for people whose role reads others' data the figures that role works with: people employed, on notice, joining soon and joined recently (HR, managers), today's attendance counts (managers, HR), work anniversaries and people starting soon, access requests waiting (super admins), the person's own recent sign-ins, and shortcuts to the actions they hold. An organization with no locations, departments or designations shows HR admins the set-up steps first. Every block loads and fails on its own, with a retry. There is no chart: no trend data is recorded yet that a chart would explain better than a number. "Not clocked in yet" is not shown as absence, because absence depends on shifts, weekly offs and leave, which are not configured yet.
+
 ## 3. Layout
 
 - **Desktop (≥ 1024 px):** left sidebar (240 px, collapsible to icons), top bar with global search (directory in MVP), notifications and account menu. Content max width 1280 px for tables, 720 px for forms and reading.
 - **Tablet (640–1023 px):** sidebar collapses to an overlay drawer; top bar remains.
-- **Mobile (< 640 px):** bottom navigation with four destinations — Today, Attendance, Leave, More — plus Approvals replacing Attendance for managers with pending items (decided in Phase 1 usability check). "More" opens a full-screen list of remaining sections. Primary actions are reachable by thumb; the clock action on Today is a full-width button.
+- **Mobile (< 640 px):** bottom navigation with four destinations — Today, Attendance, Leave, More — plus Approvals replacing Attendance for managers with pending items (decided in Phase 1 usability check). "More" opens a full-screen list of remaining sections. Primary actions are reachable by thumb; the clock action on Today is a full-width button. As built: Home, My attendance, Directory (or Employees) and More (the navigation drawer), shown below 1024 px; Leave and Approvals join when they exist.
 - Page structure: page title (h1), optional one-line description, primary action on the right (desktop) or bottom (mobile), then filters, then content.
 - Avoid nested cards. Use sections separated by headings and whitespace; use a bordered surface only for grouped, related content (e.g. a day's timeline).
 

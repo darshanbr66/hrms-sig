@@ -81,8 +81,12 @@ _MANAGER: Final = frozenset(
     }
 )
 
+# `org.read` and `holiday.read` (revision 0014): HR maintains employee records against the
+# organization and holiday calendars whether or not their account is linked to an employee.
 _HR: Final = frozenset(
     {
+        "org.read",
+        "holiday.read",
         "user.read.all",
         "user.invite",
         "user.disable",

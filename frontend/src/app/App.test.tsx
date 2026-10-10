@@ -82,12 +82,12 @@ describe("protected routes", () => {
   });
 
   it("lists navigation items only for permissions held", () => {
-    expect(visibleNavItems(ME).map((item) => item.label)).toEqual(["Account security"]);
+    expect(visibleNavItems(ME).map((item) => item.label)).toEqual(["Dashboard", "Account security"]);
   });
 });
 
 describe("sign-in", () => {
-  it("signs in with a password, then a code, and lands on the account page", async () => {
+  it("signs in with a password, then a code, and lands on the dashboard", async () => {
     api
       .on("POST /api/v1/auth/login", json({ mfa_token: "t".repeat(43) }))
       .on("POST /api/v1/auth/login/mfa", json({ session_scope: "full" }));
@@ -97,8 +97,10 @@ describe("sign-in", () => {
     await user.type(await screen.findByLabelText("6-digit code"), "123456");
     signedIn();
     await user.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByRole("heading", { name: "Account security" })).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe("/account/security");
+    expect(
+      await screen.findByRole("heading", { name: /^Good (morning|afternoon|evening)$/ }),
+    ).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/");
     const [login] = api.called("POST /api/v1/auth/login");
     expect(login?.headers.get("X-Requested-With")).toBe("sv-web");
     expect(api.called("POST /api/v1/auth/login/mfa")[0]?.body).toEqual({
@@ -226,7 +228,8 @@ describe("session lifecycle", () => {
     const user = userEvent.setup();
     const { router } = renderAt("/account/security");
     await screen.findByRole("heading", { name: "Account security" });
-    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Account menu" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Sign out" }));
     await waitFor(() => {
       expect(router.state.location.pathname).toBe("/sign-in");
     });
@@ -286,13 +289,15 @@ describe("step-up", () => {
 describe("redirect safety", () => {
   it.each([
     ["/account/security", "/account/security"],
-    ["https://evil.example/", "/account/security"],
-    ["//evil.example/account/", "/account/security"],
-    ["/\\evil.example", "/account/security"],
+    ["/", "/"],
+    ["/employees/abc", "/employees/abc"],
+    ["https://evil.example/", "/"],
+    ["//evil.example/account/", "/"],
+    ["/\\evil.example", "/"],
     ["/admin/access-requests", "/admin/access-requests"],
-    ["/elsewhere/admin/", "/account/security"],
-    ["/administrator", "/account/security"],
-    [null, "/account/security"],
+    ["/elsewhere/admin/", "/"],
+    ["/administrator", "/"],
+    [null, "/"],
   ])("safeNext(%s) is %s", (next, expected) => {
     expect(safeNext(next)).toBe(expected);
   });

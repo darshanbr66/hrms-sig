@@ -138,6 +138,7 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 - Attack variants: edit or delete a row; drop a partition early; rewrite the whole chain after editing; delete checkpoints.
 - Controls: no UPDATE/DELETE grants on audit tables for application roles, plus append-only triggers; per-partition hash chain sealed within about a minute; checkpoint chain across partitions, signed with a key the database never holds and anchored in write-once storage; daily verification of recent partitions and monthly full verification; retention only through signed tombstones; database superuser access exceptional and logged at the provider level (`security-architecture.md` §8.1).
 - Residual risk: a row altered by a superuser before sealing (about 1 minute window).
+- Test: `tests/integration/test_audit_integrity.py` (modify, delete, insert, reorder, truncated tail, removed link, dropped partition, chain rewritten without the key, deleted checkpoints, overwritten anchor, retention with and without tombstone, failed anchor upload).
 
 ### T19. Information leakage via reports, search, notifications, errors
 - Attack: search endpoint returns salary fields; email notification includes leave reason; error message reveals SQL or stack trace.

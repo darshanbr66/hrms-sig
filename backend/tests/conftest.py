@@ -9,18 +9,22 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import boto3
+import httpx
 import psycopg
 import pytest
 from alembic import command
-from alembic.config import Config
+from alembic.config import Config as AlembicConfig
+from botocore.config import Config
 from pydantic import SecretStr
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.platform.config import AppEnv, MigrationSettings
 from app.platform.db import Database, create_engine
+from app.platform.storage import S3AnchorStore
 
 if TYPE_CHECKING:
     from tests.api_support import Api
@@ -30,6 +34,8 @@ INFRA_DIR = BACKEND_DIR.parent / "infra"
 
 POSTGRES_IMAGE = "postgres:18.6"
 REDIS_IMAGE = "redis:7.2.16"
+# The image infra/compose.yaml uses for the audit anchor bucket.
+RUSTFS_IMAGE = "rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff"
 
 DATABASE_NAME = "hrms"
 ROLE_NAMES = ("hrms_migrator", "hrms_app", "hrms_worker", "hrms_audit_retention")
@@ -121,8 +127,8 @@ def postgres() -> Iterator[PostgresServer]:
         )
 
 
-def alembic_config(settings: MigrationSettings) -> Config:
-    config = Config(str(BACKEND_DIR / "alembic.ini"))
+def alembic_config(settings: MigrationSettings) -> AlembicConfig:
+    config = AlembicConfig(str(BACKEND_DIR / "alembic.ini"))
     config.attributes["settings"] = settings
     config.attributes["configure_logging"] = False
     return config
@@ -200,6 +206,77 @@ def redis() -> Iterator[RedisServer]:
             password=password,
             container=container,
         )
+
+
+@dataclass(frozen=True)
+class S3Server:
+    """The S3 emulator with Object Lock (infra/compose.yaml `rustfs`)."""
+
+    endpoint_url: str
+    access_key_id: str
+    secret_access_key: str
+    region: str = "us-east-1"
+
+    def client(self) -> Any:
+        return boto3.client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            region_name=self.region,
+            aws_access_key_id=self.access_key_id,
+            aws_secret_access_key=self.secret_access_key,
+            config=Config(s3={"addressing_style": "path"}),
+        )
+
+    def create_anchor_bucket(self, *, days: int = 1) -> str:
+        """A fresh bucket with Object Lock and compliance-mode default retention, as
+        scripts/create_local_anchor_bucket.py and infrastructure create it."""
+        name = f"anchors-{secrets.token_hex(6)}"
+        client = self.client()
+        client.create_bucket(Bucket=name, ObjectLockEnabledForBucket=True)
+        client.put_object_lock_configuration(
+            Bucket=name,
+            ObjectLockConfiguration={
+                "ObjectLockEnabled": "Enabled",
+                "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": days}},
+            },
+        )
+        return name
+
+    def anchor_store(self, bucket: str) -> S3AnchorStore:
+        return S3AnchorStore(
+            bucket=bucket,
+            region=self.region,
+            access_key_id=SecretStr(self.access_key_id),
+            secret_access_key=SecretStr(self.secret_access_key),
+            endpoint_url=self.endpoint_url,
+        )
+
+
+def _wait_for_s3(url: str, timeout_seconds: float = 60) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{url}/health", timeout=2).status_code == 200:
+                return
+        except httpx.TransportError:
+            pass
+        time.sleep(0.5)
+    raise TimeoutError("RustFS test container did not become ready")
+
+
+@pytest.fixture(scope="session")
+def s3() -> Iterator[S3Server]:
+    access_key, secret_key = f"test{secrets.token_hex(6)}", secrets.token_urlsafe(24)
+    container = (
+        DockerContainer(RUSTFS_IMAGE)
+        .with_env("RUSTFS_ACCESS_KEY", access_key)
+        .with_env("RUSTFS_SECRET_KEY", secret_key)
+        .with_exposed_ports(9000)
+    )
+    with container:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(9000)}"
+        _wait_for_s3(url)
+        yield S3Server(url, access_key, secret_key)
 
 
 @pytest.fixture

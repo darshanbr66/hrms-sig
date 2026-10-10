@@ -1,6 +1,9 @@
 import base64
+import json
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from pydantic import ValidationError
 
 from app.platform.config import ApiSettings, AppEnv, MigrationSettings, WorkerSettings, sqlalchemy_url
@@ -10,12 +13,28 @@ EMAIL_KEY = base64.b64encode(b"m" * 32).decode()
 FIELD_KEY = base64.b64encode(b"f" * 32).decode()
 FIELD_KEYS = f'{{"1": "{FIELD_KEY}"}}'
 LOCAL_DB = "postgresql://hrms_app:pw@127.0.0.1:5433/hrms"
-SMTP: dict[str, object] = {
+SIGNING_SEED = b"s" * 32
+PUBLIC_KEY = base64.b64encode(
+    Ed25519PrivateKey.from_private_bytes(SIGNING_SEED)
+    .public_key()
+    .public_bytes(Encoding.Raw, PublicFormat.Raw)
+).decode()
+# Everything a worker needs besides its environment and database URL.
+WORKER: dict[str, object] = {
     "app_base_url": "https://hrms.example.com",
     "smtp_host": "smtp.example.com",
     "smtp_port": 587,
     "smtp_from": "hrms@example.com",
     "smtp_security": "starttls",
+    "database_url_audit_retention": "postgresql://hrms_audit_retention:pw@db.internal:5432/hrms?sslmode=verify-full",
+    "audit_signing_key_id": "key-1",
+    "audit_signing_private_key": base64.b64encode(SIGNING_SEED).decode(),
+    "audit_verify_public_keys": json.dumps({"key-1": PUBLIC_KEY}),
+    "s3_endpoint_url": "",
+    "s3_region": "ap-south-1",
+    "audit_anchor_bucket": "hrms-audit-anchors",
+    "audit_anchor_access_key_id": "anchor-writer",
+    "audit_anchor_secret_access_key": "anchor-secret",
 }
 DEPLOYED_DB = "postgresql://hrms_app:pw@db.internal:5432/hrms?sslmode=verify-full"
 
@@ -115,7 +134,9 @@ def test_missing_required_settings_fail_fast(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_worker_and_migration_settings_require_tls_when_deployed() -> None:
     with pytest.raises(ValidationError, match="DATABASE_URL_WORKER"):
-        WorkerSettings.model_validate({"app_env": AppEnv.PRODUCTION, "database_url_worker": LOCAL_DB} | SMTP)
+        WorkerSettings.model_validate(
+            {"app_env": AppEnv.PRODUCTION, "database_url_worker": LOCAL_DB} | WORKER
+        )
     with pytest.raises(ValidationError, match="DATABASE_URL_MIGRATOR"):
         MigrationSettings(app_env=AppEnv.STAGING, database_url_migrator=LOCAL_DB)
 
@@ -136,14 +157,14 @@ def test_worker_refuses_plain_smtp_outside_local_and_test() -> None:
     with pytest.raises(ValidationError, match="SMTP_SECURITY=none"):
         WorkerSettings.model_validate(
             {"app_env": AppEnv.STAGING, "database_url_worker": DEPLOYED_DB}
-            | (SMTP | {"smtp_security": "none"})
+            | (WORKER | {"smtp_security": "none"})
         )
     WorkerSettings.model_validate(
-        {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (SMTP | {"smtp_security": "none"})
+        {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (WORKER | {"smtp_security": "none"})
     )
     with pytest.raises(ValidationError, match="SMTP_USERNAME and SMTP_PASSWORD"):
         WorkerSettings.model_validate(
-            {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (SMTP | {"smtp_username": "u"})
+            {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | (WORKER | {"smtp_username": "u"})
         )
 
 
@@ -157,7 +178,51 @@ def test_email_lookup_key_must_differ_from_the_rate_limit_key() -> None:
 def test_blank_smtp_credentials_mean_none() -> None:
     settings = WorkerSettings.model_validate(
         {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB, "smtp_username": "", "smtp_password": ""}
-        | SMTP
+        | WORKER
     )
     assert settings.smtp_username is None
     assert settings.smtp_password is None
+
+
+def worker(**overrides: object) -> WorkerSettings:
+    return WorkerSettings.model_validate(
+        {"app_env": AppEnv.LOCAL, "database_url_worker": LOCAL_DB} | WORKER | overrides
+    )
+
+
+def test_worker_signing_key_must_be_listed_for_verification() -> None:
+    assert worker().signature_verifier().matches(worker().checkpoint_signer())
+    other = base64.b64encode(
+        Ed25519PrivateKey.from_private_bytes(b"o" * 32)
+        .public_key()
+        .public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode()
+    for keys in (json.dumps({"key-1": other}), json.dumps({"key-2": PUBLIC_KEY})):
+        with pytest.raises(ValidationError, match="AUDIT_VERIFY_PUBLIC_KEYS must list"):
+            worker(audit_verify_public_keys=keys)
+    with pytest.raises(ValidationError, match="AUDIT_SIGNING_PRIVATE_KEY"):
+        worker(audit_signing_private_key=base64.b64encode(b"short").decode())
+    with pytest.raises(ValidationError, match="AUDIT_VERIFY_PUBLIC_KEYS"):
+        worker(audit_verify_public_keys="not json")
+    with pytest.raises(ValidationError, match="key ID"):
+        worker(audit_signing_key_id="bad id/with spaces")
+
+
+def test_worker_audit_connections_need_tls_when_deployed() -> None:
+    deployed = {"app_env": AppEnv.PRODUCTION, "database_url_worker": DEPLOYED_DB}
+    WorkerSettings.model_validate(deployed | WORKER)
+    with pytest.raises(ValidationError, match="DATABASE_URL_AUDIT_RETENTION"):
+        WorkerSettings.model_validate(deployed | WORKER | {"database_url_audit_retention": LOCAL_DB})
+    with pytest.raises(ValidationError, match="S3_ENDPOINT_URL must use https"):
+        WorkerSettings.model_validate(deployed | WORKER | {"s3_endpoint_url": "http://s3.internal:9000"})
+    assert worker(s3_endpoint_url="http://127.0.0.1:9000").s3_endpoint_url == "http://127.0.0.1:9000"
+    assert worker().s3_endpoint_url is None
+
+
+def test_audit_retention_is_unset_unless_configured() -> None:
+    settings = worker(audit_log_retention_months="", security_events_retention_months="24")
+    assert settings.audit_log_retention_months is None
+    assert settings.security_events_retention_months == 24
+    for months in (0, 1201):
+        with pytest.raises(ValidationError):
+            worker(audit_log_retention_months=months)

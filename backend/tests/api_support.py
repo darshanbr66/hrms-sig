@@ -7,6 +7,7 @@ in one test never affects another. All data is obviously fake.
 """
 
 import base64
+import json
 import re
 import secrets
 import uuid
@@ -19,6 +20,7 @@ from typing import Any
 
 import httpx
 import pyotp
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from pydantic import SecretStr
 from sqlalchemy import select, text
@@ -27,6 +29,7 @@ from app.main import create_app
 from app.modules.access.models import Role, UserRole
 from app.modules.identity.models import Credential, FactorType, MfaFactor, User, UserStatus
 from app.modules.notify.dispatcher import DispatchResult, OutboxDispatcher
+from app.platform.audit.signing import CheckpointSigner, SignatureVerifier, public_key_bytes
 from app.platform.config import ApiSettings, AppEnv, WorkerSettings
 from app.platform.db import Database, create_engine
 from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
@@ -42,6 +45,26 @@ EMAIL_LOOKUP_KEY = b"e" * 32
 CSRF_HEADERS = {"X-Requested-With": "sv-web"}
 # A password that passes the policy; used for every test account.
 PASSWORD = "correct horse battery staple 42"
+# The audit checkpoint signing key of every test (an obviously fake, fixed key).
+AUDIT_KEY_ID = "test-key"
+AUDIT_SIGNING_SEED = b"a" * 32
+
+
+def audit_signer(key_id: str = AUDIT_KEY_ID, seed: bytes = AUDIT_SIGNING_SEED) -> CheckpointSigner:
+    return CheckpointSigner(key_id, Ed25519PrivateKey.from_private_bytes(seed))
+
+
+def audit_verify_keys_json(*signers: CheckpointSigner) -> str:
+    return json.dumps(
+        {
+            signer.key_id: base64.b64encode(public_key_bytes(signer.public_key)).decode()
+            for signer in (signers or (audit_signer(),))
+        }
+    )
+
+
+def audit_verifier(*signers: CheckpointSigner) -> SignatureVerifier:
+    return SignatureVerifier.from_json(audit_verify_keys_json(*signers))
 
 
 def api_settings(database_url: SecretStr, **overrides: Any) -> ApiSettings:
@@ -282,10 +305,20 @@ async def running_api(
 
 
 def worker_settings(database_url: SecretStr, **overrides: Any) -> WorkerSettings:
-    """Worker settings for tests: plain SMTP to an address nothing listens on, unless overridden."""
+    """Worker settings for tests: plain SMTP and an anchor bucket at addresses nothing listens
+    on, and the fixed test signing key, unless overridden."""
     values: dict[str, Any] = {
         "app_env": AppEnv.TEST,
         "database_url_worker": database_url,
+        "database_url_audit_retention": database_url,
+        "audit_signing_key_id": AUDIT_KEY_ID,
+        "audit_signing_private_key": SecretStr(base64.b64encode(AUDIT_SIGNING_SEED).decode()),
+        "audit_verify_public_keys": audit_verify_keys_json(),
+        "s3_endpoint_url": "http://127.0.0.1:1",
+        "s3_region": "us-east-1",
+        "audit_anchor_bucket": "unused-anchors",
+        "audit_anchor_access_key_id": SecretStr("unused"),
+        "audit_anchor_secret_access_key": SecretStr("unused"),
         "app_base_url": APP_ORIGIN,
         "smtp_host": "127.0.0.1",
         "smtp_port": 1,

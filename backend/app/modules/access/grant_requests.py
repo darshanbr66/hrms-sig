@@ -632,6 +632,12 @@ class GrantRequestService:
                 raise _conflict("grant_request.not_break_glass", "Only a break-glass use is acknowledged.")
             if actor.user_id == request.requested_by:
                 raise AccessDenied(code=SodRule.OWN_REQUEST.value)
+            # Post-incident: what was done under it is known only once it no longer applies.
+            if effective_status(request, now) is GrantStatus.ACTIVE:
+                raise _conflict(
+                    "grant_request.still_active",
+                    "This break-glass access is still active. Review it after it ends, or end it now.",
+                )
             if request.acknowledged_at is not None:
                 raise _conflict(
                     "grant_request.already_acknowledged", "This break-glass use was already reviewed."

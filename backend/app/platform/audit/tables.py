@@ -1,18 +1,22 @@
-"""Table definitions for the audit streams (revision 0005).
+"""Table definitions for the audit streams (revision 0005) and their integrity chain (0013).
 
-Both tables are partitioned by UTC month on `recorded_at`; the database sets `id` and
-`recorded_at`, and rejects UPDATE, DELETE and TRUNCATE. CHECK constraints live in the
-migration.
+Both streams are partitioned by UTC month on `recorded_at`; the database sets `id` and
+`recorded_at`, and rejects UPDATE, DELETE and TRUNCATE. The chain tables are insert-only too:
+`chain_links` is partitioned by stream and then by month, `chain_checkpoints` is one table
+that is never deleted from. CHECK constraints and triggers live in the migrations.
 """
 
 from sqlalchemy import (
+    BigInteger,
     Column,
     DateTime,
     Index,
     LargeBinary,
     PrimaryKeyConstraint,
+    SmallInteger,
     Table,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
     text,
@@ -93,4 +97,57 @@ security_events = Table(
     Index("ix_security_events_event_type_recorded_at", "event_type", "recorded_at"),
     schema=SCHEMA,
     postgresql_partition_by="RANGE (recorded_at)",
+)
+
+chain_links = Table(
+    "chain_links",
+    Base.metadata,
+    Column("stream", Text(), nullable=False),
+    Column("partition_key", Text(), nullable=False),
+    Column("position", BigInteger(), nullable=False),
+    Column("record_id", Uuid(), nullable=False),
+    Column("digest_version", SmallInteger(), nullable=False),
+    Column("row_digest", LargeBinary(), nullable=False),
+    Column("link_hash", LargeBinary(), nullable=False),
+    Column("sealed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("stream", "partition_key", "position", name="pk_chain_links"),
+    UniqueConstraint("stream", "partition_key", "record_id"),
+    schema=SCHEMA,
+    postgresql_partition_by="LIST (stream)",
+)
+
+chain_checkpoints = Table(
+    "chain_checkpoints",
+    Base.metadata,
+    Column("stream", Text(), nullable=False),
+    Column("checkpoint_no", BigInteger(), nullable=False),
+    Column("kind", Text(), nullable=False),
+    Column("partition_key", Text(), nullable=False),
+    Column("last_position", BigInteger(), nullable=False),
+    Column("row_count", BigInteger(), nullable=False),
+    Column("last_link_hash", LargeBinary(), nullable=False),
+    Column("prev_checkpoint_hash", LargeBinary(), nullable=False),
+    Column("checkpoint_hash", LargeBinary(), nullable=False),
+    Column("signature", LargeBinary(), nullable=False),
+    Column("key_id", Text(), nullable=False),
+    Column("anchor_object_key", Text(), nullable=False),
+    Column("archive_sha256", LargeBinary()),
+    Column("retention_policy_version", Text()),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("stream", "checkpoint_no", name="pk_chain_checkpoints"),
+    Index(
+        "uq_chain_checkpoints_partition_final",
+        "stream",
+        "partition_key",
+        unique=True,
+        postgresql_where=text("kind = 'partition_final'"),
+    ),
+    Index(
+        "uq_chain_checkpoints_retention_tombstone",
+        "stream",
+        "partition_key",
+        unique=True,
+        postgresql_where=text("kind = 'retention_tombstone'"),
+    ),
+    schema=SCHEMA,
 )

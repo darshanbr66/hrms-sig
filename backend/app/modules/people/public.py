@@ -10,13 +10,29 @@ Reporting lines and placement for the authorization engine (docs/authorization-m
 - `placement` and `placed_employee_ids_query` apply a role assignment's department or
   location constraint.
 - `relationships` bundles these for the engine's `Relationships` protocol.
+- `employee_exists` lets other modules check a reference to an employee record.
+- `employed_colleagues` lists employees within a caller's scope filter (built on
+  `employee_id_column`) with where they work, for modules that show their own data per person.
 
 Every function takes the calendar date to resolve on. "Now" is the current date where the
 caller decides it; a historical record passes the record's own date, which gives the "team
 at the time of the record" rule.
 """
 
+import uuid
+from dataclasses import dataclass
+from datetime import date
+from typing import Final
+
+from sqlalchemy import ColumnElement, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import QueryableAttribute
+
+from app.modules.org import public as org
+from app.modules.people import repository
+from app.modules.people.models import Employee
 from app.modules.people.repository import (
+    employee_exists,
     first_name,
     has_direct_reports,
     is_employed,
@@ -40,8 +56,17 @@ class PeopleRelationships:
 
 relationships = PeopleRelationships()
 
+# More employees than the design load (product-requirements §7), so an unlimited listing is
+# still bounded.
+MAX_COLLEAGUES: Final = 5000
+
 __all__ = [
+    "MAX_COLLEAGUES",
+    "Colleague",
     "PeopleRelationships",
+    "employed_colleagues",
+    "employee_exists",
+    "employee_id_column",
     "first_name",
     "has_direct_reports",
     "is_employed",
@@ -53,3 +78,74 @@ __all__ = [
     "team_member_ids_query",
     "work_email",
 ]
+
+
+# --- scoped employee listing for other modules -------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Colleague:
+    """Internal-tier summary of an employee another module lists alongside its own data."""
+
+    id: uuid.UUID
+    name: str
+    employee_code: str
+    department_name: str | None
+    designation_name: str | None
+    location_id: uuid.UUID | None
+    location_name: str | None
+
+
+def employee_id_column() -> QueryableAttribute[uuid.UUID]:
+    """The employee ID column a caller's scope filter applies to, for `employed_colleagues`."""
+    return Employee.id
+
+
+async def employed_colleagues(
+    session: AsyncSession,
+    scope: ColumnElement[bool],
+    *,
+    on: date,
+    text: str | None = None,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    after: tuple[str, uuid.UUID] | None = None,
+    limit: int | None = None,
+) -> tuple[list[Colleague], tuple[str, uuid.UUID] | None]:
+    """Employees in `scope` who are employed on the date and not exited, by name, with where
+    they work. Without a limit, every match is returned (for counts over a scope)."""
+    filters = repository.EmployeeFilters(
+        text=text, statuses=("active", "on_notice"), department_id=department_id, location_id=location_id
+    )
+    rows = await repository.list_employees(
+        session,
+        and_(scope, repository.employed_on(on)),
+        filters,
+        on=on,
+        after=after,
+        limit=limit if limit is not None else MAX_COLLEAGUES,
+    )
+    page = rows if limit is None else rows[:limit]
+    jobs = await repository.current_jobs(session, [employee.id for employee, _ in page], on)
+    units = await org.unit_names(
+        session,
+        department_ids={job.department_id for job in jobs.values()},
+        designation_ids={job.designation_id for job in jobs.values()},
+        location_ids={job.location_id for job in jobs.values()},
+    )
+    colleagues = []
+    for employee, _ in page:
+        job = jobs.get(employee.id)
+        colleagues.append(
+            Colleague(
+                id=employee.id,
+                name=repository.name_of(employee),
+                employee_code=employee.employee_code,
+                department_name=units.departments.get(job.department_id) if job else None,
+                designation_name=units.designations.get(job.designation_id) if job else None,
+                location_id=job.location_id if job else None,
+                location_name=units.locations.get(job.location_id) if job else None,
+            )
+        )
+    next_after = (page[-1][1], page[-1][0].id) if limit is not None and len(rows) > limit else None
+    return colleagues, next_after

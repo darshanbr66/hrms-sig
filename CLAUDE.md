@@ -4,7 +4,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 
 ## Current phase
 
-**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries), Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell), Checkpoint D (email outbox, admin invites, password reset, security emails, trusted devices, keyed attempted-email hash, settings registry) and Checkpoint E (admin MFA reset and re-enrolment, grant requests with elevation, super admin assignment and break-glass, administrator-account disable rules) are complete. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
+**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries), Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell), Checkpoint D (email outbox, admin invites, password reset, security emails, trusted devices, keyed attempted-email hash, settings registry), Checkpoint E (admin MFA reset and re-enrolment, grant requests with elevation, super admin assignment and break-glass, administrator-account disable rules) and Checkpoint F (audit sealer, signed checkpoints, write-once anchors, verification, retention with tombstones, tamper suite) are complete. Checkpoint G (the application UI: shell, dashboard, administration screens) was delivered on 2026-10-10 at the project owner's request together with the first slices of M2 (organization, employee records, personal tier, directory, self-service profile), M3 (attendance clock events only; no shifts or policies) and M4 (holiday calendars only), migrations `0014`–`0016`; see `docs/m1-implementation-plan.md` §12 for what remains and why. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
 
 ## Read before working
 
@@ -85,9 +85,11 @@ Backend (from `backend/`):
 | Module boundaries | `uv run lint-imports` |
 | Tests (Docker required) | `uv run pytest` |
 | Regenerate `api/openapi.json` | `uv run python -m scripts.export_openapi` |
-
-Local email goes to Mailpit (`http://127.0.0.1:8025`); the worker sends it from the outbox.
 | Create the first two super admins (once) | `uv run --env-file ../.env python -m app.cli bootstrap-super-admins --email A --email B` |
+| Create the local audit anchor bucket (once per RustFS volume) | `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket` |
+| Verify the audit chain and anchors (read-only) | `uv run --env-file ../.env python -m app.cli audit-verify` |
+
+Local email goes to Mailpit (`http://127.0.0.1:8025`); the worker sends it from the outbox. Audit checkpoint anchors go to the RustFS bucket (`127.0.0.1:9000`).
 
 Frontend (from `frontend/`, pnpm through corepack):
 

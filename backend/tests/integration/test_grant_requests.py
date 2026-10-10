@@ -243,6 +243,12 @@ async def test_break_glass_reaches_only_system_admin_for_an_hour_and_needs_revie
         await api.step_up(client, user)
         own = await client.post(f"{REQUESTS}/{glass['id']}/acknowledge")
         assert own.json()["code"] == "sod.own_request"
+        # The review is post-incident: it cannot be signed off while the access still applies.
+        early = await other_client.post(f"{REQUESTS}/{glass['id']}/acknowledge")
+        assert early.status_code == 409
+        assert early.json()["code"] == "grant_request.still_active"
+        ended = await other_client.post(f"{REQUESTS}/{glass['id']}/revoke")
+        assert ended.json()["status"] == "revoked"
         reviewed = await other_client.post(f"{REQUESTS}/{glass['id']}/acknowledge")
         assert reviewed.status_code == 200
         assert reviewed.json()["acknowledged_by"]["id"] == str(other.user_id)
@@ -255,9 +261,12 @@ async def test_break_glass_reaches_only_system_admin_for_an_hour_and_needs_revie
     )
     assert severity == "high"
     sent = await api.deliver()
-    assert any("Break-glass" in m.subject for m in sent if m.to == auditor.email)
-    assert any("Break-glass" in m.subject for m in sent if m.to == other.email)
-    assert not any("Break-glass" in m.subject for m in sent if m.to == user.email)
+    assert any("Break-glass access was used" in m.subject for m in sent if m.to == auditor.email)
+    assert any("Break-glass access was used" in m.subject for m in sent if m.to == other.email)
+    # Its user is not alerted to their own use, but is told another super admin ended it.
+    to_user = [m.subject for m in sent if m.to == user.email]
+    assert not any("Break-glass access was used" in subject for subject in to_user)
+    assert any("Break-glass access was ended" in subject for subject in to_user)
 
 
 async def test_super_admin_assignment_needs_a_second_super_admin(api: Api) -> None:

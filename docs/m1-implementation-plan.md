@@ -135,8 +135,8 @@ Technical settings (D): declared in the code registry with the security defaults
 | 0010 | `notify.email_outbox`, `identity.trusted_devices`, `app.settings`; `password_reset` added to the one-time token purposes and session revocation reasons (D) |
 | 0011 | `audit.ensure_partitions` also fails for a partition attached for the wrong range and for a default partition (D verification; corrects 0005) |
 | 0012 | `identity.users.mfa_reenrolment_required` (MFA invariant widened, full sessions refused while re-enrolment is pending), `mfa_reenrolment` token purpose, `mfa_reset` revocation reason, outbox templates `identity.mfa_reset` and `access.grant_request`; `access.role_grant_requests` with its history trigger; `user_roles.grant_request_id` and the insert trigger matching an assignment to its request (E) |
+| 0013 | `audit.chain_links` (partitioned by stream, then month), `audit.chain_checkpoints` with the sequence trigger, append-only triggers, `audit.ensure_partitions` creating chain partitions, `audit.drop_expired_partition` (retention role only), worker and retention grants, the `audit.chain_mismatch` outbox template (F) |
 | later | `app.idempotency_keys` (first idempotent endpoint) |
-| later | `audit.chain_links`, `audit.chain_checkpoints` and the retention role's grants (with the sealer, F) |
 
 Revisions after 0005 are numbered in the order they are written, following their foreign-key dependencies.
 
@@ -187,7 +187,7 @@ There is no Today/home page with invented content. `/` redirects to `/account/se
 |---|---|---|
 | PostgreSQL 18 | `postgres:18` | 5433 |
 | Redis | `redis:7.2` (ADR-010; 7.2 is the maintained Redis 7 line under the BSD-3 licence, 7.4 and later are RSALv2/SSPLv1 or AGPLv3) — persistence off, ACL user | 6380 |
-| S3 emulator with object lock | chosen at step 2 after checking current licensing/distribution (candidates: MinIO, SeaweedFS, LocalStack); must support Object Lock compliance mode | 9000 |
+| S3 emulator with object lock | `rustfs/rustfs:1.0.0` pinned by digest (Apache-2.0), chosen in F after testing Object Lock compliance mode: RustFS refused deleting a locked version (even as root), shortening its retention and switching it to governance; Versity Gateway allowed shortening a compliance retention and was rejected | 9000 |
 | Mail catcher | `axllent/mailpit` | 1025 / 8025 |
 
 ClamAV is not added in M1 because nothing uploads files until M5. Adding it now would be an unused service.
@@ -200,6 +200,7 @@ ClamAV is not added in M1 because nothing uploads files until M5. Adding it now 
 `FIELD_ENCRYPTION_KEYS` (JSON map version → base64 key; KEK source in production is the secret manager), `FIELD_ENCRYPTION_ACTIVE_VERSION`,
 `AUDIT_SIGNING_PRIVATE_KEY` (worker only), `AUDIT_SIGNING_KEY_ID`, `AUDIT_VERIFY_PUBLIC_KEYS` (JSON key_id → public key),
 `S3_ENDPOINT_URL`, `S3_REGION`, `AUDIT_ANCHOR_BUCKET`, `AUDIT_ANCHOR_ACCESS_KEY_ID`, `AUDIT_ANCHOR_SECRET_ACCESS_KEY`,
+`AUDIT_LOG_RETENTION_MONTHS`, `SECURITY_EVENTS_RETENTION_MONTHS` (optional; unset means no audit partition is removed),
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` (`starttls` | `tls` | `none` — `none` refused outside `local`/`test`),
 `HIBP_ENABLED`.
 
@@ -421,3 +422,19 @@ Defect found and fixed, with a regression test that failed before the fix:
 One accepted risk: the administrator-account check reads the target's roles before locking, so a `super_admin` approval committing in that instant could let a `user.disable` holder disable a brand-new super admin once; the two-super-admin minimum is unaffected because approvals only add super admins.
 
 Automated verification: backend `uv sync --locked`; pytest 594 passed (migration gates with single head `0012`; local `hrms` and `hrms_acceptance` both at `0012`); Ruff format and lint clean; mypy strict clean; import-linter 8 contracts kept; pip-audit `--strict` no known vulnerabilities; OpenAPI regenerated and committed. Frontend: pnpm install frozen; 48 tests passed (including axe); ESLint, TypeScript strict and Prettier clean; banned-words check passed; build passed; generated API types match the contract; `pnpm audit` clean after updating the transitive `source-map-js` from 1.2.1 to 1.2.2 (GHSA-68fv-2mgg-jv7q, build tooling only). `docker compose config` valid. Gitleaks v8.30.1 and Semgrep 1.178.0, the CI images and rule sets, run locally through Docker: Semgrep 0 findings on the tracked files and 0 on the 40 new or changed source files scanned explicitly; Gitleaks no leaks in the staged changes and, after the commit, in the full history. CI runs both again on the push to `main`.
+
+### Checkpoint G — application UI, with the first M2–M4 slices (delivered 2026-10-10, not committed)
+
+Scope set by the project owner (2026-10-10): the complete visible application in one pass, implementing missing MVP endpoints through the existing architecture where no Sigvitas policy value is needed.
+
+Delivered:
+
+- Revisions 0014 (org `version` columns; `people.employee_personal`; append-only `people.employee_status_history`; directory-search indexes; `org.read` and `holiday.read` for `hr` and `hr_admin`), 0015 (`attendance` schema, append-only `attendance_events`), 0016 (`leave` schema with holiday calendars, holidays and location assignments). All expand only.
+- Backend modules: `org` (locations, departments, designations with optimistic concurrency and audit), `people` (directory, scoped employee list and statistics, create, edit, job history, status changes, personal tier, `/me/profile`, `/me/jobs`, `/me/personal`), `attendance` (clock events with server time, sequence checks under a per-employee lock, idempotency keys, rate limit; today, history, team today view), `leave` (holiday calendars, `/me/holidays`). `GET /users/{id}` and `q`/`employee_id` filters on `GET /users`. Platform: `concurrency.py` (ETag / If-Match), text-key cursors, `records.change_of`.
+- Frontend: design system (Badge, Panel, Stat, DataTable with stacked rows on phones, EmptyState, retryable ProblemMessage, Toast, ConfirmDialog, Tabs, ComboBox, SearchField, TextArea, Checkbox, DescriptionList, Avatar, LoadMore); app shell (collapsible sidebar, drawer below 1024 px, bottom bar on phones, page titles, directory search, account menu); the dashboard as home; Employees, employee record, Add employee, Directory, Organization, My profile, My attendance, Team attendance, Holidays, Holiday calendars, Users, user detail, Roles, Security events, Audit log. Every page is lazy-loaded, sign-in included (initial JavaScript about 185 KB gzipped).
+
+Not built, with reason: leave types, policies, ledger and requests; shifts, attendance policies, day status and corrections (Sigvitas policy values, roadmap §6); identifiers and bank accounts (identifier types not chosen); documents, in-app notifications, reports and exports (M5). None is in the navigation.
+
+Review: adversarial self-review of scoping, hidden existence, audit of personal reads and redaction, self-service limits, attendance locking and idempotency, and the 0014 grants. No human review yet; it is owed with A–F.
+
+Automated verification (2026-10-10): backend Ruff format and lint clean, mypy strict clean (105 files), import-linter 10 contracts kept, pip-audit `--strict` no known vulnerabilities; targeted pytest runs passed: new people, attendance, holiday and user-lookup integration tests, attendance timeline unit tests, the authorization matrix over every role with the new routes, route coverage, schema drift, migration cycle and database roles. The full backend suite was started but stopped by the host for low memory after about 140 tests (all passing to that point); it has to be run again. Frontend: 79 tests passed (including axe), ESLint, TypeScript strict, Prettier and the banned-words check clean, build passed, `pnpm audit` no known vulnerabilities, generated API types match the contract. `docker compose config` valid. Not run: Gitleaks and Semgrep (deferred because of the memory pressure). The local `hrms` database is still at `0013`; `alembic upgrade head` (run by `run-backend.cmd`) applies 0014–0016.

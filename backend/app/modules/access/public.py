@@ -21,7 +21,8 @@ connections at once.
 
 `bootstrap_super_admins` is the installation step that creates the first two super admins
 (docs/authorization-model.md §4.3, bootstrap). The worker registers `register_grant_expiry`
-and the `AccessEmails` renderers.
+and the `AccessEmails` renderers. `holder_ids` names the accounts a role applies to now, for
+alerts addressed to a role (the audit integrity alert).
 """
 
 import uuid
@@ -37,6 +38,7 @@ from app.modules.access import repository as repo
 from app.modules.access.emails import AccessEmails
 from app.modules.access.grant_requests import register_grant_expiry
 from app.modules.access.models import UserRole
+from app.modules.access.repository import holder_ids
 from app.modules.identity import public as identity
 from app.modules.people import public as people
 from app.platform.authz.context import UNRESTRICTED, Actor, Constraint, SessionScope
@@ -132,6 +134,7 @@ __all__ = [
     "bootstrap_super_admins",
     "effective_access",
     "effective_grants",
+    "holder_ids",
     "register_grant_expiry",
 ]
 

@@ -113,11 +113,24 @@ class UserPage:
     next_cursor: uuid.UUID | None
 
 
-async def list_users(session: AsyncSession, *, after: uuid.UUID | None, limit: int) -> UserPage:
-    """Accounts in creation order (UUIDv7 IDs are time-ordered), keyset-paginated."""
+async def list_users(
+    session: AsyncSession,
+    *,
+    after: uuid.UUID | None,
+    limit: int,
+    email_contains: str | None = None,
+    employee_id: uuid.UUID | None = None,
+) -> UserPage:
+    """Accounts in creation order (UUIDv7 IDs are time-ordered), keyset-paginated, optionally
+    narrowed to an email fragment or the account linked to an employee record."""
     query = select(User).order_by(User.id).limit(limit + 1)
     if after is not None:
         query = query.where(User.id > after)
+    if email_contains:
+        escaped = email_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(User.email.ilike(f"%{escaped}%"))
+    if employee_id is not None:
+        query = query.where(User.employee_id == employee_id)
     rows = list((await session.execute(query)).scalars())
     has_more = len(rows) > limit
     rows = rows[:limit]

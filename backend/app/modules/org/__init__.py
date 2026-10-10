@@ -1,1 +1,1 @@
-"""Organization structure: locations, departments, designations. Tables only until M2."""
+"""Organization structure: locations, departments, designations."""

@@ -25,6 +25,8 @@ export function Select({
   onChange,
   description,
   error,
+  placeholder,
+  isDisabled = false,
 }: {
   label: string;
   name: string;
@@ -33,6 +35,8 @@ export function Select({
   onChange: (value: string) => void;
   description?: string;
   error?: string | undefined;
+  placeholder?: string;
+  isDisabled?: boolean;
 }) {
   return (
     <AriaSelect
@@ -42,6 +46,8 @@ export function Select({
         if (key !== null) onChange(String(key));
       }}
       isInvalid={Boolean(error)}
+      isDisabled={isDisabled}
+      {...(placeholder ? { placeholder } : {})}
       validationBehavior="aria"
       className="flex flex-col gap-1"
     >
@@ -51,12 +57,12 @@ export function Select({
           {description}
         </Text>
       ) : null}
-      <Button className="flex min-h-10 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 text-left text-base text-neutral-900">
+      <Button className="flex min-h-10 min-w-0 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 text-left text-base text-neutral-900">
         <SelectValue className="truncate placeholder-shown:text-neutral-500" />
         <ChevronDown aria-hidden className="size-4 shrink-0" />
       </Button>
       <FieldError className="text-sm text-danger-700">{error}</FieldError>
-      <Popover className="min-w-[var(--trigger-width)] rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-lg">
+      <Popover className="max-h-72 min-w-[var(--trigger-width)] overflow-y-auto rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-[var(--shadow-float)]">
         <ListBox className="outline-none">
           {options.map((option) => (
             <ListBoxItem

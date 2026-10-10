@@ -11,7 +11,7 @@ differ, the difference is noted. Run each command from the folder named above it
 
 | Tool | Version | Notes |
 |---|---|---|
-| Docker Desktop (Docker Engine with Compose v2) | Current | Runs PostgreSQL 18, Redis and the Mailpit mail catcher. The backend tests also start their own containers. |
+| Docker Desktop (Docker Engine with Compose v2) | Current | Runs PostgreSQL 18, Redis, the Mailpit mail catcher and the RustFS S3 emulator (write-once audit anchors). The backend tests also start their own containers. |
 | [uv](https://docs.astral.sh/uv/) | Current | Installs and manages Python 3.13 for the backend (`backend/.python-version`). You do not need to install Python separately. |
 | Node.js | 20.19 or later (`frontend/package.json` `engines`) | |
 | pnpm | 12.8.1, through corepack (`frontend/package.json` `packageManager`) | Run `corepack enable` once; corepack then provides the pinned pnpm. |
@@ -20,7 +20,7 @@ differ, the difference is noted. Run each command from the folder named above it
 | A browser | Chrome, Edge or Firefox | The session cookies are `Secure`; these browsers accept them on `http://localhost`. |
 
 Ports used on `127.0.0.1`: 5173 (web app), 8000 (API), 5433 (PostgreSQL), 6380 (Redis),
-1025 (Mailpit SMTP) and 8025 (Mailpit inbox). They must be free.
+1025 (Mailpit SMTP), 8025 (Mailpit inbox) and 9000 (RustFS S3). They must be free.
 
 ## 2. Environment setup (`.env`)
 
@@ -44,6 +44,9 @@ documents, tickets or chat.
    uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
    # A base64 32-byte key: RATE_LIMIT_KEY_HMAC_KEY, EMAIL_LOOKUP_HMAC_KEY, FIELD_ENCRYPTION_KEYS
    uv run python -c "import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+   # The audit checkpoint signing key pair: prints AUDIT_SIGNING_KEY_ID,
+   # AUDIT_SIGNING_PRIVATE_KEY and AUDIT_VERIFY_PUBLIC_KEYS, ready to paste
+   uv run python -m scripts.generate_audit_signing_key
    ```
 
    Use a different value for every variable.
@@ -63,6 +66,7 @@ documents, tickets or chat.
    | Database connections | `DATABASE_URL_APP` | `postgresql://hrms_app:<HRMS_DB_APP_PASSWORD>@127.0.0.1:5433/hrms` |
    | | `DATABASE_URL_WORKER` | `postgresql://hrms_worker:<HRMS_DB_WORKER_PASSWORD>@127.0.0.1:5433/hrms` |
    | | `DATABASE_URL_MIGRATOR` | `postgresql://hrms_migrator:<HRMS_DB_MIGRATOR_PASSWORD>@127.0.0.1:5433/hrms` |
+   | | `DATABASE_URL_AUDIT_RETENTION` | `postgresql://hrms_audit_retention:<HRMS_DB_AUDIT_RETENTION_PASSWORD>@127.0.0.1:5433/hrms` |
    | Rate limiter | `REDIS_URL` | `redis://hrms_ratelimit:<REDIS_RATELIMIT_PASSWORD>@127.0.0.1:6380/0` |
    | | `RATE_LIMIT_KEY_HMAC_KEY` | `<generated base64 key>` |
    | Web app origin (CSRF check, invite and reset links) | `APP_BASE_URL` | `http://localhost:5173` |
@@ -73,6 +77,10 @@ documents, tickets or chat.
    | Worker email (Mailpit) | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURITY` | `127.0.0.1` / `1025` / `none` |
    | | `SMTP_FROM` | `hrms@example.com` |
    | | `SMTP_USERNAME`, `SMTP_PASSWORD` | empty (set both or neither) |
+   | Audit checkpoint signing (worker) | `AUDIT_SIGNING_KEY_ID`, `AUDIT_SIGNING_PRIVATE_KEY`, `AUDIT_VERIFY_PUBLIC_KEYS` | the three lines printed by `scripts.generate_audit_signing_key` |
+   | Write-once audit anchors (RustFS) | `S3_ENDPOINT_URL` / `S3_REGION` / `AUDIT_ANCHOR_BUCKET` | `http://127.0.0.1:9000` / `us-east-1` / `hrms-audit-anchors-local` |
+   | | `AUDIT_ANCHOR_ACCESS_KEY_ID`, `AUDIT_ANCHOR_SECRET_ACCESS_KEY` | an access key name and a `<generated password>`; they become the emulator's root credentials |
+   | Audit retention | `AUDIT_LOG_RETENTION_MONTHS`, `SECURITY_EVENTS_RETENTION_MONTHS` | empty (nothing is removed locally) |
 
    The PostgreSQL and Redis passwords are read only when their containers are first created.
    If you change them later, reset the local database (section 4.4).
@@ -87,7 +95,7 @@ Start Docker Desktop and wait until it is running. Then:
 docker compose --env-file .env -f infra/compose.yaml up -d --wait
 ```
 
-This starts PostgreSQL 18, Redis and Mailpit and waits until they are healthy. The first start
+This starts PostgreSQL 18, Redis, Mailpit and RustFS and waits until they are healthy. The first start
 creates the database login roles from `infra/db/bootstrap-roles.sql`. To stop the services
 and keep the data, run `docker compose --env-file .env -f infra/compose.yaml stop`.
 
@@ -100,6 +108,25 @@ uv run --env-file ../.env alembic upgrade head
 
 Migrations run as `hrms_migrator`. Alembic is the only migration runner, and it also installs
 the Procrastinate job-queue schema. Never run `procrastinate schema --apply`.
+
+Then create the write-once bucket for the audit checkpoint anchors (once per RustFS volume;
+running it again changes nothing):
+
+```powershell
+uv run --env-file ../.env python -m scripts.create_local_anchor_bucket
+```
+
+It creates `AUDIT_ANCHOR_BUCKET` with S3 Object Lock in compliance mode and a default retention
+of 10 years, so local anchors cannot be deleted either. The script refuses to run unless
+`APP_ENV` is `local` or `test`; staging and production buckets are created by infrastructure.
+
+Each database needs a bucket of its own. Anchors are named by stream and checkpoint number
+only (`audit_log/000000000001.json`), and a recreated database starts again at checkpoint 1,
+so two databases sharing a bucket write different anchors under the same names, and the old
+ones can never be deleted. The reset in 4.4 removes the RustFS volume too, so it is safe. If you
+drop and recreate a database any other way, or point a second database (for example
+`hrms_acceptance`) at the anchors, set a new `AUDIT_ANCHOR_BUCKET` for it and run the script
+again.
 
 ### 3.3 Start the API (`backend/`)
 
@@ -127,7 +154,8 @@ pnpm dev
 ### Windows shortcut
 
 `run-backend.cmd` in the repository root runs 3.1 to 3.4 in one go. It checks that Docker is
-running, starts the services, runs `uv sync` and the migrations, opens the worker in a new
+running, starts the services, runs `uv sync` and the migrations, creates the anchor bucket if
+it is missing, opens the worker in a new
 window and then runs the API in the current one. Run it from the repository root with
 `.\run-backend.cmd`, or double-click it. Press `Ctrl+C` to stop the API. Close the worker
 window to stop the worker. Start the web app separately (3.5).
@@ -232,14 +260,29 @@ these headers yourself.
   `http://127.0.0.1:8000` (`frontend/vite.config.ts`). The app and the API therefore share one
   origin, as in production, and there is no CORS. The API must be running for any page beyond
   the static shell.
+- Pages: the dashboard (`/`, the page after sign-in), My attendance (`/attendance`), Holidays
+  (`/holidays`), My profile (`/profile`), Account security (`/account/security`), Team attendance
+  (`/team/attendance`), Employees (`/employees`, `/employees/new`, `/employees/:id`), Directory
+  (`/directory`), Organization (`/organization`), Holiday calendars
+  (`/setup/holiday-calendars`), and the administration pages Users (`/admin/users`,
+  `/admin/users/:id`), Roles (`/admin/roles`), Access requests (`/admin/access-requests`),
+  Security events (`/admin/security-events`), Audit log (`/admin/audit-log`) and Settings
+  (`/settings`). The navigation lists only the pages the signed-in account's permissions reach.
+- Not built yet, so not in the navigation: leave requests and balances, documents, in-app
+  notifications, reports and exports, attendance corrections, shifts and attendance policies.
 
 ## 8. Worker and background jobs
 
 - Start (`backend/`): `uv run --env-file ../.env python -m app.worker`
 - What it does: every minute it sends pending emails from the outbox (`notify.dispatch_email`)
-  to Mailpit, and records expired access requests and ended elevations
-  (`access.expire_grants`; access already stops at the end time without it). Every hour it
-  creates audit-log partitions ahead of time (`audit.ensure_partitions`).
+  to Mailpit, records expired access requests and ended elevations
+  (`access.expire_grants`; access already stops at the end time without it) and seals new
+  audit rows into the hash chain (`audit.seal`). Every hour it creates audit-log partitions
+  ahead of time (`audit.ensure_partitions`) and writes signed audit checkpoints and their
+  write-once copies in RustFS (`audit.checkpoint`). Every day it verifies recent audit records
+  (`audit.verify_recent`), and on the first of each month all of them (`audit.verify_full`).
+  The daily audit retention job (`audit.retention`) removes nothing unless a retention period
+  is set.
 - Check it is running: its log shows `Starting worker on all queues`. About once a minute it
   shows `Job notify.dispatch_email[...] ended with status: Success`. Emails such as password
   resets reach `http://127.0.0.1:8025` within about a minute. On Windows it also logs
@@ -354,6 +397,20 @@ break-glass. Each step asks for an authenticator code (step-up). Testing an appr
 test super admins signed in, for example in two browser profiles. Notification emails reach
 Mailpit.
 
+The bootstrapped super admins have no employee record, so their dashboard shows access
+requests, recent sign-ins and shortcuts, and no attendance, holidays or profile.
+
+To try the HR screens locally (organization, employees, holiday calendars, team attendance), a
+super admin asks for temporary `hr_admin` access on Access requests and the other super admin
+approves it; the elevated account then sees Organization, Employees, Holiday calendars and Team
+attendance until the elevation ends. A typical first run: add a location (with its IANA time
+zone), a department and a designation; add an employee whose work email is an address you can
+read in Mailpit; on the employee's record, open **HRMS account** and send the invite (this also
+needs `user.invite`, which `hr_admin` holds); activate the account from the email; sign in as
+that employee to clock in and out and see the dashboard as an employee. Create a holiday
+calendar for the current year, add holidays and assign the location to see them on the
+employee's dashboard. Use obviously fake names and `dev.example`-style addresses only.
+
 An administrator's MFA reset (`POST /users/{id}/mfa-reset`, `system_admin`) emails a
 re-enrolment link to Mailpit. The link opens `/mfa-reenrolment/<token>`, which asks for the
 password and then a new authenticator, and shows new recovery codes.
@@ -405,6 +462,9 @@ Run through these with the web app, API and worker running.
 | API start fails with a Proactor or event-loop error on Windows | Include `--loop asyncio:SelectorEventLoop` in the uvicorn command (3.3). |
 | Sign-in fails with "This request was blocked because it did not come from the HRMS application" | The page origin differs from `APP_BASE_URL`. Open `http://localhost:5173`, not `127.0.0.1:5173`, or change both to match. |
 | Signed in but immediately signed out again, or cookies missing | Use Chrome, Edge or Firefox on `http://localhost`. The `Secure` session cookies are not kept on other hosts over plain HTTP. |
+| Worker fails at start-up with `AUDIT_VERIFY_PUBLIC_KEYS must list the public key of AUDIT_SIGNING_PRIVATE_KEY` | The three audit key values do not belong together. Generate a new set with `uv run python -m scripts.generate_audit_signing_key` and replace all three. Existing local checkpoints then fail verification against the new key unless the old public key stays listed in `AUDIT_VERIFY_PUBLIC_KEYS` under its old ID. |
+| Worker log shows `anchor storage is unavailable` or `NoSuchBucket` | RustFS is not running or the bucket does not exist. Run the Compose command in 3.1, then `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket` (3.2). Checkpoints already written are anchored on the next hourly run. |
+| `audit-verify` reports `anchor_without_checkpoint` or `anchor_mismatch` on a local database that was recreated | The bucket still holds write-once anchors from an earlier database (3.2). They cannot be deleted. Set a new `AUDIT_ANCHOR_BUCKET` in `.env`, run `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket`, and restart the worker. |
 | Emails (reset, notices) never arrive | The worker is not running, or SMTP is wrong. Start it (3.4) and check `SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`, `SMTP_SECURITY=none`. Then wait up to a minute and look at `http://127.0.0.1:8025`. |
 | Invite link says it doesn't work | It was used, expired (72 hours) or mistyped. On a local database with no other accounts, reset (4.4) and bootstrap again. |
 | Authenticator codes refused | Sync the clocks (9.4). Make sure the app entry is the one created in the latest setup. Each new setup gives a new key. |
@@ -426,6 +486,7 @@ Backend (`backend/`):
 | Tests (Docker must be running; starts its own containers) | `uv run pytest` |
 | Dependency audit | `uv run pip-audit --strict --progress-spinner off` |
 | Regenerate the API contract `api/openapi.json` | `uv run python -m scripts.export_openapi` |
+| Verify the local audit chain and its anchors (read-only; exit code 1 on any problem) | `uv run --env-file ../.env python -m app.cli audit-verify` |
 
 Frontend (`frontend/`):
 
@@ -454,7 +515,10 @@ must be empty unless you changed the API on purpose. CI fails on a stale contrac
 
 ## 13. Project status
 
-Current checkpoint: **M1 Checkpoint E** (complete; see `docs/m1-implementation-plan.md` §10 and §12).
+Current state: **M1 Checkpoints A–F** complete; **Checkpoint G** (frontend) delivered together
+with the first slices of M2 (organization and employee records), M3 (attendance clock events,
+without shifts or policies) and M4 (holiday calendars), migrations up to `0016`. See
+`docs/m1-implementation-plan.md` §12.
 
 Update this document in the same change whenever any of these change: local setup, commands,
 ports, environment variables, the bootstrap process or the test sign-in flow.

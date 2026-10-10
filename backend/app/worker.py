@@ -8,9 +8,12 @@ import procrastinate
 # Registers every table, so foreign keys into other modules (such as org.locations) resolve.
 import app.metadata  # noqa: F401
 from app.modules.access.public import AccessEmails, register_grant_expiry
+from app.modules.audit.public import AuditEmails, alert_chain_mismatch
 from app.modules.identity.emails import IdentityEmails
 from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
 from app.modules.notify.public import EmailTemplate, Renderer
+from app.platform.audit.canonical import Stream
+from app.platform.audit.integrity import AuditIntegrity, register_audit_integrity
 from app.platform.audit.partitions import register_partition_maintenance
 from app.platform.audit.writer import AuditWriter
 from app.platform.clock import Clock, SystemClock
@@ -21,6 +24,9 @@ from app.platform.jobs import create_job_app
 from app.platform.logging import configure_logging
 
 APPLICATION_NAME = "hrms-worker"
+# Jobs run side by side, so a long audit verification or a slow anchor upload never holds up
+# emails or grant expiry. Each task still runs one at a time (its job lock).
+CONCURRENCY = 4
 
 
 def smtp_sender(settings: WorkerSettings) -> SmtpSender:
@@ -39,17 +45,42 @@ def email_renderers(app_base_url: str, clock: Clock) -> dict[EmailTemplate, Rend
     return {
         **IdentityEmails(app_base_url=app_base_url, clock=clock).renderers(),
         **AccessEmails(app_base_url=app_base_url).renderers(),
+        **AuditEmails().renderers(),
     }
 
 
+def audit_integrity(
+    settings: WorkerSettings, database: Database, retention_database: Database, clock: Clock
+) -> AuditIntegrity:
+    return AuditIntegrity(
+        database=database,
+        retention_database=retention_database,
+        anchors=settings.anchor_store(),
+        signer=settings.checkpoint_signer(),
+        verifier=settings.signature_verifier(),
+        clock=clock,
+        audit=AuditWriter(clock),
+        retention_months={
+            Stream.AUDIT_LOG: settings.audit_log_retention_months,
+            Stream.SECURITY_EVENTS: settings.security_events_retention_months,
+        },
+        on_mismatch=alert_chain_mismatch,
+    )
+
+
 def build_job_app(
-    settings: WorkerSettings, database: Database, *, sender: EmailSender | None = None
+    settings: WorkerSettings,
+    database: Database,
+    *,
+    retention_database: Database,
+    sender: EmailSender | None = None,
 ) -> procrastinate.App:
     """The worker's job app with every task and periodic schedule registered."""
     job_app = create_job_app(settings.database_url_worker, application_name=APPLICATION_NAME)
     register_partition_maintenance(job_app, database)
     clock = SystemClock()
     register_grant_expiry(job_app, database, clock, AuditWriter(clock))
+    register_audit_integrity(job_app, audit_integrity(settings, database, retention_database, clock))
     dispatcher = OutboxDispatcher(
         database=database,
         sender=sender or smtp_sender(settings),
@@ -62,12 +93,17 @@ def build_job_app(
 
 async def run(settings: WorkerSettings) -> None:
     database = Database(create_engine(settings.database_url_worker, application_name=APPLICATION_NAME))
+    # Audit retention runs as its own database role, on its own connections.
+    retention_database = Database(
+        create_engine(settings.database_url_audit_retention, application_name=f"{APPLICATION_NAME}-retention")
+    )
     try:
-        job_app = build_job_app(settings, database)
+        job_app = build_job_app(settings, database, retention_database=retention_database)
         async with job_app.open_async():
-            await job_app.run_worker_async()
+            await job_app.run_worker_async(concurrency=CONCURRENCY)
     finally:
         await database.dispose()
+        await retention_database.dispose()
 
 
 def main() -> None:

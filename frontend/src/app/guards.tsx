@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 
 import { ProblemMessage } from "../design-system/ProblemMessage";
+import { HOME } from "../lib/navigation";
 import { Skeleton } from "../design-system/Skeleton";
 import { AccessDenied } from "./pages";
 import { hasPermission, useMe } from "./session";
@@ -33,13 +34,22 @@ export function RequireSession({
     return <Navigate to={ENROLMENT_PATH} replace />;
   }
   if (!enrolmentOnly && enrolment) {
-    return <Navigate to="/account/security" replace />;
+    return <Navigate to={HOME} replace />;
   }
   return children;
 }
 
 /** Pages a user cannot use are not linked; reached by URL, they say so. */
-export function RequirePermission({ permission, children }: { permission: string; children: ReactNode }) {
+export function RequirePermission({
+  permission,
+  anyOf,
+  children,
+}: {
+  permission?: string;
+  anyOf?: readonly string[];
+  children: ReactNode;
+}) {
   const me = useMe();
-  return hasPermission(me.data, permission) ? children : <AccessDenied />;
+  const needed = anyOf ?? (permission ? [permission] : []);
+  return needed.some((key) => hasPermission(me.data, key)) ? children : <AccessDenied />;
 }

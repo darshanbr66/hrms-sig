@@ -29,11 +29,12 @@ class Location(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
     code: Mapped[str] = mapped_column(CITEXT(), unique=True)
     name: Mapped[str]
-    # IANA zone name; validated by the service that writes locations (M2).
+    # IANA zone name; validated by the service that writes locations.
     time_zone: Mapped[str]
     country_code: Mapped[str] = mapped_column(CHAR(2))
     address: Mapped[str | None]
     status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
+    version: Mapped[int] = mapped_column(server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -54,6 +55,7 @@ class Department(Base):
         ForeignKey("people.employees.id", ondelete="RESTRICT", use_alter=True)
     )
     status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
+    version: Mapped[int] = mapped_column(server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -67,5 +69,6 @@ class Designation(Base):
     name: Mapped[str]
     level: Mapped[int | None]
     status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
+    version: Mapped[int] = mapped_column(server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

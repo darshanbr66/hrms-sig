@@ -25,7 +25,7 @@ import { TextField } from "../../design-system/TextField";
 import { client, unwrap } from "../../lib/api";
 import type { components } from "../../lib/api-schema";
 import { formatDateTime } from "../../lib/format";
-import { ApiError } from "../../lib/problem";
+import { problemText } from "../../lib/problem";
 
 type GrantRequest = components["schemas"]["GrantRequestView"];
 
@@ -58,13 +58,6 @@ const KIND_TEXT: Record<GrantRequest["kind"], string> = {
   super_admin_assignment: "Super admin assignment",
   break_glass: "Break-glass",
 };
-
-function errorText(error: unknown, fallback: string): string {
-  if (error instanceof ApiError && error.is("validation-error")) {
-    return error.problem.errors?.[0]?.message ?? fallback;
-  }
-  return error instanceof ApiError ? error.message : fallback;
-}
 
 export function AccessRequestsPage() {
   const me = useMe();
@@ -157,7 +150,7 @@ function ElevationForm() {
       await refresh();
     },
     onError: (failure) => {
-      setError({ field: null, message: errorText(failure, "We couldn't send the request. Try again.") });
+      setError({ field: null, message: problemText(failure, "We couldn't send the request. Try again.") });
     },
   });
 
@@ -246,6 +239,7 @@ function RequestRow({ request }: { request: GrantRequest }) {
   if (
     canDecide &&
     request.kind === "break_glass" &&
+    request.status !== "active" &&
     request.acknowledged_at === null &&
     userId !== request.requested_by.id
   ) {
@@ -373,7 +367,7 @@ function ActionButton({ action, request }: { action: Action; request: GrantReque
             <TextField label="Note (optional)" name="note" value={note} onChange={setNote} maxLength={500} />
           ) : null}
           {run.isError ? (
-            <Banner tone="danger">{errorText(run.error, "That didn't work. Try again.")}</Banner>
+            <Banner tone="danger">{problemText(run.error, "That didn't work. Try again.")}</Banner>
           ) : null}
           <div className="flex justify-end gap-2">
             <Button
@@ -463,7 +457,7 @@ function BreakGlass() {
             onChange={setDuration}
           />
           {use.isError ? (
-            <Banner tone="danger">{errorText(use.error, "That didn't work. Try again.")}</Banner>
+            <Banner tone="danger">{problemText(use.error, "That didn't work. Try again.")}</Banner>
           ) : null}
           <div className="flex justify-end gap-2">
             <Button

@@ -45,7 +45,7 @@ Engine: PostgreSQL 18.
 | `hrms_migrator` | Owner of all schemas and of the Procrastinate objects. Used only by the migration job (§11). Sets default privileges so new tables get the grants below. |
 | `hrms_app` | `SELECT, INSERT, UPDATE, DELETE` on module schemas, except `SELECT` only on the permission catalog (`access.permissions`, `access.roles`, `access.role_permissions`); on `audit.audit_log` and `audit.security_events`: `SELECT, INSERT` only; on `audit.chain_*`: `SELECT` only; on `payroll`: full DML (application enforces permissions); DML and function execution on Procrastinate objects (to enqueue jobs). `statement_timeout = 5s`, `transaction_timeout = 30s`, `idle_in_transaction_session_timeout = 10s`. |
 | `hrms_worker` | Same as `hrms_app`, plus `INSERT` on `audit.chain_links` and `audit.chain_checkpoints`, and `EXECUTE` on `audit.ensure_partitions` (§4.10). `statement_timeout = 5min`, `transaction_timeout = 10min`. Only the worker has the checkpoint signing key (outside the database). |
-| `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); can detach and drop expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links`; `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). `statement_timeout = 5min`, `transaction_timeout = 10min` (the worker's limits). |
+| `hrms_audit_retention` | `SELECT` on the `audit` schema (to verify before removal); removes expired partitions of `audit.audit_log`, `audit.security_events` and `audit.chain_links` only through `EXECUTE` on `audit.drop_expired_partition` (§4.10); `INSERT` on `audit.chain_checkpoints` (tombstones), with no update or delete. Used only by the retention job, which runs in the worker process (where the signing key lives) on a separate connection (`security-architecture.md` §8.1). `statement_timeout = 5min`, `transaction_timeout = 10min` (the worker's limits). |
 | `hrms_readonly` (optional) | `SELECT` on non-sensitive schemas for operational reporting; no access to `payroll`, `audit`, `identity`, `people.employee_identifiers`, `people.employee_bank_accounts`, `people.employee_personal`. |
 
 The one-time cluster bootstrap (`infra/db/bootstrap-roles.sql`, run by a database administrator) creates these login roles and the database owned by `hrms_migrator`, and gives `hrms_migrator` `CREATEROLE` plus `ADMIN OPTION` (without `INHERIT` or `SET`) on the runtime roles, so migrations can set their per-database session limits without acting as them. Everything else (schemas, grants, default privileges, limits) is applied by Alembic. `PUBLIC` has no privileges on the database (no `TEMP`) and cannot execute functions the migrator creates.
@@ -110,6 +110,8 @@ Login attempts are recorded in `audit.security_events`. Account lockout state is
 
 Codes are unique regardless of case (`citext`). `time_zone` is checked against IANA zone names by the service that writes locations. No departments, designations or locations are seeded in production. Sigvitas enters its own.
 
+Built state (revision 0014): the three tables carry `version` for optimistic concurrency. `allowed_ip_ranges` is not created yet (Phase 2). Records are archived, never deleted; an archived unit stays on job history and cannot be chosen for a new placement. Codes cannot change after creation (the API has no field for it). Changes are audited with old and new values; `code` and a location's `address` are recorded as changed without the value, because the audit backstop treats those field names as sensitive.
+
 ### 4.4 people
 
 **employees** — the HR record.
@@ -137,6 +139,8 @@ Both tables are the `sensitive` tier. Separate tables keep `internal` and `perso
 **emergency_contacts** — `employee_id`, `name`, `relationship`, `phone`, `priority smallint`.
 
 **employee_status_history** — `employee_id`, `from_status`, `to_status`, `effective_date`, `reason`, `changed_by`. Append-only.
+
+Built state (revision 0014): `employee_personal` without `gender` (Sigvitas has not asked for it), with `personal_email`, `personal_phone`, and the two addresses as JSON objects (`line1`, `line2`, `city`, `state`, `postal_code`, `country_code`, at most 2 KB each). `employee_status_history` with `changed_by → identity.users`; a trigger (`people.guard_status_history`) refuses UPDATE, DELETE and TRUNCATE. The directory-search indexes are `ix_employees_status` and `ix_employees_search`, a trigram GIN index over `legal_first_name || ' ' || coalesce(legal_last_name, '') || ' ' || coalesce(preferred_name, '') || ' ' || employee_code || ' ' || coalesce(work_email, '')`; queries use exactly that expression. `identifier_types`, `employee_identifiers`, `employee_bank_accounts` and `emergency_contacts` are not built (they wait for Sigvitas's identifier types).
 
 ### 4.5 attendance
 
@@ -188,6 +192,8 @@ Attendance is event-sourced. `attendance_events` is the source of truth; `attend
 - Precedence (architecture): approved leave > holiday > weekly off > absent. Work on a holiday or weekly off is recorded as worked time with an anomaly flag (`holiday_work`, `weekly_off_work`); what that means for pay is a payroll policy for later.
 - Every derived value is stored with the versions and inputs used, so a summary can always be explained and reproduced.
 
+Built state (revision 0015): the `attendance` schema with `attendance_events` only, without `correction_id` and `geo` (added with corrections and location controls). A trigger (`attendance.guard_events`) refuses UPDATE, DELETE and TRUNCATE for every role. Until shifts exist, the work date is the date in the employee's location time zone when the session started; events of an open session keep that date. The sequence is checked under a per-employee advisory lock (`pg_advisory_xact_lock(hashtextextended('attendance:' || employee_id, 0))`), and `UNIQUE (employee_id, idempotency_key)` makes a repeated request record once. Nothing is derived into `attendance_days` yet: shifts, policies, the day projection, corrections and locks wait for Sigvitas's values.
+
 ### 4.6 leave
 
 Leave types and policies are Sigvitas configuration. Nothing is seeded in production, and no leave type, accrual amount or leave year is assumed (`product-requirements.md` §6.12).
@@ -216,7 +222,7 @@ Leave types and policies are Sigvitas configuration. Nothing is seeded in produc
 
 **leave_approvals** — `leave_request_id`, `step smallint`, `approver_user_id`, `decision` (`approved`, `rejected`), `note`, `decided_at`. MVP has one step; the table supports multi-step chains later.
 
-**holiday_calendars** — `name`, `year smallint`, `status`. **holidays** — `calendar_id`, `date`, `name`, `is_optional boolean`, `UNIQUE (calendar_id, date)`. **location_holiday_calendars** — `location_id`, `calendar_id`, `year`, `UNIQUE (location_id, year)`.
+**holiday_calendars** — `name`, `year smallint`, `status`, `version` (built in revision 0016 with `UNIQUE (name, year)`; every change to the calendar, its holidays or its locations moves the version on). **holidays** — `calendar_id`, `date`, `name`, `is_optional boolean`, `UNIQUE (calendar_id, date)`. **location_holiday_calendars** — `location_id`, `calendar_id`, `year`, `UNIQUE (location_id, year)`. Triggers keep a holiday's date and a location's assignment inside the calendar's year (`leave.check_holiday_year`, `leave.check_location_calendar_year`). Revision 0016 builds only these three tables of the `leave` schema; leave types, policies, the ledger and requests wait for Sigvitas's leave policy values.
 
 ### 4.7 payroll (Phase 2)
 
@@ -267,9 +273,11 @@ The integrity design (sealing, checkpoints, anchoring, verification, retention t
 
 **security_events** — partitioned by UTC month on `recorded_at`, keyed and protected like `audit_log`. `recorded_at`, `occurred_at`, `event_type` (`login.succeeded`, `login.failed`, `account.locked`, `mfa.enrolled`, `mfa.reset`, `mfa.recovery_code_used`, `token.reuse_detected`, `session.revoked`, `ratelimit.tripped`, `access.denied_sensitive`, `elevation.requested`, `elevation.approved`, `elevation.break_glass`, `audit.chain_mismatch`, …), `user_id NULL`, `session_id NULL`, `request_id NULL` (correlates with the request log), `email_attempted_hash NULL` (keyed 32-byte hash, not raw email, for unknown accounts), `ip`, `user_agent`, `severity` (`info`, `warning`, `high`), `details jsonb` (flat, non-sensitive values). Indexes `(user_id, recorded_at) WHERE user_id IS NOT NULL` (login history) and `(event_type, recorded_at)`. Same triggers.
 
-**chain_links** — insert-only, partitioned to match the audited table's partition. `stream` (`audit_log`, `security_events`), `partition_key` (e.g. `2026-09`), `position bigint`, `record_id uuid`, `digest_version smallint`, `row_digest bytea`, `link_hash bytea`, `sealed_at`. PK `(stream, partition_key, position)`; `UNIQUE (stream, record_id)`. Written only by the sealer job (`hrms_worker`).
+**chain_links** — insert-only, partitioned by `stream` and then by `partition_key`, one partition per audited month partition (`chain_links_<stream>_pYYYY_MM`, created by `audit.ensure_partitions` with the month's audit partitions), so each month's links are removed with the month and each stream keeps its own retention. `stream` (`audit_log`, `security_events`), `partition_key` (e.g. `2026-09`), `position bigint` (from 1), `record_id uuid`, `digest_version smallint`, `row_digest bytea` (32 bytes), `link_hash bytea` (32 bytes), `sealed_at`. PK `(stream, partition_key, position)`; `UNIQUE (stream, partition_key, record_id)` (PostgreSQL requires the partition columns in a unique key; a record belongs to exactly one month, so this equals uniqueness per stream). Written only by the sealer job (`hrms_worker`).
 
-**chain_checkpoints** — insert-only, **not partitioned, never deleted**. `stream`, `checkpoint_no bigint`, `kind` (`daily`, `partition_final`, `retention_tombstone`), `partition_key`, `last_position`, `row_count`, `last_link_hash`, `prev_checkpoint_hash`, `checkpoint_hash`, `signature bytea`, `key_id`, `anchor_object_key`, `archive_sha256 NULL` (tombstones), `retention_policy_version NULL`, `created_at`. PK `(stream, checkpoint_no)`; `UNIQUE (stream, partition_key) WHERE kind IN ('partition_final','retention_tombstone')` per kind. Written by the sealer (daily, final) and by the retention job (tombstone).
+**chain_checkpoints** — insert-only, **not partitioned, never deleted**. `stream`, `checkpoint_no bigint`, `kind` (`daily`, `partition_final`, `retention_tombstone`), `partition_key`, `last_position`, `row_count` (equal to `last_position`: positions run from 1 without gaps), `last_link_hash`, `prev_checkpoint_hash` (32 zero bytes for the first), `checkpoint_hash`, `signature bytea` (Ed25519, 64 bytes), `key_id`, `anchor_object_key`, `archive_sha256 NULL` (tombstones), `retention_policy_version NULL` (required on tombstones, e.g. `retain_months=84`), `created_at`. PK `(stream, checkpoint_no)`; `UNIQUE (stream, partition_key) WHERE kind = 'partition_final'` and the same for `retention_tombstone`. A trigger (`audit.check_checkpoint_sequence`) accepts a row only as the next number of its stream naming the previous row's hash, so the chain cannot fork or skip. Written by the checkpoint job (daily, final) and by the retention job (tombstone).
+
+**Partition removal.** `audit.drop_expired_partition(stream, month)` detaches and drops a month's audit partition and its chain partition. It is owned by the migrator (only the owner can detach), runs as `SECURITY DEFINER` with a fixed `search_path`, takes the stream and a `YYYY-MM` month and builds every identifier itself, and only `hrms_audit_retention` may execute it. It refuses unless the month's `retention_tombstone` checkpoint exists and the month ended more than an hour ago (revision 0013).
 
 User-visible login history (AUTH-7) is a filtered read of `security_events` for the user.
 
@@ -373,8 +381,8 @@ Business rules that depend on time zones, policies or permissions live in the se
 | Leave ledger and requests | Same as payroll |
 | Documents | Per category `retention_days` |
 | Sessions and tokens | Deleted 30 days after expiry/revocation |
-| Security events | Proposed 2 years, then removed by partition with a retention tombstone (`security-architecture.md` §8.1) |
-| Audit log | Proposed 7 years, then removed by partition with a retention tombstone; optionally archived to encrypted cold storage first |
+| Security events | Proposed 2 years, then removed by partition with a retention tombstone (`security-architecture.md` §8.1). Set with `SECURITY_EVENTS_RETENTION_MONTHS`; unset means nothing is removed |
+| Audit log | Proposed 7 years, then removed by partition with a retention tombstone; optionally archived to encrypted cold storage first (not configured in M1). Set with `AUDIT_LOG_RETENTION_MONTHS`; unset means nothing is removed |
 | Audit chain links | Same as the partition they cover |
 | Audit chain checkpoints | Never deleted (small; they prove continuity across removed partitions) |
 | Write-once checkpoint anchors | Audit retention + 1 year (object lock, compliance mode) |

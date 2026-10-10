@@ -1178,6 +1178,14 @@ class IdentityService:
 
     # --- the actor's own account ----------------------------------------------------------
 
+    async def user(self, user_id: uuid.UUID) -> User:
+        """Any account, for administrators; not found when it does not exist."""
+        async with self._db.unit_of_work() as session:
+            user = await repo.get_user(session, user_id)
+        if user is None:
+            raise ProblemError(ProblemType.NOT_FOUND)
+        return user
+
     async def account(self, user_id: uuid.UUID) -> User:
         async with self._db.unit_of_work() as session:
             return _required(await repo.get_user(session, user_id))
@@ -1224,9 +1232,18 @@ class IdentityService:
 
     # --- administration ------------------------------------------------------------------
 
-    async def list_users(self, *, after: uuid.UUID | None, limit: int) -> repo.UserPage:
+    async def list_users(
+        self,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+        email_contains: str | None = None,
+        employee_id: uuid.UUID | None = None,
+    ) -> repo.UserPage:
         async with self._db.unit_of_work() as session:
-            return await repo.list_users(session, after=after, limit=limit)
+            return await repo.list_users(
+                session, after=after, limit=limit, email_contains=email_contains, employee_id=employee_id
+            )
 
     async def set_disabled(
         self, admin: Actor, context: RequestContext, user_id: uuid.UUID, *, disabled: bool

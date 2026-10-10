@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import {
-  Navigate,
   Outlet,
   RouterProvider,
   createBrowserRouter,
@@ -10,9 +9,8 @@ import {
   type RouteObject,
 } from "react-router";
 
-import { SignInPage } from "../features/auth/SignInPage";
-import { VerifyPage } from "../features/auth/VerifyPage";
 import { Skeleton } from "../design-system/Skeleton";
+import { ToastProvider } from "../design-system/Toast";
 import { onSessionEnded } from "../lib/api";
 import { HOME } from "../lib/navigation";
 import { AppShell } from "./AppShell";
@@ -20,7 +18,10 @@ import { ENROLMENT_PATH, RequirePermission, RequireSession } from "./guards";
 import { NotFound } from "./pages";
 import { StepUpProvider } from "./StepUp";
 
-// Feature routes load on demand (ui-ux-guidelines.md §10); sign-in stays in the first bundle.
+// Every page loads on demand (ui-ux-guidelines.md §10), sign-in included, so the first bundle
+// holds only the shell that every page needs.
+const SignInPage = lazy(() => import("../features/auth/SignInPage").then((m) => ({ default: m.SignInPage })));
+const VerifyPage = lazy(() => import("../features/auth/VerifyPage").then((m) => ({ default: m.VerifyPage })));
 const SecurityPage = lazy(() =>
   import("../features/account/SecurityPage").then((m) => ({ default: m.SecurityPage })),
 );
@@ -44,8 +45,64 @@ const AccessRequestsPage = lazy(() =>
 );
 const InvitePage = lazy(() => import("../features/auth/InvitePage").then((m) => ({ default: m.InvitePage })));
 
+const DashboardPage = lazy(() =>
+  import("../features/dashboard/DashboardPage").then((m) => ({ default: m.DashboardPage })),
+);
+const MyAttendancePage = lazy(() =>
+  import("../features/attendance/MyAttendancePage").then((m) => ({ default: m.MyAttendancePage })),
+);
+const TeamAttendancePage = lazy(() =>
+  import("../features/attendance/TeamAttendancePage").then((m) => ({ default: m.TeamAttendancePage })),
+);
+const MyHolidaysPage = lazy(() =>
+  import("../features/holidays/MyHolidaysPage").then((m) => ({ default: m.MyHolidaysPage })),
+);
+const HolidayCalendarsPage = lazy(() =>
+  import("../features/holidays/HolidayCalendarsPage").then((m) => ({ default: m.HolidayCalendarsPage })),
+);
+const HolidayCalendarPage = lazy(() =>
+  import("../features/holidays/HolidayCalendarPage").then((m) => ({ default: m.HolidayCalendarPage })),
+);
+const MyProfilePage = lazy(() =>
+  import("../features/employees/MyProfilePage").then((m) => ({ default: m.MyProfilePage })),
+);
+const DirectoryPage = lazy(() =>
+  import("../features/employees/DirectoryPage").then((m) => ({ default: m.DirectoryPage })),
+);
+const EmployeesPage = lazy(() =>
+  import("../features/employees/EmployeesPage").then((m) => ({ default: m.EmployeesPage })),
+);
+const NewEmployeePage = lazy(() =>
+  import("../features/employees/NewEmployeePage").then((m) => ({ default: m.NewEmployeePage })),
+);
+const EmployeePage = lazy(() =>
+  import("../features/employees/EmployeePage").then((m) => ({ default: m.EmployeePage })),
+);
+const OrganizationPage = lazy(() =>
+  import("../features/organization/OrganizationPage").then((m) => ({ default: m.OrganizationPage })),
+);
+const UsersPage = lazy(() => import("../features/admin/UsersPage").then((m) => ({ default: m.UsersPage })));
+const UserPage = lazy(() => import("../features/admin/UserPage").then((m) => ({ default: m.UserPage })));
+const RolesPage = lazy(() => import("../features/admin/RolesPage").then((m) => ({ default: m.RolesPage })));
+const SecurityEventsPage = lazy(() =>
+  import("../features/admin/SecurityEventsPage").then((m) => ({ default: m.SecurityEventsPage })),
+);
+const AuditLogPage = lazy(() =>
+  import("../features/admin/AuditLogPage").then((m) => ({ default: m.AuditLogPage })),
+);
+
 function Page({ children }: { children: ReactNode }) {
   return <Suspense fallback={<Skeleton label="Loading" />}>{children}</Suspense>;
+}
+
+/** A signed-in page, optionally needing any one of some permissions (cosmetic: the API decides). */
+function Protected({ anyOf, children }: { anyOf?: readonly string[]; children: ReactNode }) {
+  const page = <Page>{children}</Page>;
+  return (
+    <RequireSession>
+      {anyOf ? <RequirePermission anyOf={anyOf}>{page}</RequirePermission> : page}
+    </RequireSession>
+  );
 }
 
 /** When a refresh fails the session is over: drop cached data and return to sign-in. */
@@ -69,8 +126,22 @@ export const routes: RouteObject[] = [
   {
     element: <SessionEndedRedirect />,
     children: [
-      { path: "/sign-in", element: <SignInPage /> },
-      { path: "/sign-in/verify", element: <VerifyPage /> },
+      {
+        path: "/sign-in",
+        element: (
+          <Page>
+            <SignInPage />
+          </Page>
+        ),
+      },
+      {
+        path: "/sign-in/verify",
+        element: (
+          <Page>
+            <VerifyPage />
+          </Page>
+        ),
+      },
       {
         path: "/password-reset",
         element: (
@@ -105,44 +176,171 @@ export const routes: RouteObject[] = [
       },
       {
         element: (
-          <StepUpProvider>
-            <AppShell />
-          </StepUpProvider>
+          <ToastProvider>
+            <StepUpProvider>
+              <AppShell />
+            </StepUpProvider>
+          </ToastProvider>
         ),
         children: [
-          { path: "/", element: <Navigate to={HOME} replace /> },
           {
             path: HOME,
             element: (
-              <RequireSession>
-                <Page>
-                  <SecurityPage />
-                </Page>
-              </RequireSession>
+              <Protected>
+                <DashboardPage />
+              </Protected>
             ),
           },
           {
-            path: "/settings",
+            path: "/account/security",
             element: (
-              <RequireSession>
-                <RequirePermission permission="settings.read">
-                  <Page>
-                    <SettingsPage />
-                  </Page>
-                </RequirePermission>
-              </RequireSession>
+              <Protected>
+                <SecurityPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/attendance",
+            element: (
+              <Protected anyOf={["attendance.clock.self"]}>
+                <MyAttendancePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/team/attendance",
+            element: (
+              <Protected anyOf={["attendance.read.team", "attendance.read.all"]}>
+                <TeamAttendancePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/holidays",
+            element: (
+              <Protected anyOf={["holiday.read"]}>
+                <MyHolidaysPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/profile",
+            element: (
+              <Protected anyOf={["employee.profile.read.self"]}>
+                <MyProfilePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/directory",
+            element: (
+              <Protected anyOf={["employee.directory.read"]}>
+                <DirectoryPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/employees",
+            element: (
+              <Protected anyOf={["employee.profile.read.team", "employee.profile.read.all"]}>
+                <EmployeesPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/employees/new",
+            element: (
+              <Protected anyOf={["employee.create"]}>
+                <NewEmployeePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/employees/:employeeId",
+            element: (
+              <Protected anyOf={["employee.profile.read.team", "employee.profile.read.all"]}>
+                <EmployeePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/organization",
+            element: (
+              <Protected anyOf={["org.read"]}>
+                <OrganizationPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/setup/holiday-calendars",
+            element: (
+              <Protected anyOf={["holiday.manage"]}>
+                <HolidayCalendarsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/setup/holiday-calendars/:calendarId",
+            element: (
+              <Protected anyOf={["holiday.manage"]}>
+                <HolidayCalendarPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/users",
+            element: (
+              <Protected anyOf={["user.read.all"]}>
+                <UsersPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/users/:userId",
+            element: (
+              <Protected anyOf={["user.read.all"]}>
+                <UserPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/roles",
+            element: (
+              <Protected anyOf={["role.read"]}>
+                <RolesPage />
+              </Protected>
             ),
           },
           {
             path: "/admin/access-requests",
             element: (
-              <RequireSession>
-                <RequirePermission permission="role.read">
-                  <Page>
-                    <AccessRequestsPage />
-                  </Page>
-                </RequirePermission>
-              </RequireSession>
+              <Protected anyOf={["role.read"]}>
+                <AccessRequestsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/security-events",
+            element: (
+              <Protected anyOf={["security.event.read"]}>
+                <SecurityEventsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/audit-log",
+            element: (
+              <Protected anyOf={["audit.read"]}>
+                <AuditLogPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/settings",
+            element: (
+              <Protected anyOf={["settings.read"]}>
+                <SettingsPage />
+              </Protected>
             ),
           },
           {

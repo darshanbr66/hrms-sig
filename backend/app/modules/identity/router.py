@@ -496,15 +496,28 @@ def _user_view(user: User, now: datetime) -> s.UserView:
 
 @router.get("/users", response_model=s.UserPage)
 async def list_users(
+    *,
     request: Request,
     identity: Service,
     _actor: Annotated[Actor, requires("user.read.all")],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[uuid.UUID | None, Query()] = None,
+    q: Annotated[str | None, Query(min_length=1, max_length=254)] = None,
+    employee_id: uuid.UUID | None = None,
 ) -> s.UserPage:
-    page = await identity.list_users(after=cursor, limit=limit)
+    page = await identity.list_users(after=cursor, limit=limit, email_contains=q, employee_id=employee_id)
     now = clock(request).now()
     return s.UserPage(items=[_user_view(user, now) for user in page.users], next_cursor=page.next_cursor)
+
+
+@router.get("/users/{user_id}", response_model=s.UserView)
+async def get_user(
+    user_id: uuid.UUID,
+    request: Request,
+    identity: Service,
+    _actor: Annotated[Actor, requires("user.read.all")],
+) -> s.UserView:
+    return _user_view(await identity.user(user_id), clock(request).now())
 
 
 @router.post("/users/{user_id}/disable", response_model=s.UserView)

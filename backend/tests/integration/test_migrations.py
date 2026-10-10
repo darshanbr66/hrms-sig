@@ -58,7 +58,18 @@ def test_upgrade_downgrade_upgrade_cycle(postgres: PostgresServer) -> None:
 
     command.upgrade(config, "head")
     upgraded = schemas(postgres, database)
-    assert {"identity", "access", "org", "people", "notify", "app", "audit", "procrastinate"} <= upgraded
+    assert {
+        "identity",
+        "access",
+        "org",
+        "people",
+        "notify",
+        "app",
+        "audit",
+        "attendance",
+        "leave",
+        "procrastinate",
+    } <= upgraded
 
     command.downgrade(config, "base")
     assert schemas(postgres, database) == {"public"}

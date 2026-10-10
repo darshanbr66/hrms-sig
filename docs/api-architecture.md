@@ -145,12 +145,14 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /me/documents` · `POST /me/documents` (self-upload categories)
 - `GET /me/notifications` · `POST /me/notifications/{id}/read` · `POST /me/notifications/read-all` · `GET/PUT /me/notification-preferences`
 
-**Organization**
+Implemented so far (2026-10-10): identity, access, audit, settings (M1), and from M2–M4 the organization and people routes, attendance clock events and holiday calendars marked **(built)** below. Routes not marked are designed but not built.
+
+**Organization** (built: every route below, with `?include_archived=true` on the lists; `PATCH` needs `If-Match`)
 - `GET/POST /locations`, `GET/PATCH /locations/{id}`
 - `GET/POST /departments`, `GET/PATCH /departments/{id}`
 - `GET/POST /designations`, `GET/PATCH /designations/{id}`
 
-**People**
+**People** (built: the directory, employee list with `q`, `status` (repeatable), `department_id`, `location_id`, `manager_id`, `cursor`, `limit`; `GET /employees/statistics` (counts within the actor's scope: employed, active, on notice, joining soon, joined in the last 30 days, work anniversaries in the next 14 days, people starting in the next 30); `POST /employees` (`employee.create`, a first job row is required; status follows the joining date); `GET/PATCH /employees/{id}`; `GET/POST /employees/{id}/jobs`; `GET/POST /employees/{id}/status-changes` (exit only on or after the last working day; exiting does not disable the account, which is a separate `POST /users/{id}/disable`); `GET/PATCH /employees/{id}/personal`; `GET/PATCH /me/profile` (preferred name only); `GET /me/jobs`; `GET/PATCH /me/personal`. Not built: identifiers, bank accounts, emergency contacts, identifier types, invite resend from the employee (use `/users`), `/employees/{id}/team`.)
 - `GET /directory?q=&department_id=&location_id=` — directory view.
 - `GET /employees?status=&department_id=&manager_id=` — scoped list.
 - `POST /employees` — create (+ optional `send_invite`).
@@ -162,7 +164,7 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `POST /employees/{id}/invite` (resend)
 - `GET /employees/{id}/team` — direct reports.
 
-**Attendance**
+**Attendance** (built: `GET /me/attendance/today` (state, allowed next events, today's events and measured times, the location time zone, `open_since` for a session left open from an earlier day); `POST /me/attendance/events` with `Idempotency-Key`, 10 per minute per user; `GET /me/attendance/days?from=&to=` (at most 93 days, days that have events, with clocked-in and break seconds measured from the events); `GET /employees/{id}/attendance/days` (scoped); `GET /attendance/today?q=&department_id=&location_id=` (scoped, paged, with counts over the whole scope: people, clocked in today, working now, on a break). No day status is derived until shifts and attendance policies exist (ATT-12); the rest of this list is designed but not built.)
 - `GET /me/attendance/today` — current state (clocked in? on break?), today's events and running totals.
 - `POST /me/attendance/events` — `{ "event_type": "CLOCK_IN" }` + `Idempotency-Key`. Server time. Returns updated today state.
 - `GET /me/attendance/days?from=&to=`
@@ -178,7 +180,7 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /attendance/setup-status` — locations or employees missing a shift or policy (ATT-12).
 - `POST /attendance-locks`
 
-**Leave**
+**Leave** (built: holiday calendars only: `GET/POST /holiday-calendars`, `GET/PATCH /holiday-calendars/{id}`, `POST /holiday-calendars/{id}/holidays`, `DELETE /holiday-calendars/{id}/holidays/{holiday_id}`, `PUT/DELETE /holiday-calendars/{id}/locations/{location_id}` (one calendar per location and year; assigning replaces the location's earlier calendar for that year), all changes with `If-Match` on the calendar's version; `GET /me/holidays?from=&to=`. Leave types, policies, the ledger and requests wait for Sigvitas's leave policy values.)
 - `GET /me/leave/balances?as_of=` · `GET /me/leave/ledger?leave_type_id=`
 - `POST /me/leave-requests/preview` — returns counted days and resulting balance without saving (drives the form).
 - `POST /me/leave-requests` · `GET /me/leave-requests` · `POST /me/leave-requests/{id}/cancel`
@@ -202,10 +204,10 @@ Representative, not exhaustive. All paths under `/api/v1`.
 - `GET /exports/{id}` · `POST /exports/{id}/download`
 
 **Administration**
-- `GET /users` (keyset by ID) · `POST /users` (`user.invite`: `{ email, employee_id? }` → `201`, invite emailed; linking an employee needs `employee.lifecycle.manage` over them and their work email; `409 user.email_in_use`) · `POST /users/{id}/invite` (resend, `202`) · `DELETE /users/{id}/invite` (revoke, `204`) · `POST /users/{id}/disable` · `/enable` (an administrator account only by a `system_admin` holder, `403 user.admin_account`; disabling a super admin that would leave fewer than two active ones `409 user.min_super_admins`) · `POST /users/{id}/mfa-reset` (`security.mfa.reset`, step-up, `{ reason }` → `202`, re-enrolment link emailed; own account `403`; not active `409 user.not_active`) · `GET/DELETE /users/{id}/sessions`
+- `GET /users` (keyset by ID; `?q=` matches part of the email, `?employee_id=` finds the account linked to an employee) · `GET /users/{id}` (`user.read.all`) · `POST /users` (`user.invite`: `{ email, employee_id? }` → `201`, invite emailed; linking an employee needs `employee.lifecycle.manage` over them and their work email; `409 user.email_in_use`) · `POST /users/{id}/invite` (resend, `202`) · `DELETE /users/{id}/invite` (revoke, `204`) · `POST /users/{id}/disable` · `/enable` (an administrator account only by a `system_admin` holder, `403 user.admin_account`; disabling a super admin that would leave fewer than two active ones `409 user.min_super_admins`) · `POST /users/{id}/mfa-reset` (`security.mfa.reset`, step-up, `{ reason }` → `202`, re-enrolment link emailed; own account `403`; not active `409 user.not_active`) · `GET/DELETE /users/{id}/sessions`
 - `GET /roles` · `GET /roles/{id}` · `GET /users/{id}/roles` · `POST /users/{id}/roles` · `DELETE /users/{id}/roles/{assignment_id}` (assigning `super_admin` returns `202` with the `super_admin_assignment` request instead of an assignment. Removing a `super_admin` assignment that would leave fewer than two active super admins is refused with `409 role.min_super_admins`; temporary access from a request is ended through the request, `409 role.temporary_access`.)
 - `GET /role-grant-requests?status=&cursor=&limit=` (`role.read`, newest first) · `POST /role-grant-requests` (elevation: `{ role_key, reason, duration_minutes, department_id?, location_id? }`, at most 480 minutes) · `POST /role-grant-requests/{id}/approve` · `/reject` (`{ note? }`) · `/revoke`. Every action needs step-up and an account holding `super_admin`; nobody decides a request they made or that names them (`403 sod.own_request`); deciding one that is no longer pending `409 grant_request.not_pending`; a second pending request of the same kind `409 grant_request.pending_exists`.
-- `POST /role-grant-requests/break-glass` (`{ reason, duration_minutes }`, at most 60; `system_admin` only, active at once) · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin)
+- `POST /role-grant-requests/break-glass` (`{ reason, duration_minutes }`, at most 60; `system_admin` only, active at once) · `POST /role-grant-requests/{id}/acknowledge` (post-incident review by another super admin, once the break-glass has ended or been ended early; while it is active the answer is `409 grant_request.still_active`)
 - `GET /audit-log?actor_id=&subject_employee_id=&action=&from=&to=`
 - `GET /security-events?...`
 - `GET /settings` (`settings.read`: every registry setting with value, default, bounds, unit and change permission) · `PUT /settings/{key}` (`{ "value": n | null }`; the route needs `settings.manage`, `security.*` keys also `security.settings.manage`; step-up; `null` restores the default; unknown keys `404`)
@@ -241,10 +243,10 @@ Jobs are defined in the owning module and enqueued inside the business transacti
 | `leave.year_end(policy, leave_year)` | each policy's own leave-year start | unique carry-forward/lapse constraint |
 | `access.expire_grants()` | every minute | status transition; permissions already stop applying at `ends_at` because they are resolved per request |
 | `audit.ensure_partitions()` | hourly; keeps the current month and three ahead for both audit streams | creates only missing partitions (advisory lock) |
-| `audit.seal(stream)` | every minute, single instance (advisory lock) | position sequence |
-| `audit.checkpoint(stream)` | daily, plus month-end + 1 h for partition-final | unique checkpoint per partition and kind |
-| `audit.verify(stream)` | daily (recent), monthly (full) | read-only |
-| `audit.retention(stream)` | daily; acts only on eligible partitions | tombstone before drop |
+| `audit.seal()` | every minute, both streams, single instance (job lock and an advisory lock per stream) | position sequence; a row is sealed once (unique record per partition) |
+| `audit.checkpoint()` | hourly at :07: partition-final once a month ended more than 1 h ago, daily once per UTC day per changed partition; anchors new checkpoints and retries missing ones | unique final per partition; gap-free checkpoint numbers (trigger) |
+| `audit.verify_recent()` / `audit.verify_full()` | daily at 02:30 UTC / monthly on the 1st at 03:40 UTC | read-only; a mismatch records `audit.chain_mismatch` and alerts super admins and auditors once per stream, scope and day |
+| `audit.retention()` | daily at 04:20 UTC, as `hrms_audit_retention`; only when a period is configured, only eligible partitions | verified, then tombstone before drop; a written tombstone is reused |
 | `notify.dispatch_email()` | every minute; claims due outbox rows (`SKIP LOCKED`, lease) | idempotency key per event; outbox status |
 | `docs.scan_version(version_id)` | upload | `scan_status` |
 | `exports.generate(export_id)` | export request | job status |

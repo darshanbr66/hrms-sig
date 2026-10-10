@@ -1,6 +1,7 @@
 """Opaque keyset cursors (docs/api-architecture.md §3, Pagination).
 
-A cursor encodes the sort position of the last row returned, `(timestamp, id)`, in base64url.
+A cursor encodes the sort position of the last row returned, `(timestamp, id)` or `(key, id)`,
+in base64url.
 It carries nothing a client could use beyond asking for the next page, and an invalid one is
 a validation error, never a server error.
 """
@@ -45,3 +46,25 @@ def _invalid() -> ProblemError:
             ]
         },
     )
+
+
+type KeyPosition = tuple[str, uuid.UUID]
+
+
+def encode_key_cursor(position: KeyPosition | None) -> str | None:
+    """A cursor for lists sorted by a text key (such as a name), then ID."""
+    if position is None:
+        return None
+    raw = f"{position[1]}|{position[0]}".encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_key_cursor(cursor: str | None) -> KeyPosition | None:
+    if cursor is None:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        identifier, _, key = raw.partition("|")
+        return key, uuid.UUID(identifier)
+    except (ValueError, binascii.Error, UnicodeDecodeError) as exc:
+        raise _invalid() from exc

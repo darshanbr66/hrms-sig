@@ -257,12 +257,16 @@ def test_ensure_partitions_is_idempotent_and_safe_to_run_concurrently(postgres: 
         thread.join()
 
     assert failures == []
-    # The migration created months 0..3; months 4..6 are new for each of the two streams.
-    assert sorted(results) == [0, 0, 0, 6]
+    # The migration created months 0..3; months 4..6 are new for each of the two streams, each
+    # with its chain partition (revision 0013).
+    assert sorted(results) == [0, 0, 0, 12]
     with postgres.connect("postgres", database) as connection:
         now = database_now(connection)
         for stream in STREAMS:
             assert partitions(connection, stream) == {f"{stream}_p{key}" for key in month_keys(now, 7)}
+            assert partitions(connection, f"chain_links_{stream}") == {
+                f"chain_links_{stream}_p{key}" for key in month_keys(now, 7)
+            }
             # Every partition, old or new, refuses TRUNCATE.
             for name in partitions(connection, stream):
                 row = connection.execute(

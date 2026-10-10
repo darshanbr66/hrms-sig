@@ -14,12 +14,26 @@ from fastapi.routing import APIRoute, iter_route_contexts
 
 from app.main import _build
 from app.platform.authz.catalog import PERMISSIONS
+from app.platform.authz.engine import Authorizer
 from app.platform.authz.route import ACCESS_ATTRIBUTE, ACCOUNT_ROUTES, PUBLIC_ROUTES
 from tests.integration.test_authorization_matrix import ROUTES as MATRIX_ROUTES
 
 # Permissions whose routes or service methods arrive later (m1-implementation-plan.md §10).
+POLICIES = "M3 (shifts, attendance policies and corrections: waiting for Sigvitas's attendance policy values)"
+IDENTIFIERS = "M2 (identifiers and bank accounts: Sigvitas has not yet chosen the identifier types)"
 NOT_YET_USED = {
     "audit.export": "M5 (exports)",
+    "employee.emergency_contact.read.team": "M2 (emergency contacts)",
+    "employee.sensitive.read.self": IDENTIFIERS,
+    "employee.sensitive.read.all": IDENTIFIERS,
+    "employee.sensitive.update.all": IDENTIFIERS,
+    "employee.export": "M5 (exports)",
+    "attendance.correction.request.self": POLICIES,
+    "attendance.correction.approve.team": POLICIES,
+    "attendance.correction.approve.all": POLICIES,
+    "attendance.correction.create.all": POLICIES,
+    "attendance.policy.manage": POLICIES,
+    "attendance.export": "M5 (exports)",
 }
 # Permissions a service checks beyond the route's own (the route-level rule is broader).
 SERVICE_CHECKED = {
@@ -27,12 +41,8 @@ SERVICE_CHECKED = {
 }
 # Domains whose modules do not exist yet (M2 onwards): their permissions are all unused.
 LATER_DOMAINS = (
-    "org.",
-    "employee.",
-    "attendance.",
     "shift.",
     "leave.",
-    "holiday.",
     "document.",
     "notification.",
 )
@@ -102,8 +112,10 @@ def routed_permissions() -> dict[str, set[str]]:
     for route in api_routes():
         [rule] = access_rules(route)
         if rule[0] == "permission":
-            for method in route.methods:
-                used.setdefault(rule[1], set()).add(f"{method} {route.path}")
+            # A route naming a permission base (`employee.profile.read`) uses every scoped key.
+            for key in Authorizer.candidate_keys(rule[1]):
+                for method in route.methods:
+                    used.setdefault(key, set()).add(f"{method} {route.path}")
     return used
 
 
@@ -125,6 +137,12 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{session}": "{session_id}",
         "{device}": "{device_id}",
         "{grant_request}": "{request_id}",
+        "{location}": "{location_id}",
+        "{department}": "{department_id}",
+        "{designation}": "{designation_id}",
+        "{employee}": "{employee_id}",
+        "{calendar}": "{calendar_id}",
+        "{holiday}": "{holiday_id}",
         # The matrix changes one concrete setting.
         "email.delivery.max_attempts": "{key}",
     }

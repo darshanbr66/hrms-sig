@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from app.platform.authz.catalog import PERMISSIONS
+from app.platform.authz.engine import Authorizer
 from app.platform.authz.roles import ACCOUNT_BASELINE, ROLE_DEFINITIONS, RoleKey
 from tests.api_support import Account, Api
 from tests.people_data import add_job, create_employee, create_org_units
@@ -27,6 +28,8 @@ class Route:
     body: dict[str, object] | None = None
     # What "allowed" looks like when the path names something that does not exist.
     allowed_statuses: frozenset[int] = frozenset({200, 201, 204})
+    params: dict[str, str] | None = None
+    headers: dict[str, str] | None = None
 
 
 # {target} is another account, {assignment} one of its role assignments, {role} a role and
@@ -34,6 +37,7 @@ class Route:
 # listed; tests/security/test_route_coverage.py checks the list is complete.
 ROUTES = (
     Route("GET", "/api/v1/users", "user.read.all"),
+    Route("GET", "/api/v1/users/{target}", "user.read.all"),
     Route("POST", "/api/v1/users/{target}/disable", "user.disable"),
     Route("POST", "/api/v1/users/{target}/enable", "user.disable"),
     Route("GET", "/api/v1/users/{target}/sessions", "auth.session.read.all"),
@@ -121,6 +125,201 @@ ROUTES = (
         "auth.session.revoke.self",
         allowed_statuses=frozenset({404}),
     ),
+    # Organization. {location}, {department} and {designation} do not exist; a PATCH without
+    # If-Match is refused as a validation error once the permission check has passed.
+    Route("GET", "/api/v1/locations", "org.read"),
+    Route("GET", "/api/v1/locations/{location}", "org.read", allowed_statuses=frozenset({404})),
+    Route(
+        "POST",
+        "/api/v1/locations",
+        "org.manage",
+        {"code": "MATRIX-LOC", "name": "Test location", "time_zone": "Asia/Kolkata", "country_code": "IN"},
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route("PATCH", "/api/v1/locations/{location}", "org.manage", {}, allowed_statuses=frozenset({422})),
+    Route("GET", "/api/v1/departments", "org.read"),
+    Route("GET", "/api/v1/departments/{department}", "org.read", allowed_statuses=frozenset({404})),
+    Route(
+        "POST",
+        "/api/v1/departments",
+        "org.manage",
+        {"code": "MATRIX-DEP", "name": "Test department"},
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route("PATCH", "/api/v1/departments/{department}", "org.manage", {}, allowed_statuses=frozenset({422})),
+    Route("GET", "/api/v1/designations", "org.read"),
+    Route("GET", "/api/v1/designations/{designation}", "org.read", allowed_statuses=frozenset({404})),
+    Route(
+        "POST",
+        "/api/v1/designations",
+        "org.manage",
+        {"code": "MATRIX-DES", "name": "Test designation"},
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route("PATCH", "/api/v1/designations/{designation}", "org.manage", {}, allowed_statuses=frozenset({422})),
+    # People. {employee} does not exist: it is outside every self or team scope (404), and an
+    # `all` holder finds nothing (404), or an empty history (200).
+    Route("GET", "/api/v1/directory", "employee.directory.read"),
+    Route("GET", "/api/v1/employees", "employee.profile.read"),
+    Route("GET", "/api/v1/employees/statistics", "employee.profile.read"),
+    Route(
+        "POST",
+        "/api/v1/employees",
+        "employee.create",
+        {
+            "employee_code": "MATRIX-EMP",
+            "legal_first_name": "Test",
+            "date_of_joining": "2026-01-05",
+            "job": {
+                "department_id": str(uuid.UUID(int=1)),
+                "designation_id": str(uuid.UUID(int=2)),
+                "location_id": str(uuid.UUID(int=3)),
+                "employment_type": "full_time",
+            },
+        },
+        # The units do not exist.
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/employees/{employee}", "employee.profile.read", allowed_statuses=frozenset({404})),
+    Route(
+        "PATCH",
+        "/api/v1/employees/{employee}",
+        "employee.profile.update.all",
+        {},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/jobs",
+        "employee.profile.read",
+        allowed_statuses=frozenset({200, 404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employees/{employee}/jobs",
+        "employee.lifecycle.manage",
+        {
+            "effective_from": "2026-02-01",
+            "department_id": str(uuid.UUID(int=1)),
+            "designation_id": str(uuid.UUID(int=2)),
+            "location_id": str(uuid.UUID(int=3)),
+            "employment_type": "full_time",
+            "change_reason": "transfer",
+        },
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/status-changes",
+        "employee.profile.read",
+        allowed_statuses=frozenset({200, 404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employees/{employee}/status-changes",
+        "employee.lifecycle.manage",
+        {"to_status": "on_notice", "effective_date": "2026-02-01", "reason": "Matrix test"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/personal",
+        "employee.personal.read",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "PATCH",
+        "/api/v1/employees/{employee}/personal",
+        "employee.personal.update.all",
+        {},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/me/profile", "employee.profile.read.self"),
+    Route(
+        "PATCH", "/api/v1/me/profile", "employee.profile.update.self", {}, allowed_statuses=frozenset({422})
+    ),
+    Route("GET", "/api/v1/me/jobs", "employee.profile.read.self"),
+    Route("GET", "/api/v1/me/personal", "employee.personal.read.self"),
+    Route(
+        "PATCH", "/api/v1/me/personal", "employee.personal.update.self", {}, allowed_statuses=frozenset({422})
+    ),
+    # Attendance. Matrix employees have a current job, so clocking in works.
+    Route("GET", "/api/v1/me/attendance/today", "attendance.read.self"),
+    Route(
+        "POST",
+        "/api/v1/me/attendance/events",
+        "attendance.clock.self",
+        {"event_type": "CLOCK_IN"},
+        headers={"Idempotency-Key": "matrix-clock-in"},
+    ),
+    Route(
+        "GET",
+        "/api/v1/me/attendance/days",
+        "attendance.read.self",
+        params={"from": "2026-01-01", "to": "2026-01-31"},
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/attendance/days",
+        "attendance.read",
+        params={"from": "2026-01-01", "to": "2026-01-31"},
+        allowed_statuses=frozenset({200, 404}),
+    ),
+    Route("GET", "/api/v1/attendance/today", "attendance.read"),
+    # Holidays. {calendar} and {holiday} do not exist.
+    Route("GET", "/api/v1/holiday-calendars", "holiday.read"),
+    Route("GET", "/api/v1/holiday-calendars/{calendar}", "holiday.read", allowed_statuses=frozenset({404})),
+    Route(
+        "POST",
+        "/api/v1/holiday-calendars",
+        "holiday.manage",
+        {"name": "Matrix calendar", "year": 2031},
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route(
+        "PATCH",
+        "/api/v1/holiday-calendars/{calendar}",
+        "holiday.manage",
+        {},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/holiday-calendars/{calendar}/holidays",
+        "holiday.manage",
+        {"date": "2031-01-01", "name": "Test holiday"},
+        headers={"If-Match": '"1"'},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "DELETE",
+        "/api/v1/holiday-calendars/{calendar}/holidays/{holiday}",
+        "holiday.manage",
+        headers={"If-Match": '"1"'},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "PUT",
+        "/api/v1/holiday-calendars/{calendar}/locations/{location}",
+        "holiday.manage",
+        headers={"If-Match": '"1"'},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "DELETE",
+        "/api/v1/holiday-calendars/{calendar}/locations/{location}",
+        "holiday.manage",
+        headers={"If-Match": '"1"'},
+        allowed_statuses=frozenset({404}),
+    ),
+    # HR accounts without an employee record have no location, so no own holidays (404).
+    Route(
+        "GET",
+        "/api/v1/me/holidays",
+        "holiday.read",
+        params={"from": "2026-01-01", "to": "2026-12-31"},
+        allowed_statuses=frozenset({200, 404}),
+    ),
     # Last: activating break-glass rotates the caller's tokens (its role changed).
     Route(
         "POST",
@@ -135,9 +334,19 @@ ASSIGNABLE_ROLES = [role for role in RoleKey if not ROLE_DEFINITIONS[role].deriv
 
 
 def holds(role: RoleKey | None, permission: str) -> bool:
-    if permission in ACCOUNT_BASELINE:
-        return True
-    return role is not None and permission in ROLE_DEFINITIONS[role].permissions
+    """Whether the role holds the permission at some scope."""
+    return bool(held_keys(role, permission))
+
+
+def held_keys(role: RoleKey | None, permission: str) -> list[str]:
+    """The catalog keys behind a route's permission that the role holds."""
+    held = set(ACCOUNT_BASELINE)
+    if role is not None:
+        held |= ROLE_DEFINITIONS[role].permissions
+    if role is RoleKey.MANAGER:
+        # A manager is an employee with reports: both derived roles apply.
+        held |= ROLE_DEFINITIONS[RoleKey.EMPLOYEE].permissions
+    return [key for key in Authorizer.candidate_keys(permission) if key in held]
 
 
 async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Response:
@@ -153,8 +362,16 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
         session=uuid.uuid4(),
         device=uuid.uuid4(),
         grant_request=uuid.uuid4(),
+        location=uuid.uuid4(),
+        department=uuid.uuid4(),
+        designation=uuid.uuid4(),
+        employee=uuid.uuid4(),
+        calendar=uuid.uuid4(),
+        holiday=uuid.uuid4(),
     )
-    return await client.request(route.method, path, json=route.body)
+    return await client.request(
+        route.method, path, json=route.body, params=route.params, headers=route.headers
+    )
 
 
 async def matrix_account(api: Api, role: RoleKey | None) -> Account:
@@ -188,14 +405,16 @@ async def test_each_role_reaches_exactly_its_routes(api: Api, role: RoleKey | No
             if not allowed:
                 assert response.status_code == 403, context
                 assert response.json()["type"] == "/problems/forbidden", context
-            elif PERMISSIONS[route.permission].step_up:
+            elif any(PERMISSIONS[key].step_up for key in held_keys(role, route.permission)):
                 assert response.status_code == 403, context
                 assert response.json()["type"] == "/problems/step-up-required", context
             else:
                 assert response.status_code in route.allowed_statuses, context
 
         # With a fresh step-up, the allowed SU routes succeed.
-        su_routes = [r for r in ROUTES if PERMISSIONS[r.permission].step_up and holds(role, r.permission)]
+        su_routes = [
+            r for r in ROUTES if any(PERMISSIONS[key].step_up for key in held_keys(role, r.permission))
+        ]
         if su_routes:
             await api.step_up(client, account)
             for route in su_routes:

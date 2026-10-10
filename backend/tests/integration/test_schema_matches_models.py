@@ -16,9 +16,13 @@ from app.metadata import metadata
 from app.platform.config import sqlalchemy_url
 from tests.conftest import PostgresServer
 
-APPLICATION_SCHEMAS = {"identity", "access", "org", "people", "notify", "app", "audit"}
-# Month partitions are created at runtime (audit.ensure_partitions), not modelled.
-PARTITION = re.compile(r".+_p\d{4}_\d{2}$")
+APPLICATION_SCHEMAS = {"identity", "access", "org", "people", "notify", "app", "audit", "attendance", "leave"}
+# Month partitions are created at runtime (audit.ensure_partitions), and the chain links'
+# per-stream partitions hold only those month partitions; neither is modelled.
+PARTITION = re.compile(r".+_p\d{4}_\d{2}|chain_links_(audit_log|security_events)")
+# Expression indexes with an operator class cannot be compared; checked by name in
+# tests/integration/test_people_api.py.
+UNCOMPARED_INDEXES = {"ix_employees_search"}
 
 
 def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
@@ -26,6 +30,8 @@ def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
         return name in APPLICATION_SCHEMAS
     if type_ == "table":
         return name is not None and not PARTITION.fullmatch(name)
+    if type_ == "index":
+        return name not in UNCOMPARED_INDEXES
     return True
 
 

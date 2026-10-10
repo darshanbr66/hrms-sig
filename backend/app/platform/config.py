@@ -12,8 +12,11 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 from urllib.parse import parse_qs, urlsplit
 
-from pydantic import SecretStr, ValidationInfo, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from app.platform.audit.signing import CheckpointSigner, SignatureVerifier
+from app.platform.storage import S3AnchorStore
 
 type IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -189,11 +192,75 @@ class SmtpSecurity(StrEnum):
     NONE = "none"
 
 
-class WorkerSettings(_WithAppBaseUrl):
-    """Settings for the worker process. It sends the email outbox, so it holds the SMTP
-    credentials and builds links from APP_BASE_URL (never from a request)."""
+class _AuditAnchors(_Base):
+    """Reading the audit chain's write-once anchors and checking checkpoint signatures
+    (docs/security-architecture.md §8.1). Public keys only: no signing key here."""
+
+    # {"<key id>": "<base64 raw Ed25519 public key>"}; old keys stay listed after rotation.
+    audit_verify_public_keys: str
+    # Empty for AWS S3; the emulator's URL locally.
+    s3_endpoint_url: str | None = None
+    s3_region: str
+    audit_anchor_bucket: str = Field(min_length=3, max_length=63)
+    audit_anchor_access_key_id: SecretStr
+    audit_anchor_secret_access_key: SecretStr
+
+    @field_validator("s3_endpoint_url", mode="before")
+    @classmethod
+    def _blank_endpoint_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @model_validator(mode="after")
+    def _check_anchor_settings(self) -> Self:
+        self.signature_verifier()
+        if self.s3_endpoint_url is not None:
+            scheme = urlsplit(self.s3_endpoint_url).scheme
+            if scheme not in ("http", "https"):
+                raise ValueError("S3_ENDPOINT_URL must be an http(s) URL")
+            if self.app_env.is_deployed and scheme != "https":
+                raise ValueError("S3_ENDPOINT_URL must use https in staging and production")
+        return self
+
+    def signature_verifier(self) -> SignatureVerifier:
+        return SignatureVerifier.from_json(self.audit_verify_public_keys)
+
+    def anchor_store(self) -> S3AnchorStore:
+        return S3AnchorStore(
+            bucket=self.audit_anchor_bucket,
+            region=self.s3_region,
+            access_key_id=self.audit_anchor_access_key_id,
+            secret_access_key=self.audit_anchor_secret_access_key,
+            endpoint_url=self.s3_endpoint_url,
+        )
+
+
+class AuditVerifySettings(_AuditAnchors):
+    """Settings for `python -m app.cli audit-verify`: read-only, as the worker's database role."""
 
     database_url_worker: SecretStr
+
+    @model_validator(mode="after")
+    def _check_deployed_requirements(self) -> Self:
+        _require_postgres_url(self.database_url_worker, "DATABASE_URL_WORKER", self.app_env)
+        return self
+
+
+type RetentionMonths = Annotated[int, Field(ge=1, le=1200)]
+
+
+class WorkerSettings(_WithAppBaseUrl, _AuditAnchors):
+    """Settings for the worker process. It sends the email outbox, so it holds the SMTP
+    credentials and builds links from APP_BASE_URL (never from a request). It alone holds the
+    audit checkpoint signing key, and runs audit retention as its own database role."""
+
+    database_url_worker: SecretStr
+    database_url_audit_retention: SecretStr
+    audit_signing_private_key: SecretStr
+    audit_signing_key_id: str
+    # Months each audit stream is kept; unset means nothing is removed (no value assumed,
+    # docs/database-design.md §9).
+    audit_log_retention_months: RetentionMonths | None = None
+    security_events_retention_months: RetentionMonths | None = None
     smtp_host: str
     smtp_port: int
     smtp_from: str
@@ -201,7 +268,13 @@ class WorkerSettings(_WithAppBaseUrl):
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
 
-    @field_validator("smtp_username", "smtp_password", mode="before")
+    @field_validator(
+        "smtp_username",
+        "smtp_password",
+        "audit_log_retention_months",
+        "security_events_retention_months",
+        mode="before",
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         return None if value == "" else value
@@ -209,6 +282,12 @@ class WorkerSettings(_WithAppBaseUrl):
     @model_validator(mode="after")
     def _check_deployed_requirements(self) -> Self:
         _require_postgres_url(self.database_url_worker, "DATABASE_URL_WORKER", self.app_env)
+        _require_postgres_url(self.database_url_audit_retention, "DATABASE_URL_AUDIT_RETENTION", self.app_env)
+        if not self.signature_verifier().matches(self.checkpoint_signer()):
+            raise ValueError(
+                "AUDIT_VERIFY_PUBLIC_KEYS must list the public key of AUDIT_SIGNING_PRIVATE_KEY "
+                "under AUDIT_SIGNING_KEY_ID"
+            )
         if self.smtp_security is SmtpSecurity.NONE and self.app_env not in (AppEnv.LOCAL, AppEnv.TEST):
             raise ValueError("SMTP_SECURITY=none is allowed only in local and test")
         if (self.smtp_username is None) != (self.smtp_password is None):
@@ -216,6 +295,11 @@ class WorkerSettings(_WithAppBaseUrl):
         if not 1 <= self.smtp_port <= 65535:
             raise ValueError("SMTP_PORT must be a TCP port")
         return self
+
+    def checkpoint_signer(self) -> CheckpointSigner:
+        return CheckpointSigner.from_base64(
+            self.audit_signing_key_id, self.audit_signing_private_key.get_secret_value()
+        )
 
 
 class MigrationSettings(_Base):

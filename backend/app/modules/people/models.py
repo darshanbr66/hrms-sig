@@ -10,7 +10,7 @@ from datetime import date, datetime
 from enum import StrEnum
 
 from sqlalchemy import ForeignKey, Index, func, text
-from sqlalchemy.dialects.postgresql import CITEXT, DATERANGE, ExcludeConstraint
+from sqlalchemy.dialects.postgresql import CITEXT, DATERANGE, JSONB, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.platform.db import Base
@@ -41,9 +41,21 @@ class JobChangeReason(StrEnum):
     OTHER = "other"
 
 
+# Directory search over names, the employee code and the work email. Revision 0014 indexes
+# exactly this expression with pg_trgm (`ix_employees_search`, not modelled here because the
+# schema comparison cannot compare operator-class expressions), so queries must use it verbatim.
+SEARCH_TEXT = (
+    "legal_first_name || ' ' || coalesce(legal_last_name, '') || ' ' || coalesce(preferred_name, '') "
+    "|| ' ' || employee_code::text || ' ' || coalesce(work_email::text, '')"
+)
+
+
 class Employee(Base):
     __tablename__ = "employees"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
+    __table_args__ = (
+        Index("ix_employees_status", "status"),
+        {"schema": SCHEMA},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
     employee_code: Mapped[str] = mapped_column(CITEXT(), unique=True)
@@ -95,3 +107,42 @@ class EmployeeJob(Base):
     notes: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class EmployeePersonal(Base):
+    """The `personal` tier (docs/security-architecture.md §2), kept apart from the employee row
+    so `internal` queries never read it."""
+
+    __tablename__ = "employee_personal"
+    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.employees.id", ondelete="RESTRICT"), primary_key=True
+    )
+    date_of_birth: Mapped[date | None]
+    personal_email: Mapped[str | None] = mapped_column(CITEXT())
+    personal_phone: Mapped[str | None]
+    current_address: Mapped[dict[str, str] | None] = mapped_column(JSONB())
+    permanent_address: Mapped[dict[str, str] | None] = mapped_column(JSONB())
+    version: Mapped[int] = mapped_column(server_default=text("1"))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class EmployeeStatusChange(Base):
+    """Append-only (database trigger `people.guard_status_history`)."""
+
+    __tablename__ = "employee_status_history"
+    __table_args__ = (
+        Index("ix_employee_status_history_employee_id", "employee_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.employees.id", ondelete="RESTRICT"))
+    from_status: Mapped[str]
+    to_status: Mapped[str]
+    effective_date: Mapped[date]
+    reason: Mapped[str]
+    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

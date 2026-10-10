@@ -216,6 +216,13 @@ class RedactedChange:
 type FieldChange = ValueChange | RedactedChange
 
 
+def change_of(name: str, old: Scalar, new: Scalar) -> FieldChange:
+    """A value change, or a redacted one when the field name looks personal, sensitive or
+    secret. Fields such as a location's `address` or an `employee_code` hold no such data, but
+    the backstop judges by name, so their audit rows say only that the field changed."""
+    return RedactedChange() if _is_sensitive_field(name) else ValueChange(old, new)
+
+
 def _check_scalar(value: object, name: str) -> None:
     if value is None or isinstance(value, bool | int | Decimal | uuid.UUID | date):
         if isinstance(value, datetime):

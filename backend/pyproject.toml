@@ -6,6 +6,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.20,<2",
     "argon2-cffi>=25.1,<26",
+    "boto3>=1.40,<2",
     "cryptography>=50.0.2,<51",
     "email-validator>=2.3,<3",
     "fastapi>=0.142,<0.143",
@@ -16,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.15,<3",
     "pyotp>=2.9,<3",
     "redis>=8.1,<9",
+    "rfc8785>=0.1.4,<0.2",
     "segno>=1.6,<2",
     "sqlalchemy[asyncio]>=2.1,<2.2",
     "uvicorn[standard]>=0.54,<0.55",
@@ -63,7 +65,7 @@ plugins = ["pydantic.mypy"]
 exclude = ['^migrations/vendor/', '^\.venv/']
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "procrastinate.*"]
+module = ["testcontainers.*", "procrastinate.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # Module boundaries (docs/architecture.md §4): a module is imported by other modules only
@@ -96,6 +98,22 @@ ignore_imports = ["app.** -> app.modules.people.public"]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
+name = "attendance is imported only through attendance.public"
+type = "protected"
+protected_modules = ["app.modules.attendance"]
+allowed_importers = ["app.modules.attendance", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.attendance.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "leave is imported only through leave.public"
+type = "protected"
+protected_modules = ["app.modules.leave"]
+allowed_importers = ["app.modules.leave", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.leave.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
 name = "identity is imported only through identity.public"
 type = "protected"
 protected_modules = ["app.modules.identity"]
@@ -115,7 +133,7 @@ unmatched_ignore_imports_alerting = "none"
 name = "audit is imported only through audit.public"
 type = "protected"
 protected_modules = ["app.modules.audit"]
-allowed_importers = ["app.modules.audit", "app.metadata", "app.main"]
+allowed_importers = ["app.modules.audit", "app.metadata", "app.main", "app.worker"]
 ignore_imports = ["app.** -> app.modules.audit.public"]
 unmatched_ignore_imports_alerting = "none"
 

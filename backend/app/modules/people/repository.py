@@ -8,18 +8,34 @@ rows, so a future-dated transfer does not move team access before it takes effec
 The recursive queries use UNION, not UNION ALL, so a reporting-line cycle (which the
 M2 write path prevents) ends the recursion instead of looping.
 
-These functions compute the `team` scope itself, so unlike list queries over employee
-records they take no scope filter.
+The reporting-line functions compute the `team` scope itself, so unlike list queries over
+employee records they take no scope filter.
 """
 
 import uuid
+from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
-from sqlalchemy import ColumnElement, Select, and_, exists, func, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Text,
+    and_,
+    exists,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+    tuple_,
+)
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.modules.people.models import Employee, EmployeeJob
+from app.modules.people.models import SEARCH_TEXT, Employee, EmployeeJob, EmployeeStatusChange
 from app.platform.authz.engine import Placement
 
 
@@ -166,3 +182,158 @@ async def work_email(session: AsyncSession, employee_id: uuid.UUID) -> tuple[boo
     """Whether the employee exists, and their work email (`public_internal`)."""
     row = (await session.execute(select(Employee.work_email).where(Employee.id == employee_id))).one_or_none()
     return (False, None) if row is None else (True, row.work_email)
+
+
+# --- employee records (M2) ---------------------------------------------------------------------
+# List functions take the caller's scope filter (a predicate on the employee ID) as a required
+# argument, so no list can run unscoped (docs/authorization-model.md §9).
+
+
+def display_name() -> ColumnElement[str]:
+    """Preferred name (else legal first name), then legal last name."""
+    first = func.coalesce(Employee.preferred_name, Employee.legal_first_name)
+    return func.trim(first + " " + func.coalesce(Employee.legal_last_name, ""))
+
+
+def name_of(employee: Employee) -> str:
+    """The display name: preferred name (else legal first name), then legal last name."""
+    return f"{employee.preferred_name or employee.legal_first_name} {employee.legal_last_name or ''}".strip()
+
+
+def employed_on(on: date) -> ColumnElement[bool]:
+    return _employed_on(Employee, on)
+
+
+def _search(text_query: str) -> ColumnElement[bool]:
+    escaped = text_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    return literal_column(f"({SEARCH_TEXT})", Text()).ilike(pattern)
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeFilters:
+    text: str | None = None
+    statuses: tuple[str, ...] = ()
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    manager_id: uuid.UUID | None = None
+
+
+async def list_employees(
+    session: AsyncSession,
+    scope: ColumnElement[bool],
+    filters: EmployeeFilters,
+    *,
+    on: date,
+    after: tuple[str, uuid.UUID] | None,
+    limit: int,
+) -> list[tuple[Employee, str]]:
+    """Employees in scope with their sort name, ordered by name then ID."""
+    sort = func.lower(display_name())
+    query = select(Employee, sort.label("sort_name")).where(scope)
+    if filters.text:
+        query = query.where(_search(filters.text))
+    if filters.statuses:
+        query = query.where(Employee.status.in_(filters.statuses))
+    if filters.department_id or filters.location_id or filters.manager_id:
+        job = aliased(EmployeeJob)
+        query = query.join(job, and_(job.employee_id == Employee.id, _job_applies_on(job, on)))
+        if filters.department_id:
+            query = query.where(job.department_id == filters.department_id)
+        if filters.location_id:
+            query = query.where(job.location_id == filters.location_id)
+        if filters.manager_id:
+            query = query.where(job.manager_employee_id == filters.manager_id)
+    if after is not None:
+        query = query.where(tuple_(sort, Employee.id) > tuple_(literal(after[0]), literal(after[1])))
+    rows = (await session.execute(query.order_by(sort, Employee.id).limit(limit + 1))).all()
+    return [(row[0], row[1]) for row in rows]
+
+
+async def current_jobs(
+    session: AsyncSession, employee_ids: Collection[uuid.UUID], on: date
+) -> dict[uuid.UUID, EmployeeJob]:
+    """The job row that applies on a date, per employee (none before the first row)."""
+    if not employee_ids:
+        return {}
+    query = select(EmployeeJob).where(
+        EmployeeJob.employee_id.in_(set(employee_ids)), _job_applies_on(EmployeeJob, on)
+    )
+    return {job.employee_id: job for job in await session.scalars(query)}
+
+
+async def latest_jobs(
+    session: AsyncSession, employee_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, EmployeeJob]:
+    """Each employee's most recent job row, for those with no row applying today (not yet joined,
+    or exited)."""
+    if not employee_ids:
+        return {}
+    query = (
+        select(EmployeeJob)
+        .where(EmployeeJob.employee_id.in_(set(employee_ids)))
+        .order_by(EmployeeJob.employee_id, EmployeeJob.effective_from.desc())
+        .ext(distinct_on(EmployeeJob.employee_id))
+    )
+    return {job.employee_id: job for job in await session.scalars(query)}
+
+
+async def job_history(session: AsyncSession, employee_id: uuid.UUID) -> list[EmployeeJob]:
+    query = (
+        select(EmployeeJob)
+        .where(EmployeeJob.employee_id == employee_id)
+        .order_by(EmployeeJob.effective_from.desc())
+    )
+    return list(await session.scalars(query))
+
+
+async def employee_names(session: AsyncSession, employee_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, str]:
+    if not employee_ids:
+        return {}
+    rows = (
+        await session.execute(select(Employee.id, display_name()).where(Employee.id.in_(set(employee_ids))))
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+async def directory(
+    session: AsyncSession,
+    filters: EmployeeFilters,
+    *,
+    on: date,
+    after: tuple[str, uuid.UUID] | None,
+    limit: int,
+) -> list[tuple[Employee, str]]:
+    """Employees employed on the date and not exited: the directory (product-requirements EMP-6)
+    is open to every employee, so it needs no scope filter beyond this."""
+    directory_filters = EmployeeFilters(
+        text=filters.text,
+        statuses=("active", "on_notice"),
+        department_id=filters.department_id,
+        location_id=filters.location_id,
+    )
+    return await list_employees(session, employed_on(on), directory_filters, on=on, after=after, limit=limit)
+
+
+async def statistics_rows(session: AsyncSession, scope: ColumnElement[bool]) -> list[Any]:
+    query = select(
+        Employee.id,
+        display_name().label("name"),
+        Employee.status,
+        Employee.date_of_joining,
+        Employee.date_of_exit,
+    ).where(scope)
+    return list((await session.execute(query)).all())
+
+
+async def status_history(session: AsyncSession, employee_id: uuid.UUID) -> list[EmployeeStatusChange]:
+    query = (
+        select(EmployeeStatusChange)
+        .where(EmployeeStatusChange.employee_id == employee_id)
+        .order_by(EmployeeStatusChange.created_at.desc(), EmployeeStatusChange.id.desc())
+    )
+    return list(await session.scalars(query))
+
+
+async def employee_exists(session: AsyncSession, employee_id: uuid.UUID) -> bool:
+    return bool((await session.execute(select(exists().where(Employee.id == employee_id)))).scalar_one())
