@@ -34,8 +34,24 @@ def _location(record: Location) -> s.LocationView:
     return s.LocationView.model_validate(record, from_attributes=True)
 
 
-def _department(record: Department) -> s.DepartmentView:
-    return s.DepartmentView.model_validate(record, from_attributes=True)
+def _department(record: Department, heads: dict[uuid.UUID, str]) -> s.DepartmentView:
+    return s.DepartmentView(
+        id=record.id,
+        code=record.code,
+        name=record.name,
+        description=record.description,
+        parent_id=record.parent_id,
+        head_employee_id=record.head_employee_id,
+        head_name=heads.get(record.head_employee_id) if record.head_employee_id else None,
+        status=record.status,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+async def _one_department(org: OrgService, record: Department) -> s.DepartmentView:
+    return _department(record, await org.head_names([record]))
 
 
 def _designation(record: Designation) -> s.DesignationView:
@@ -111,7 +127,8 @@ async def list_departments(
     org: Service, _actor: Annotated[Actor, requires("org.read")], include_archived: bool = False
 ) -> s.DepartmentList:
     items = await org.records(Department, include_archived=include_archived)
-    return s.DepartmentList(items=[_department(r) for r in items])
+    heads = await org.head_names(items)
+    return s.DepartmentList(items=[_department(r, heads) for r in items])
 
 
 @router.post("/departments", response_model=s.DepartmentView, status_code=status.HTTP_201_CREATED)
@@ -124,7 +141,7 @@ async def create_department(
 ) -> s.DepartmentView:
     record = await org.create(actor, RequestContext.from_request(request), Department, body.model_dump())
     _tagged(response, record)
-    return _department(record)
+    return await _one_department(org, record)
 
 
 @router.get("/departments/{department_id}", response_model=s.DepartmentView)
@@ -133,7 +150,7 @@ async def get_department(
 ) -> s.DepartmentView:
     record = await org.get(Department, department_id)
     _tagged(response, record)
-    return _department(record)
+    return await _one_department(org, record)
 
 
 @router.patch("/departments/{department_id}", response_model=s.DepartmentView)
@@ -156,7 +173,7 @@ async def update_department(
         values=_values(body),
     )
     _tagged(response, record)
-    return _department(record)
+    return await _one_department(org, record)
 
 
 # --- designations -------------------------------------------------------------------------------

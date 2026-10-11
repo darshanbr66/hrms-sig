@@ -49,14 +49,19 @@ async def unit_names(
 async def inactive_units(
     session: AsyncSession, *, department_id: uuid.UUID, designation_id: uuid.UUID, location_id: uuid.UUID
 ) -> list[str]:
-    """The fields (`department_id`, ...) naming a unit that does not exist or is archived."""
+    """The fields (`department_id`, ...) naming a unit that does not exist or is archived.
+
+    The units are locked FOR SHARE until the caller commits, so archiving one (which locks it
+    FOR UPDATE and then counts the people placed in it) waits for this placement, or this
+    placement waits for the archive and then sees it archived."""
     found: list[str] = []
     for field, model, unit_id in (
         ("department_id", Department, department_id),
         ("designation_id", Designation, designation_id),
         ("location_id", Location, location_id),
     ):
-        status = (await session.execute(select(model.status).where(model.id == unit_id))).scalar_one_or_none()
+        query = select(model.status).where(model.id == unit_id).with_for_update(read=True)
+        status = (await session.execute(query)).scalar_one_or_none()
         if status != OrgUnitStatus.ACTIVE.value:
             found.append(field)
     return found

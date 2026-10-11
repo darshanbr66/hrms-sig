@@ -11,7 +11,7 @@ export interface TextFieldProps {
   autoComplete?: string;
   description?: string;
   error?: string | undefined;
-  inputMode?: "text" | "numeric";
+  inputMode?: "text" | "numeric" | "decimal";
   maxLength?: number;
   inputRef?: Ref<HTMLInputElement>;
   isRequired?: boolean;

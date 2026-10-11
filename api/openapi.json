@@ -1176,6 +1176,60 @@
         }
       }
     },
+    "/api/v1/users/{user_id}/employee-link": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Link User Employee",
+        "description": "Link an existing account to an employee record. Needs `employee.lifecycle.manage` over\nthe employee too, step-up and a reason; the account's email must be the work email.",
+        "operationId": "link_user_employee_api_v1_users__user_id__employee_link_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmployeeLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/{user_id}/enable": {
       "post": {
         "tags": [
@@ -3147,6 +3201,23 @@
             }
           },
           {
+            "name": "designation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Designation Id"
+            }
+          },
+          {
             "name": "location_id",
             "in": "query",
             "required": false,
@@ -3178,6 +3249,38 @@
                 }
               ],
               "title": "Manager Id"
+            }
+          },
+          {
+            "name": "employment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Employment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employment"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "name",
+                "code",
+                "joined_newest",
+                "joined_oldest"
+              ],
+              "type": "string",
+              "default": "name",
+              "title": "Sort"
             }
           },
           {
@@ -4725,6 +4828,1228 @@
           }
         }
       }
+    },
+    "/api/v1/leave-types": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "List Leave Types",
+        "operationId": "list_leave_types_api_v1_leave_types_get",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveTypeList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Create Leave Type",
+        "operationId": "create_leave_type_api_v1_leave_types_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveTypeCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveTypeView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-types/{leave_type_id}": {
+      "patch": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Update Leave Type",
+        "operationId": "update_leave_type_api_v1_leave_types__leave_type_id__patch",
+        "parameters": [
+          {
+            "name": "leave_type_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Leave Type Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveTypeUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveTypeView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-policies": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "List Leave Policies",
+        "operationId": "list_leave_policies_api_v1_leave_policies_get",
+        "parameters": [
+          {
+            "name": "leave_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Leave Type Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeavePolicyList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Create Leave Policy",
+        "description": "A new effective-dated version for a scope; the scope's open version ends the day it starts.",
+        "operationId": "create_leave_policy_api_v1_leave_policies_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeavePolicyCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeavePolicyView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/leave/balances": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "My Balances",
+        "operationId": "my_balances_api_v1_me_leave_balances_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/leave/ledger": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "My Ledger",
+        "operationId": "my_ledger_api_v1_me_leave_ledger_get",
+        "parameters": [
+          {
+            "name": "leave_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Leave Type Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/leave/balances": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Employee Balances",
+        "operationId": "employee_balances_api_v1_employees__employee_id__leave_balances_get",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/leave/ledger": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Employee Ledger",
+        "operationId": "employee_ledger_api_v1_employees__employee_id__leave_ledger_get",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "leave_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Leave Type Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/leave-adjustments": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Adjust Balance",
+        "description": "An adjustment or opening balance with a reason. Never on your own balance.",
+        "operationId": "adjust_balance_api_v1_employees__employee_id__leave_adjustments_post",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustmentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerEntryView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-allocations": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Run Allocation",
+        "description": "The upfront allocation of one leave year for every employee you may adjust; running it\nagain allocates only to those not yet allocated for that year.",
+        "operationId": "run_allocation_api_v1_leave_allocations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllocationRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllocationResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/leave-requests/preview": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Preview Request",
+        "description": "How the days count and what the balance would be, without saving anything.",
+        "operationId": "preview_request_api_v1_me_leave_requests_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/leave-requests": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Submit Request",
+        "description": "Repeating a request with the same `Idempotency-Key` returns the first result.",
+        "operationId": "submit_request_api_v1_me_leave_requests_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "My Requests",
+        "operationId": "my_requests_api_v1_me_leave_requests_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/app__modules__leave__schemas__StatusValue"
+                  },
+                  "maxItems": 5
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/leave-requests/{request_id}/cancel": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Cancel Request",
+        "description": "Withdraw a pending request, or cancel approved leave that has not started (which goes to\nthe approver when the leave type needs approval).",
+        "operationId": "cancel_request_api_v1_me_leave_requests__request_id__cancel_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-requests": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "List Requests",
+        "description": "Requests in your scope, newest first. With `awaiting_my_decision`, the requests you may\ndecide that are waiting for a decision, oldest first. No reasons.",
+        "operationId": "list_requests_api_v1_leave_requests_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/app__modules__leave__schemas__StatusValue"
+                  },
+                  "maxItems": 5
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "leave_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Leave Type Id"
+            }
+          },
+          {
+            "name": "employee_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "name": "awaiting_my_decision",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Awaiting My Decision"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-requests/{request_id}": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Get Request",
+        "description": "The reason is shown to the employee and to whoever may decide the request.",
+        "operationId": "get_request_api_v1_leave_requests__request_id__get",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-requests/{request_id}/approve": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Approve Request",
+        "description": "Approve a pending request, or the cancellation asked for on approved leave.",
+        "operationId": "approve_request_api_v1_leave_requests__request_id__approve_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Decide"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-requests/{request_id}/reject": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Reject Request",
+        "description": "Reject a pending request, or keep approved leave whose cancellation was asked for. A note\nis required.",
+        "operationId": "reject_request_api_v1_leave_requests__request_id__reject_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Decide"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave/calendar": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Leave Calendar",
+        "description": "Who is away in your scope (at most 93 days): leave type and dates, never the reason.",
+        "operationId": "leave_calendar_api_v1_leave_calendar_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "To"
+            }
+          },
+          {
+            "name": "leave_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Leave Type Id"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveCalendarView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4796,6 +6121,44 @@
           "country_code"
         ],
         "title": "Address"
+      },
+      "AdjustmentCreate": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "entry_type": {
+            "type": "string",
+            "enum": [
+              "adjustment",
+              "opening_balance"
+            ],
+            "title": "Entry Type"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Days__3"
+          },
+          "effective_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective Date"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "entry_type",
+          "amount",
+          "effective_date",
+          "reason"
+        ],
+        "title": "AdjustmentCreate"
       },
       "AdminSessionList": {
         "properties": {
@@ -4870,6 +6233,61 @@
           "last_activity_at"
         ],
         "title": "AdminSessionView"
+      },
+      "AllocationResult": {
+        "properties": {
+          "allocated": {
+            "type": "integer",
+            "title": "Allocated"
+          },
+          "already_allocated": {
+            "type": "integer",
+            "title": "Already Allocated"
+          },
+          "no_policy": {
+            "type": "integer",
+            "title": "No Policy"
+          },
+          "no_allocation_in_policy": {
+            "type": "integer",
+            "title": "No Allocation In Policy"
+          },
+          "skipped_own": {
+            "type": "integer",
+            "title": "Skipped Own"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "allocated",
+          "already_allocated",
+          "no_policy",
+          "no_allocation_in_policy",
+          "skipped_own"
+        ],
+        "title": "AllocationResult"
+      },
+      "AllocationRun": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date",
+            "title": "As Of"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "as_of"
+        ],
+        "title": "AllocationRun"
       },
       "Anniversary": {
         "properties": {
@@ -5294,6 +6712,92 @@
         ],
         "title": "AuditRecord"
       },
+      "BalanceList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BalanceView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "BalanceList"
+      },
+      "BalanceView": {
+        "properties": {
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "is_paid": {
+            "type": "boolean",
+            "title": "Is Paid"
+          },
+          "allows_half_day": {
+            "type": "boolean",
+            "title": "Allows Half Day"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval"
+          },
+          "balance": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance"
+          },
+          "reserved": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Reserved"
+          },
+          "available": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Available"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible"
+          },
+          "allow_negative_balance": {
+            "type": "boolean",
+            "title": "Allow Negative Balance"
+          },
+          "max_negative_days": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Negative Days"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type",
+          "is_paid",
+          "allows_half_day",
+          "requires_approval",
+          "balance",
+          "reserved",
+          "available",
+          "eligible",
+          "allow_negative_balance",
+          "max_negative_days"
+        ],
+        "title": "BalanceView"
+      },
       "BreakGlassCreate": {
         "properties": {
           "reason": {
@@ -5655,6 +7159,66 @@
         ],
         "title": "DayView"
       },
+      "Decide": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Text1000"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Decide"
+      },
+      "DecisionView": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected",
+              "cancellation_approved",
+              "cancellation_rejected"
+            ],
+            "title": "Decision"
+          },
+          "decided_by": {
+            "type": "string",
+            "title": "Decided By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Decided At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision",
+          "decided_by",
+          "note",
+          "decided_at"
+        ],
+        "title": "DecisionView"
+      },
       "DepartmentCreate": {
         "properties": {
           "code": {
@@ -5662,6 +7226,16 @@
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__org__schemas__Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Description"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "parent_id": {
             "anyOf": [
@@ -5674,6 +7248,18 @@
               }
             ],
             "title": "Parent Id"
+          },
+          "head_employee_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Employee Id"
           }
         },
         "additionalProperties": false,
@@ -5707,6 +7293,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/app__modules__org__schemas__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Description"
               },
               {
                 "type": "null"
@@ -5767,6 +7363,17 @@
             "type": "string",
             "title": "Name"
           },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
           "parent_id": {
             "anyOf": [
               {
@@ -5790,6 +7397,17 @@
               }
             ],
             "title": "Head Employee Id"
+          },
+          "head_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Name"
           },
           "status": {
             "$ref": "#/components/schemas/app__modules__org__schemas__StatusValue"
@@ -5815,14 +7433,21 @@
           "id",
           "code",
           "name",
+          "description",
           "parent_id",
           "head_employee_id",
+          "head_name",
           "status",
           "version",
           "created_at",
           "updated_at"
         ],
         "title": "DepartmentView"
+      },
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1
       },
       "DesignationCreate": {
         "properties": {
@@ -6317,6 +7942,29 @@
         ],
         "title": "EmployeeHolidayView"
       },
+      "EmployeeLinkRequest": {
+        "properties": {
+          "employee_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Employee Id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_id",
+          "reason"
+        ],
+        "title": "EmployeeLinkRequest",
+        "description": "Link an existing account to an employee record. The reason is recorded in the audit\nlog: say why the account was not linked at invite (for example, invited before the record\nexisted), not personal details."
+      },
       "EmployeePage": {
         "properties": {
           "items": {
@@ -6364,6 +8012,14 @@
             "type": "integer",
             "title": "Pre Joining"
           },
+          "future_joiners": {
+            "type": "integer",
+            "title": "Future Joiners"
+          },
+          "former": {
+            "type": "integer",
+            "title": "Former"
+          },
           "joined_last_30_days": {
             "type": "integer",
             "title": "Joined Last 30 Days"
@@ -6381,6 +8037,34 @@
             },
             "type": "array",
             "title": "Work Anniversaries"
+          },
+          "recent_joiners": {
+            "items": {
+              "$ref": "#/components/schemas/RecentJoiner"
+            },
+            "type": "array",
+            "title": "Recent Joiners"
+          },
+          "by_department": {
+            "items": {
+              "$ref": "#/components/schemas/Headcount"
+            },
+            "type": "array",
+            "title": "By Department"
+          },
+          "by_designation": {
+            "items": {
+              "$ref": "#/components/schemas/Headcount"
+            },
+            "type": "array",
+            "title": "By Designation"
+          },
+          "by_location": {
+            "items": {
+              "$ref": "#/components/schemas/Headcount"
+            },
+            "type": "array",
+            "title": "By Location"
           }
         },
         "additionalProperties": false,
@@ -6390,12 +8074,18 @@
           "active",
           "on_notice",
           "pre_joining",
+          "future_joiners",
+          "former",
           "joined_last_30_days",
           "starting_soon",
-          "work_anniversaries"
+          "work_anniversaries",
+          "recent_joiners",
+          "by_department",
+          "by_designation",
+          "by_location"
         ],
         "title": "EmployeeStatistics",
-        "description": "Counts over the employees the actor may read, employed today unless stated."
+        "description": "Counts over the employees the actor may read (docs/product-requirements.md EMP-7):\n`employed` is the `current` employment of the employee list today; `active` and `on_notice`\nsplit it by recorded status; `future_joiners` and `former` match `future` and `former`.\n`pre_joining` counts the recorded status, whatever the dates. Headcounts and recent joiners\ncount `current` employees only."
       },
       "EmployeeSummary": {
         "properties": {
@@ -6668,6 +8358,14 @@
         ],
         "title": "EmployeeView"
       },
+      "Employment": {
+        "type": "string",
+        "enum": [
+          "current",
+          "future",
+          "former"
+        ]
+      },
       "EmploymentTypeValue": {
         "type": "string",
         "enum": [
@@ -6675,6 +8373,16 @@
           "part_time",
           "contract",
           "intern"
+        ]
+      },
+      "EntryTypeValue": {
+        "type": "string",
+        "enum": [
+          "opening_balance",
+          "accrual",
+          "usage",
+          "usage_reversal",
+          "adjustment"
         ]
       },
       "EventCreate": {
@@ -7092,6 +8800,39 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HalfValue": {
+        "type": "string",
+        "enum": [
+          "first",
+          "second"
+        ]
+      },
+      "Headcount": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "employed": {
+            "type": "integer",
+            "title": "Employed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "employed"
+        ],
+        "title": "Headcount",
+        "description": "Employees employed today whose current job is in one department, designation or location."
       },
       "HealthStatus": {
         "properties": {
@@ -7520,6 +9261,707 @@
           "notes"
         ],
         "title": "JobView"
+      },
+      "LeaveCalendarEntry": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Request Id"
+          },
+          "employee": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date"
+          },
+          "start_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "cancellation_requested"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "employee",
+          "leave_type",
+          "start_date",
+          "end_date",
+          "start_half",
+          "end_half",
+          "status"
+        ],
+        "title": "LeaveCalendarEntry",
+        "description": "Who is away: no reason, ever (product-requirements LV-8)."
+      },
+      "LeaveCalendarView": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveCalendarEntry"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "title": "LeaveCalendarView"
+      },
+      "LeaveDayView": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "portion": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Portion"
+          },
+          "counted": {
+            "type": "boolean",
+            "title": "Counted"
+          },
+          "not_counted_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "holiday",
+                  "weekly_off"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Counted Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "portion",
+          "counted",
+          "not_counted_reason"
+        ],
+        "title": "LeaveDayView"
+      },
+      "LeavePolicyCreate": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentTypeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "leave_year_start_month": {
+            "type": "integer",
+            "maximum": 12.0,
+            "minimum": 1.0,
+            "title": "Leave Year Start Month"
+          },
+          "leave_year_start_day": {
+            "type": "integer",
+            "maximum": 31.0,
+            "minimum": 1.0,
+            "title": "Leave Year Start Day"
+          },
+          "accrual_method": {
+            "type": "string",
+            "enum": [
+              "none",
+              "upfront_per_leave_year"
+            ],
+            "title": "Accrual Method"
+          },
+          "accrual_amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__leave__schemas__Days__1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allow_negative_balance": {
+            "type": "boolean",
+            "title": "Allow Negative Balance"
+          },
+          "max_negative_days": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__leave__schemas__Days__2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "effective_from",
+          "leave_year_start_month",
+          "leave_year_start_day",
+          "accrual_method",
+          "allow_negative_balance"
+        ],
+        "title": "LeavePolicyCreate",
+        "description": "A new version for a scope (leave type, plus an optional location and employment type).\nThe scope's open version, if it starts earlier, ends the day this one starts."
+      },
+      "LeavePolicyList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeavePolicyView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "LeavePolicyList"
+      },
+      "LeavePolicyView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Ref"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmploymentTypeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "leave_year_start_month": {
+            "type": "integer",
+            "title": "Leave Year Start Month"
+          },
+          "leave_year_start_day": {
+            "type": "integer",
+            "title": "Leave Year Start Day"
+          },
+          "accrual_method": {
+            "type": "string",
+            "enum": [
+              "none",
+              "upfront_per_leave_year"
+            ],
+            "title": "Accrual Method"
+          },
+          "accrual_amount": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accrual Amount"
+          },
+          "allow_negative_balance": {
+            "type": "boolean",
+            "title": "Allow Negative Balance"
+          },
+          "max_negative_days": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Negative Days"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "leave_type",
+          "location",
+          "employment_type",
+          "effective_from",
+          "effective_to",
+          "leave_year_start_month",
+          "leave_year_start_day",
+          "accrual_method",
+          "accrual_amount",
+          "allow_negative_balance",
+          "max_negative_days",
+          "created_at"
+        ],
+        "title": "LeavePolicyView"
+      },
+      "LeaveTypeCreate": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/Code"
+          },
+          "name": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Text1000"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_paid": {
+            "type": "boolean",
+            "title": "Is Paid"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval"
+          },
+          "allows_half_day": {
+            "type": "boolean",
+            "title": "Allows Half Day"
+          },
+          "counts_weekly_offs": {
+            "type": "boolean",
+            "title": "Counts Weekly Offs"
+          },
+          "counts_holidays": {
+            "type": "boolean",
+            "title": "Counts Holidays"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "is_paid",
+          "requires_approval",
+          "allows_half_day",
+          "counts_weekly_offs",
+          "counts_holidays"
+        ],
+        "title": "LeaveTypeCreate",
+        "description": "Every rule is stated explicitly: nothing is assumed for Sigvitas."
+      },
+      "LeaveTypeList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveTypeView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "LeaveTypeList"
+      },
+      "LeaveTypeUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__leave__schemas__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Text1000"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_paid": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Paid"
+          },
+          "requires_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requires Approval"
+          },
+          "allows_half_day": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allows Half Day"
+          },
+          "counts_weekly_offs": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts Weekly Offs"
+          },
+          "counts_holidays": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts Holidays"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LeaveTypeUpdate"
+      },
+      "LeaveTypeView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_paid": {
+            "type": "boolean",
+            "title": "Is Paid"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval"
+          },
+          "allows_half_day": {
+            "type": "boolean",
+            "title": "Allows Half Day"
+          },
+          "counts_weekly_offs": {
+            "type": "boolean",
+            "title": "Counts Weekly Offs"
+          },
+          "counts_holidays": {
+            "type": "boolean",
+            "title": "Counts Holidays"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "description",
+          "is_paid",
+          "requires_approval",
+          "allows_half_day",
+          "counts_weekly_offs",
+          "counts_holidays",
+          "status",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LeaveTypeView"
+      },
+      "LedgerEntryView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "leave_year": {
+            "type": "string",
+            "format": "date",
+            "title": "Leave Year"
+          },
+          "entry_type": {
+            "$ref": "#/components/schemas/EntryTypeValue"
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount"
+          },
+          "effective_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective Date"
+          },
+          "leave_request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Request Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "leave_type",
+          "leave_year",
+          "entry_type",
+          "amount",
+          "effective_date",
+          "leave_request_id",
+          "reason",
+          "created_at"
+        ],
+        "title": "LedgerEntryView"
+      },
+      "LedgerList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntryView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "LedgerList"
       },
       "LocationCreate": {
         "properties": {
@@ -8196,10 +10638,79 @@
         "maxLength": 32,
         "minLength": 1
       },
+      "PreviewView": {
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveDayView"
+            },
+            "type": "array",
+            "title": "Days"
+          },
+          "days_requested": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Days Requested"
+          },
+          "available_before": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Available Before"
+          },
+          "available_after": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Available After"
+          },
+          "within_balance": {
+            "type": "boolean",
+            "title": "Within Balance"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval"
+          },
+          "weekly_offs_configured": {
+            "type": "boolean",
+            "title": "Weekly Offs Configured"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "days",
+          "days_requested",
+          "available_before",
+          "available_after",
+          "within_balance",
+          "requires_approval",
+          "weekly_offs_configured"
+        ],
+        "title": "PreviewView"
+      },
       "Reason": {
         "type": "string",
         "maxLength": 500,
         "minLength": 1
+      },
+      "RecentJoiner": {
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/PersonRef"
+          },
+          "date_of_joining": {
+            "type": "string",
+            "format": "date",
+            "title": "Date Of Joining"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee",
+          "date_of_joining"
+        ],
+        "title": "RecentJoiner"
       },
       "RecoveryCodes": {
         "properties": {
@@ -8218,6 +10729,354 @@
         ],
         "title": "RecoveryCodes",
         "description": "Shown once. Each code works once; the previous unused codes stop working."
+      },
+      "Ref": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "Ref"
+      },
+      "RequestCreate": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date"
+          },
+          "start_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Text1000"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "start_date",
+          "end_date"
+        ],
+        "title": "RequestCreate"
+      },
+      "RequestDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date"
+          },
+          "start_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "days_requested": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Days Requested"
+          },
+          "status": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__StatusValue"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_visible": {
+            "type": "boolean",
+            "title": "Reason Visible"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveDayView"
+            },
+            "type": "array",
+            "title": "Days"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionView"
+            },
+            "type": "array",
+            "title": "Decisions"
+          },
+          "can_decide": {
+            "type": "boolean",
+            "title": "Can Decide"
+          },
+          "can_cancel": {
+            "type": "boolean",
+            "title": "Can Cancel"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee",
+          "leave_type",
+          "start_date",
+          "end_date",
+          "start_half",
+          "end_half",
+          "days_requested",
+          "status",
+          "created_at",
+          "reason",
+          "reason_visible",
+          "days",
+          "decisions",
+          "can_decide",
+          "can_cancel",
+          "version"
+        ],
+        "title": "RequestDetail"
+      },
+      "RequestDraft": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date"
+          },
+          "start_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "start_date",
+          "end_date"
+        ],
+        "title": "RequestDraft"
+      },
+      "RequestPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "RequestPage"
+      },
+      "RequestSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date"
+          },
+          "start_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_half": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HalfValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "days_requested": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Days Requested"
+          },
+          "status": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__StatusValue"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee",
+          "leave_type",
+          "start_date",
+          "end_date",
+          "start_half",
+          "end_half",
+          "days_requested",
+          "status",
+          "created_at"
+        ],
+        "title": "RequestSummary",
+        "description": "For lists and inboxes: no reason."
       },
       "RevokedCount": {
         "properties": {
@@ -8982,6 +11841,11 @@
         ],
         "title": "TeamTodayView"
       },
+      "Text1000": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1
+      },
       "TodayView": {
         "properties": {
           "state": {
@@ -9337,6 +12201,59 @@
         "type": "string",
         "maxLength": 200,
         "minLength": 1
+      },
+      "app__modules__leave__schemas__Days__1": {
+        "anyOf": [
+          {
+            "type": "number",
+            "multipleOf": 0.5,
+            "exclusiveMinimum": 0.0
+          },
+          {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,3}|(?=[\\d.]{1,6}0*$)\\d{0,3}\\.\\d{0,2}0*$)"
+          }
+        ]
+      },
+      "app__modules__leave__schemas__Days__2": {
+        "anyOf": [
+          {
+            "type": "number",
+            "multipleOf": 0.5,
+            "minimum": 0.0
+          },
+          {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,3}|(?=[\\d.]{1,6}0*$)\\d{0,3}\\.\\d{0,2}0*$)"
+          }
+        ]
+      },
+      "app__modules__leave__schemas__Days__3": {
+        "anyOf": [
+          {
+            "type": "number",
+            "multipleOf": 0.5
+          },
+          {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,3}|(?=[\\d.]{1,6}0*$)\\d{0,3}\\.\\d{0,2}0*$)"
+          }
+        ]
+      },
+      "app__modules__leave__schemas__Name": {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "app__modules__leave__schemas__StatusValue": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "cancelled",
+          "cancellation_requested"
+        ]
       },
       "app__modules__org__schemas__Name": {
         "type": "string",

@@ -37,6 +37,7 @@ class EmailTemplate(StrEnum):
     MFA_RESET = "identity.mfa_reset"
     GRANT_REQUEST = "access.grant_request"
     AUDIT_CHAIN_MISMATCH = "audit.chain_mismatch"
+    LEAVE_REQUEST = "leave.request"
 
 
 class EmailOutbox(Base):

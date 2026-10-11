@@ -71,7 +71,7 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 ### T5. Self-approval and collusion
 - Attack: user with `leave.request.approve.all` approves their own leave; HR adjusts own leave balance; payroll admin edits own compensation.
 - Controls: separation-of-duties rules in the policy layer regardless of scope; four-eyes on payroll finalization; audit report of actions where actor and subject are close (same manager chain) in Phase 2.
-- Test: SoD unit tests for each rule.
+- Test: SoD unit tests for each rule. Leave (revision 0018): integration tests refuse an HR employee approving their own request and adjusting their own balance, and show two approvers deciding at once leave exactly one decision and at most one ledger entry; concurrent submissions cannot overdraw a balance (per-employee lock) and overlapping requests are refused by an exclusion constraint.
 
 ### T6. Privilege escalation through role management
 - Attack: HR admin edits a role they hold to add `compensation.read.all`; system admin assigns themselves `super_admin`.

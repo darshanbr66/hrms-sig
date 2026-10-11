@@ -140,7 +140,10 @@ async def test_email_flow_secrets_stay_in_the_email(api: Api, caplog: pytest.Log
     async with api.client() as client:
         await api.sign_in(client, hr)
         await client.post("/api/v1/users", json={"email": invitee})
+    # The outbox is shared by the session, so count only this test's own emails.
     for message in await api.deliver():
+        if message.to not in (account.email, invitee):
+            continue
         if "/password-reset/" in message.body or "/invite/" in message.body:
             secrets_seen.add(link_token(message))
     secrets_seen.discard("")

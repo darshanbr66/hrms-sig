@@ -10,6 +10,7 @@ import app.metadata  # noqa: F401
 from app.modules.access.public import AccessEmails, register_grant_expiry
 from app.modules.audit.public import AuditEmails, alert_chain_mismatch
 from app.modules.identity.emails import IdentityEmails
+from app.modules.leave.public import LeaveEmails
 from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
 from app.modules.notify.public import EmailTemplate, Renderer
 from app.platform.audit.canonical import Stream
@@ -46,6 +47,7 @@ def email_renderers(app_base_url: str, clock: Clock) -> dict[EmailTemplate, Rend
         **IdentityEmails(app_base_url=app_base_url, clock=clock).renderers(),
         **AccessEmails(app_base_url=app_base_url).renderers(),
         **AuditEmails().renderers(),
+        **LeaveEmails(app_base_url=app_base_url).renderers(),
     }
 
 

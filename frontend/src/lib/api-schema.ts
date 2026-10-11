@@ -515,6 +515,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/{user_id}/employee-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link User Employee
+         * @description Link an existing account to an employee record. Needs `employee.lifecycle.manage` over
+         *     the employee too, step-up and a reason; the account's email must be the work email.
+         */
+        post: operations["link_user_employee_api_v1_users__user_id__employee_link_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/{user_id}/enable": {
         parameters: {
             query?: never;
@@ -1359,6 +1380,335 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/leave-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Leave Types */
+        get: operations["list_leave_types_api_v1_leave_types_get"];
+        put?: never;
+        /** Create Leave Type */
+        post: operations["create_leave_type_api_v1_leave_types_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-types/{leave_type_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Leave Type */
+        patch: operations["update_leave_type_api_v1_leave_types__leave_type_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/leave-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Leave Policies */
+        get: operations["list_leave_policies_api_v1_leave_policies_get"];
+        put?: never;
+        /**
+         * Create Leave Policy
+         * @description A new effective-dated version for a scope; the scope's open version ends the day it starts.
+         */
+        post: operations["create_leave_policy_api_v1_leave_policies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/leave/balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Balances */
+        get: operations["my_balances_api_v1_me_leave_balances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/leave/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Ledger */
+        get: operations["my_ledger_api_v1_me_leave_ledger_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/leave/balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Employee Balances */
+        get: operations["employee_balances_api_v1_employees__employee_id__leave_balances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/leave/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Employee Ledger */
+        get: operations["employee_ledger_api_v1_employees__employee_id__leave_ledger_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/leave-adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adjust Balance
+         * @description An adjustment or opening balance with a reason. Never on your own balance.
+         */
+        post: operations["adjust_balance_api_v1_employees__employee_id__leave_adjustments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-allocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Allocation
+         * @description The upfront allocation of one leave year for every employee you may adjust; running it
+         *     again allocates only to those not yet allocated for that year.
+         */
+        post: operations["run_allocation_api_v1_leave_allocations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/leave-requests/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Request
+         * @description How the days count and what the balance would be, without saving anything.
+         */
+        post: operations["preview_request_api_v1_me_leave_requests_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/leave-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Requests */
+        get: operations["my_requests_api_v1_me_leave_requests_get"];
+        put?: never;
+        /**
+         * Submit Request
+         * @description Repeating a request with the same `Idempotency-Key` returns the first result.
+         */
+        post: operations["submit_request_api_v1_me_leave_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/leave-requests/{request_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Request
+         * @description Withdraw a pending request, or cancel approved leave that has not started (which goes to
+         *     the approver when the leave type needs approval).
+         */
+        post: operations["cancel_request_api_v1_me_leave_requests__request_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Requests
+         * @description Requests in your scope, newest first. With `awaiting_my_decision`, the requests you may
+         *     decide that are waiting for a decision, oldest first. No reasons.
+         */
+        get: operations["list_requests_api_v1_leave_requests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-requests/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Request
+         * @description The reason is shown to the employee and to whoever may decide the request.
+         */
+        get: operations["get_request_api_v1_leave_requests__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-requests/{request_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Request
+         * @description Approve a pending request, or the cancellation asked for on approved leave.
+         */
+        post: operations["approve_request_api_v1_leave_requests__request_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-requests/{request_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Request
+         * @description Reject a pending request, or keep approved leave whose cancellation was asked for. A note
+         *     is required.
+         */
+        post: operations["reject_request_api_v1_leave_requests__request_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave/calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Leave Calendar
+         * @description Who is away in your scope (at most 93 days): leave type and dates, never the reason.
+         */
+        get: operations["leave_calendar_api_v1_leave_calendar_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1377,6 +1727,26 @@ export interface components {
             postal_code?: string | null;
             /** Country Code */
             country_code: string;
+        };
+        /** AdjustmentCreate */
+        AdjustmentCreate: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /**
+             * Entry Type
+             * @enum {string}
+             */
+            entry_type: "adjustment" | "opening_balance";
+            amount: components["schemas"]["app__modules__leave__schemas__Days__3"];
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            reason: components["schemas"]["Reason"];
         };
         /** AdminSessionList */
         AdminSessionList: {
@@ -1409,6 +1779,32 @@ export interface components {
              * Format: date-time
              */
             last_activity_at: string;
+        };
+        /** AllocationResult */
+        AllocationResult: {
+            /** Allocated */
+            allocated: number;
+            /** Already Allocated */
+            already_allocated: number;
+            /** No Policy */
+            no_policy: number;
+            /** No Allocation In Policy */
+            no_allocation_in_policy: number;
+            /** Skipped Own */
+            skipped_own: number;
+        };
+        /** AllocationRun */
+        AllocationRun: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /**
+             * As Of
+             * Format: date
+             */
+            as_of: string;
         };
         /** Anniversary */
         Anniversary: {
@@ -1527,6 +1923,33 @@ export interface components {
             } | null;
             /** Reason */
             reason: string | null;
+        };
+        /** BalanceList */
+        BalanceList: {
+            /** Items */
+            items: components["schemas"]["BalanceView"][];
+        };
+        /** BalanceView */
+        BalanceView: {
+            leave_type: components["schemas"]["Ref"];
+            /** Is Paid */
+            is_paid: boolean;
+            /** Allows Half Day */
+            allows_half_day: boolean;
+            /** Requires Approval */
+            requires_approval: boolean;
+            /** Balance */
+            balance: string;
+            /** Reserved */
+            reserved: string;
+            /** Available */
+            available: string;
+            /** Eligible */
+            eligible: boolean;
+            /** Allow Negative Balance */
+            allow_negative_balance: boolean;
+            /** Max Negative Days */
+            max_negative_days: string | null;
         };
         /** BreakGlassCreate */
         BreakGlassCreate: {
@@ -1655,12 +2078,36 @@ export interface components {
             /** Events */
             events: components["schemas"]["EventView"][];
         };
+        /** Decide */
+        Decide: {
+            note?: components["schemas"]["Text1000"] | null;
+        };
+        /** DecisionView */
+        DecisionView: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approved" | "rejected" | "cancellation_approved" | "cancellation_rejected";
+            /** Decided By */
+            decided_by: string;
+            /** Note */
+            note: string | null;
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+        };
         /** DepartmentCreate */
         DepartmentCreate: {
             code: components["schemas"]["Code"];
             name: components["schemas"]["app__modules__org__schemas__Name"];
+            description?: components["schemas"]["Description"] | null;
             /** Parent Id */
             parent_id?: string | null;
+            /** Head Employee Id */
+            head_employee_id?: string | null;
         };
         /** DepartmentList */
         DepartmentList: {
@@ -1670,6 +2117,7 @@ export interface components {
         /** DepartmentUpdate */
         DepartmentUpdate: {
             name?: components["schemas"]["app__modules__org__schemas__Name"] | null;
+            description?: components["schemas"]["Description"] | null;
             /** Parent Id */
             parent_id?: string | null;
             /** Head Employee Id */
@@ -1687,10 +2135,14 @@ export interface components {
             code: string;
             /** Name */
             name: string;
+            /** Description */
+            description: string | null;
             /** Parent Id */
             parent_id: string | null;
             /** Head Employee Id */
             head_employee_id: string | null;
+            /** Head Name */
+            head_name: string | null;
             status: components["schemas"]["app__modules__org__schemas__StatusValue"];
             /** Version */
             version: number;
@@ -1705,6 +2157,7 @@ export interface components {
              */
             updated_at: string;
         };
+        Description: string;
         /** DesignationCreate */
         DesignationCreate: {
             code: components["schemas"]["Code"];
@@ -1862,6 +2315,21 @@ export interface components {
             /** Calendar */
             calendar: string;
         };
+        /**
+         * EmployeeLinkRequest
+         * @description Link an existing account to an employee record. The reason is recorded in the audit
+         *     log: say why the account was not linked at invite (for example, invited before the record
+         *     existed), not personal details.
+         */
+        EmployeeLinkRequest: {
+            /**
+             * Employee Id
+             * Format: uuid
+             */
+            employee_id: string;
+            /** Reason */
+            reason: string;
+        };
         /** EmployeePage */
         EmployeePage: {
             /** Items */
@@ -1871,7 +2339,11 @@ export interface components {
         };
         /**
          * EmployeeStatistics
-         * @description Counts over the employees the actor may read, employed today unless stated.
+         * @description Counts over the employees the actor may read (docs/product-requirements.md EMP-7):
+         *     `employed` is the `current` employment of the employee list today; `active` and `on_notice`
+         *     split it by recorded status; `future_joiners` and `former` match `future` and `former`.
+         *     `pre_joining` counts the recorded status, whatever the dates. Headcounts and recent joiners
+         *     count `current` employees only.
          */
         EmployeeStatistics: {
             /** Employed */
@@ -1882,12 +2354,24 @@ export interface components {
             on_notice: number;
             /** Pre Joining */
             pre_joining: number;
+            /** Future Joiners */
+            future_joiners: number;
+            /** Former */
+            former: number;
             /** Joined Last 30 Days */
             joined_last_30_days: number;
             /** Starting Soon */
             starting_soon: components["schemas"]["StartingSoon"][];
             /** Work Anniversaries */
             work_anniversaries: components["schemas"]["Anniversary"][];
+            /** Recent Joiners */
+            recent_joiners: components["schemas"]["RecentJoiner"][];
+            /** By Department */
+            by_department: components["schemas"]["Headcount"][];
+            /** By Designation */
+            by_designation: components["schemas"]["Headcount"][];
+            /** By Location */
+            by_location: components["schemas"]["Headcount"][];
         };
         /** EmployeeSummary */
         EmployeeSummary: {
@@ -1969,7 +2453,11 @@ export interface components {
             updated_at: string;
         };
         /** @enum {string} */
+        Employment: "current" | "future" | "former";
+        /** @enum {string} */
         EmploymentTypeValue: "full_time" | "part_time" | "contract" | "intern";
+        /** @enum {string} */
+        EntryTypeValue: "opening_balance" | "accrual" | "usage" | "usage_reversal" | "adjustment";
         /** EventCreate */
         EventCreate: {
             event_type: components["schemas"]["EventTypeValue"];
@@ -2091,6 +2579,23 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** @enum {string} */
+        HalfValue: "first" | "second";
+        /**
+         * Headcount
+         * @description Employees employed today whose current job is in one department, designation or location.
+         */
+        Headcount: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Employed */
+            employed: number;
         };
         /** HealthStatus */
         HealthStatus: {
@@ -2265,6 +2770,251 @@ export interface components {
             change_reason: "joining" | "transfer" | "promotion" | "manager_change" | "correction" | "other";
             /** Notes */
             notes: string | null;
+        };
+        /**
+         * LeaveCalendarEntry
+         * @description Who is away: no reason, ever (product-requirements LV-8).
+         */
+        LeaveCalendarEntry: {
+            /**
+             * Request Id
+             * Format: uuid
+             */
+            request_id: string;
+            employee: components["schemas"]["Ref"];
+            leave_type: components["schemas"]["Ref"];
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            start_half: components["schemas"]["HalfValue"] | null;
+            end_half: components["schemas"]["HalfValue"] | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "approved" | "cancellation_requested";
+        };
+        /** LeaveCalendarView */
+        LeaveCalendarView: {
+            /** Items */
+            items: components["schemas"]["LeaveCalendarEntry"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** LeaveDayView */
+        LeaveDayView: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Portion */
+            portion: string;
+            /** Counted */
+            counted: boolean;
+            /** Not Counted Reason */
+            not_counted_reason: ("holiday" | "weekly_off") | null;
+        };
+        /**
+         * LeavePolicyCreate
+         * @description A new version for a scope (leave type, plus an optional location and employment type).
+         *     The scope's open version, if it starts earlier, ends the day this one starts.
+         */
+        LeavePolicyCreate: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /** Location Id */
+            location_id?: string | null;
+            employment_type?: components["schemas"]["EmploymentTypeValue"] | null;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Leave Year Start Month */
+            leave_year_start_month: number;
+            /** Leave Year Start Day */
+            leave_year_start_day: number;
+            /**
+             * Accrual Method
+             * @enum {string}
+             */
+            accrual_method: "none" | "upfront_per_leave_year";
+            accrual_amount?: components["schemas"]["app__modules__leave__schemas__Days__1"] | null;
+            /** Allow Negative Balance */
+            allow_negative_balance: boolean;
+            max_negative_days?: components["schemas"]["app__modules__leave__schemas__Days__2"] | null;
+        };
+        /** LeavePolicyList */
+        LeavePolicyList: {
+            /** Items */
+            items: components["schemas"]["LeavePolicyView"][];
+        };
+        /** LeavePolicyView */
+        LeavePolicyView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            leave_type: components["schemas"]["Ref"];
+            location: components["schemas"]["Ref"] | null;
+            employment_type: components["schemas"]["EmploymentTypeValue"] | null;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+            /** Leave Year Start Month */
+            leave_year_start_month: number;
+            /** Leave Year Start Day */
+            leave_year_start_day: number;
+            /**
+             * Accrual Method
+             * @enum {string}
+             */
+            accrual_method: "none" | "upfront_per_leave_year";
+            /** Accrual Amount */
+            accrual_amount: string | null;
+            /** Allow Negative Balance */
+            allow_negative_balance: boolean;
+            /** Max Negative Days */
+            max_negative_days: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * LeaveTypeCreate
+         * @description Every rule is stated explicitly: nothing is assumed for Sigvitas.
+         */
+        LeaveTypeCreate: {
+            code: components["schemas"]["Code"];
+            name: components["schemas"]["app__modules__leave__schemas__Name"];
+            description?: components["schemas"]["Text1000"] | null;
+            /** Is Paid */
+            is_paid: boolean;
+            /** Requires Approval */
+            requires_approval: boolean;
+            /** Allows Half Day */
+            allows_half_day: boolean;
+            /** Counts Weekly Offs */
+            counts_weekly_offs: boolean;
+            /** Counts Holidays */
+            counts_holidays: boolean;
+        };
+        /** LeaveTypeList */
+        LeaveTypeList: {
+            /** Items */
+            items: components["schemas"]["LeaveTypeView"][];
+        };
+        /** LeaveTypeUpdate */
+        LeaveTypeUpdate: {
+            name?: components["schemas"]["app__modules__leave__schemas__Name"] | null;
+            description?: components["schemas"]["Text1000"] | null;
+            /** Is Paid */
+            is_paid?: boolean | null;
+            /** Requires Approval */
+            requires_approval?: boolean | null;
+            /** Allows Half Day */
+            allows_half_day?: boolean | null;
+            /** Counts Weekly Offs */
+            counts_weekly_offs?: boolean | null;
+            /** Counts Holidays */
+            counts_holidays?: boolean | null;
+            /** Status */
+            status?: ("active" | "archived") | null;
+        };
+        /** LeaveTypeView */
+        LeaveTypeView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Code */
+            code: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /** Is Paid */
+            is_paid: boolean;
+            /** Requires Approval */
+            requires_approval: boolean;
+            /** Allows Half Day */
+            allows_half_day: boolean;
+            /** Counts Weekly Offs */
+            counts_weekly_offs: boolean;
+            /** Counts Holidays */
+            counts_holidays: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "archived";
+            /** Version */
+            version: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** LedgerEntryView */
+        LedgerEntryView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            leave_type: components["schemas"]["Ref"];
+            /**
+             * Leave Year
+             * Format: date
+             */
+            leave_year: string;
+            entry_type: components["schemas"]["EntryTypeValue"];
+            /** Amount */
+            amount: string;
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+            /** Leave Request Id */
+            leave_request_id: string | null;
+            /** Reason */
+            reason: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** LedgerList */
+        LedgerList: {
+            /** Items */
+            items: components["schemas"]["LedgerEntryView"][];
         };
         /** LocationCreate */
         LocationCreate: {
@@ -2473,7 +3223,33 @@ export interface components {
             version: number;
         };
         Phone: string;
+        /** PreviewView */
+        PreviewView: {
+            /** Days */
+            days: components["schemas"]["LeaveDayView"][];
+            /** Days Requested */
+            days_requested: string;
+            /** Available Before */
+            available_before: string;
+            /** Available After */
+            available_after: string;
+            /** Within Balance */
+            within_balance: boolean;
+            /** Requires Approval */
+            requires_approval: boolean;
+            /** Weekly Offs Configured */
+            weekly_offs_configured: boolean;
+        };
         Reason: string;
+        /** RecentJoiner */
+        RecentJoiner: {
+            employee: components["schemas"]["PersonRef"];
+            /**
+             * Date Of Joining
+             * Format: date
+             */
+            date_of_joining: string;
+        };
         /**
          * RecoveryCodes
          * @description Shown once. Each code works once; the previous unused codes stop working.
@@ -2481,6 +3257,141 @@ export interface components {
         RecoveryCodes: {
             /** Codes */
             codes: string[];
+        };
+        /** Ref */
+        Ref: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+        };
+        /** RequestCreate */
+        RequestCreate: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            start_half?: components["schemas"]["HalfValue"] | null;
+            end_half?: components["schemas"]["HalfValue"] | null;
+            reason?: components["schemas"]["Text1000"] | null;
+        };
+        /** RequestDetail */
+        RequestDetail: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            employee: components["schemas"]["Ref"];
+            leave_type: components["schemas"]["Ref"];
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            start_half: components["schemas"]["HalfValue"] | null;
+            end_half: components["schemas"]["HalfValue"] | null;
+            /** Days Requested */
+            days_requested: string;
+            status: components["schemas"]["app__modules__leave__schemas__StatusValue"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Reason */
+            reason: string | null;
+            /** Reason Visible */
+            reason_visible: boolean;
+            /** Days */
+            days: components["schemas"]["LeaveDayView"][];
+            /** Decisions */
+            decisions: components["schemas"]["DecisionView"][];
+            /** Can Decide */
+            can_decide: boolean;
+            /** Can Cancel */
+            can_cancel: boolean;
+            /** Version */
+            version: number;
+        };
+        /** RequestDraft */
+        RequestDraft: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            start_half?: components["schemas"]["HalfValue"] | null;
+            end_half?: components["schemas"]["HalfValue"] | null;
+        };
+        /** RequestPage */
+        RequestPage: {
+            /** Items */
+            items: components["schemas"]["RequestSummary"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * RequestSummary
+         * @description For lists and inboxes: no reason.
+         */
+        RequestSummary: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            employee: components["schemas"]["Ref"];
+            leave_type: components["schemas"]["Ref"];
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            start_half: components["schemas"]["HalfValue"] | null;
+            end_half: components["schemas"]["HalfValue"] | null;
+            /** Days Requested */
+            days_requested: string;
+            status: components["schemas"]["app__modules__leave__schemas__StatusValue"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** RevokedCount */
         RevokedCount: {
@@ -2762,6 +3673,7 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        Text1000: string;
         /** TodayView */
         TodayView: {
             state: components["schemas"]["StateValue"];
@@ -2901,6 +3813,12 @@ export interface components {
         };
         Year: number;
         app__modules__leave__router__Name: string;
+        app__modules__leave__schemas__Days__1: number | string;
+        app__modules__leave__schemas__Days__2: number | string;
+        app__modules__leave__schemas__Days__3: number | string;
+        app__modules__leave__schemas__Name: string;
+        /** @enum {string} */
+        app__modules__leave__schemas__StatusValue: "pending" | "approved" | "rejected" | "cancelled" | "cancellation_requested";
         app__modules__org__schemas__Name: string;
         /** @enum {string} */
         app__modules__org__schemas__StatusValue: "active" | "archived";
@@ -3774,6 +4692,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    link_user_employee_api_v1_users__user_id__employee_link_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmployeeLinkRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -4955,8 +5908,11 @@ export interface operations {
                 q?: string | null;
                 status?: components["schemas"]["app__modules__people__schemas__StatusValue"][] | null;
                 department_id?: string | null;
+                designation_id?: string | null;
                 location_id?: string | null;
                 manager_id?: string | null;
+                employment?: components["schemas"]["Employment"] | null;
+                sort?: "name" | "code" | "joined_newest" | "joined_oldest";
                 limit?: number;
                 cursor?: string | null;
             };
@@ -5883,6 +6839,668 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EmployeeHolidayList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_leave_types_api_v1_leave_types_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveTypeList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_leave_type_api_v1_leave_types_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaveTypeCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveTypeView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_leave_type_api_v1_leave_types__leave_type_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                leave_type_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaveTypeUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveTypeView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_leave_policies_api_v1_leave_policies_get: {
+        parameters: {
+            query?: {
+                leave_type_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeavePolicyList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_leave_policy_api_v1_leave_policies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeavePolicyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeavePolicyView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_balances_api_v1_me_leave_balances_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BalanceList"];
+                };
+            };
+        };
+    };
+    my_ledger_api_v1_me_leave_ledger_get: {
+        parameters: {
+            query?: {
+                leave_type_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    employee_balances_api_v1_employees__employee_id__leave_balances_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BalanceList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    employee_ledger_api_v1_employees__employee_id__leave_ledger_get: {
+        parameters: {
+            query?: {
+                leave_type_id?: string | null;
+            };
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adjust_balance_api_v1_employees__employee_id__leave_adjustments_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdjustmentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerEntryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_allocation_api_v1_leave_allocations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllocationRun"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AllocationResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_request_api_v1_me_leave_requests_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_requests_api_v1_me_leave_requests_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["app__modules__leave__schemas__StatusValue"][] | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_request_api_v1_me_leave_requests_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_request_api_v1_me_leave_requests__request_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests_api_v1_leave_requests_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["app__modules__leave__schemas__StatusValue"][] | null;
+                leave_type_id?: string | null;
+                employee_id?: string | null;
+                department_id?: string | null;
+                location_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+                awaiting_my_decision?: boolean;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_request_api_v1_leave_requests__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_request_api_v1_leave_requests__request_id__approve_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Decide"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_request_api_v1_leave_requests__request_id__reject_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Decide"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    leave_calendar_api_v1_leave_calendar_get: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                leave_type_id?: string | null;
+                department_id?: string | null;
+                location_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveCalendarView"];
                 };
             };
             /** @description Validation Error */

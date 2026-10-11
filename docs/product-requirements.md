@@ -127,11 +127,14 @@ Requirement IDs are stable and referenced from tests and ADRs.
 ### 6.3 Employees and organization
 
 - EMP-1 Employee record: employee code, legal name, preferred name, work email, phone, date of joining, employment type, status.
-- EMP-2 Job details are effective-dated: department, designation, location, reporting manager, employment type. A change creates a new row; history stays.
+- EMP-2 Job details are effective-dated: department, designation, location, reporting manager, employment type. A change creates a new row; history stays. Departments (with an optional description and a parent department), designations and locations are maintained by HR administrators; they are archived, never deleted, and cannot be archived while anyone who has not left is placed in them.
 - EMP-3 Personal details (date of birth, personal contact, address, emergency contacts) are a separate tier with separate permissions.
 - EMP-4 Sensitive identifiers (government IDs, bank account) are encrypted at the application level and shown masked unless the viewer holds the permission and has stepped up. Which identifier types are collected is configuration (an identifier-type catalogue), decided by Sigvitas HR under the minimization rule. None is assumed.
 - EMP-5 Employee statuses: `pre_joining`, `active`, `on_notice`, `exited`. `exited` disables login.
 - EMP-6 Directory: all active employees can see name, preferred name, designation, department, location, work email and photo. Nothing else.
+- EMP-7 Employment is judged by dates on one calendar date (the UTC date, as for authorization): **employed today** = joined on or before the date and no last working day before it; **joining in the future** = joining date after it; **former** = last working day before it. The recorded status (`pre_joining`, `active`, `on_notice`, `exited`) is a separate HR record and can lag the dates (a person whose last working day is today is still employed today; someone whose joining date has passed is employed even before HR marks them active). Dashboard counts, headcounts per department, designation and location, recent joiners (joined in the last 30 days and employed today) and the employee list's default view all use these definitions, within the viewer's scope.
+- EMP-8 An account created before its employee record can be linked to it later by HR (`user.invite` and `employee.lifecycle.manage` over the employee), with step-up and a recorded reason, only when the account's email is the employee's work email. One account per employee and one employee per account; administrator accounts (`system_admin`, `super_admin`) and disabled accounts are never linked.
+- EMP-9 A department may name a head: an existing employee who has not left.
 - EMP-7 Employees may edit a defined subset of their own fields. Phase 2: some fields require HR approval before taking effect.
 
 ### 6.4 Attendance, breaks, shifts, corrections
@@ -159,6 +162,8 @@ Requirement IDs are stable and referenced from tests and ADRs.
 - LV-6 Employees can cancel pending requests, and request cancellation of approved future leave.
 - LV-7 Holiday calendars per location. Each location has one calendar per year.
 - LV-8 Team leave calendar visible to managers (team scope). Phase 2 option: peers in the same department see colleagues as "away" with no leave type or reason (`leave.calendar.read.department`).
+
+Built (2026-10-11, revision 0018): leave types with every rule chosen by HR (paid, needs approval, half days, whether holidays and weekly offs count); effective-dated policies per leave type, optionally per location and employment type (most specific wins; a location match outranks an employment-type match), with the leave year start, an optional upfront allocation per leave year, and the negative-balance rule; the ledger with allocation, opening balance, adjustment, usage and usage reversal; requests with preview, half days, holidays left out when the type says so, overlap refusal, balance checks, cancellation (LV-6) and decisions by the reporting manager or HR; the approvals inbox, the leave calendar, the HR overview and balance administration. A type that needs no approval is recorded at once. Not built, each waiting for a Sigvitas decision or a later milestone: periodic accrual, proration on joining and exit, carry-forward, lapse and year-end processing; attachment rules (documents arrive in M5); counting weekly offs (no weekly offs exist until shifts, M3, so every non-holiday day counts); opening-balance import from a file; multi-level approval; leave exports and reports.
 
 ### 6.6 Payroll and payslips (Phase 2)
 

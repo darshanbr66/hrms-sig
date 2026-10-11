@@ -78,6 +78,30 @@ const NewEmployeePage = lazy(() =>
 const EmployeePage = lazy(() =>
   import("../features/employees/EmployeePage").then((m) => ({ default: m.EmployeePage })),
 );
+const MyLeavePage = lazy(() =>
+  import("../features/leave/MyLeavePage").then((m) => ({ default: m.MyLeavePage })),
+);
+const RequestLeavePage = lazy(() =>
+  import("../features/leave/RequestLeavePage").then((m) => ({ default: m.RequestLeavePage })),
+);
+const LeaveRequestPage = lazy(() =>
+  import("../features/leave/LeaveRequestPage").then((m) => ({ default: m.LeaveRequestPage })),
+);
+const ApprovalsPage = lazy(() =>
+  import("../features/leave/ApprovalsPage").then((m) => ({ default: m.ApprovalsPage })),
+);
+const LeaveCalendarPage = lazy(() =>
+  import("../features/leave/LeaveCalendarPage").then((m) => ({ default: m.LeaveCalendarPage })),
+);
+const LeaveOverviewPage = lazy(() =>
+  import("../features/leave/LeaveOverviewPage").then((m) => ({ default: m.LeaveOverviewPage })),
+);
+const LeaveBalancesPage = lazy(() =>
+  import("../features/leave/LeaveBalancesPage").then((m) => ({ default: m.LeaveBalancesPage })),
+);
+const LeaveTypesPage = lazy(() =>
+  import("../features/leave/LeaveTypesPage").then((m) => ({ default: m.LeaveTypesPage })),
+);
 const OrganizationPage = lazy(() =>
   import("../features/organization/OrganizationPage").then((m) => ({ default: m.OrganizationPage })),
 );
@@ -268,6 +292,70 @@ export const routes: RouteObject[] = [
             element: (
               <Protected anyOf={["org.read"]}>
                 <OrganizationPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave",
+            element: (
+              <Protected anyOf={["leave.request.self"]}>
+                <MyLeavePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/request",
+            element: (
+              <Protected anyOf={["leave.request.self"]}>
+                <RequestLeavePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/requests/:requestId",
+            element: (
+              <Protected anyOf={["leave.read.self", "leave.read.team", "leave.read.all"]}>
+                <LeaveRequestPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/approvals",
+            element: (
+              <Protected anyOf={["leave.request.approve.team", "leave.request.approve.all"]}>
+                <ApprovalsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/calendar",
+            element: (
+              <Protected anyOf={["leave.read.team", "leave.read.all"]}>
+                <LeaveCalendarPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/overview",
+            element: (
+              <Protected anyOf={["leave.read.team", "leave.read.all"]}>
+                <LeaveOverviewPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/leave/balances",
+            element: (
+              <Protected anyOf={["leave.balance.adjust"]}>
+                <LeaveBalancesPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/setup/leave-types",
+            element: (
+              <Protected anyOf={["leave.policy.manage"]}>
+                <LeaveTypesPage />
               </Protected>
             ),
           },

@@ -10,7 +10,13 @@ Reporting lines and placement for the authorization engine (docs/authorization-m
 - `placement` and `placed_employee_ids_query` apply a role assignment's department or
   location constraint.
 - `relationships` bundles these for the engine's `Relationships` protocol.
-- `employee_exists` lets other modules check a reference to an employee record.
+- `employee_exists` lets other modules check a reference to an employee record;
+  `exit_date` also says whether the person has left. `employee_names` gives display names
+  (directory fields, visible to every employee).
+- `placed_in_unit_count` tells the org module whether anyone is still placed in a unit it
+  is about to archive.
+- `job_facts` gives the employment dates and the job (location, department, employment type,
+  manager) that applies on a date, for modules whose rules depend on them (leave).
 - `employed_colleagues` lists employees within a caller's scope filter (built on
   `employee_id_column`) with where they work, for modules that show their own data per person.
 
@@ -33,11 +39,14 @@ from app.modules.people import repository
 from app.modules.people.models import Employee
 from app.modules.people.repository import (
     employee_exists,
+    employee_names,
+    exit_date,
     first_name,
     has_direct_reports,
     is_employed,
     is_team_member,
     placed_employee_ids_query,
+    placed_in_unit_count,
     placement,
     team_member_ids,
     team_member_ids_query,
@@ -67,17 +76,55 @@ __all__ = [
     "employed_colleagues",
     "employee_exists",
     "employee_id_column",
+    "employee_names",
+    "exit_date",
     "first_name",
     "has_direct_reports",
     "is_employed",
     "is_team_member",
+    "job_facts",
     "placed_employee_ids_query",
+    "placed_in_unit_count",
     "placement",
     "relationships",
     "team_member_ids",
     "team_member_ids_query",
     "work_email",
 ]
+
+
+# --- job facts for other modules ----------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class JobFacts:
+    """An employee's employment dates and the job row that applies on a date (none before the
+    first row or after the last one closes)."""
+
+    date_of_joining: date
+    date_of_exit: date | None
+    location_id: uuid.UUID | None
+    department_id: uuid.UUID | None
+    employment_type: str | None
+    manager_employee_id: uuid.UUID | None
+
+    def employed_on(self, on: date) -> bool:
+        return self.date_of_joining <= on and (self.date_of_exit is None or self.date_of_exit >= on)
+
+
+async def job_facts(session: AsyncSession, employee_id: uuid.UUID, on: date) -> JobFacts | None:
+    employee = await session.get(Employee, employee_id)
+    if employee is None:
+        return None
+    job = (await repository.current_jobs(session, [employee_id], on)).get(employee_id)
+    return JobFacts(
+        date_of_joining=employee.date_of_joining,
+        date_of_exit=employee.date_of_exit,
+        location_id=job.location_id if job else None,
+        department_id=job.department_id if job else None,
+        employment_type=job.employment_type if job else None,
+        manager_employee_id=job.manager_employee_id if job else None,
+    )
 
 
 # --- scoped employee listing for other modules -------------------------------------------------

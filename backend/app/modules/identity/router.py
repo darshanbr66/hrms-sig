@@ -528,6 +528,22 @@ async def disable_user(
     return _user_view(user, clock(request).now())
 
 
+@router.post("/users/{user_id}/employee-link", response_model=s.UserView)
+async def link_user_employee(
+    user_id: uuid.UUID,
+    body: s.EmployeeLinkRequest,
+    request: Request,
+    identity: Service,
+    actor: Annotated[Actor, requires("user.invite")],
+) -> s.UserView:
+    """Link an existing account to an employee record. Needs `employee.lifecycle.manage` over
+    the employee too, step-up and a reason; the account's email must be the work email."""
+    user = await identity.link_employee(
+        actor, RequestContext.from_request(request), user_id, body.employee_id, body.reason
+    )
+    return _user_view(user, clock(request).now())
+
+
 @router.post("/users/{user_id}/enable", response_model=s.UserView)
 async def enable_user(
     user_id: uuid.UUID, request: Request, identity: Service, actor: Annotated[Actor, requires("user.disable")]

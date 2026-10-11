@@ -13,6 +13,7 @@ import {
   LOCATION,
   MANAGER_ME,
   employee,
+  STATISTICS,
   summary,
 } from "../test/fixtures";
 import { renderSignedIn } from "../test/render";
@@ -40,7 +41,7 @@ function orgLists() {
   api
     .on(
       "GET /api/v1/departments",
-      json({ items: [unit(DEPARTMENT, { parent_id: null, head_employee_id: null })] }),
+      json({ items: [unit(DEPARTMENT, { description: null, parent_id: null, head_employee_id: null })] }),
     )
     .on("GET /api/v1/designations", json({ items: [unit(DESIGNATION, { level: null })] }))
     .on(
@@ -133,7 +134,7 @@ describe("employees", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["Overview", "Job history", "Status", "Attendance"]);
+    ).toEqual(["Overview", "Job history", "Status", "Attendance", "Leave"]);
     expect(screen.queryByRole("button", { name: "Edit details" })).not.toBeInTheDocument();
   });
 
@@ -250,27 +251,242 @@ describe("organization", () => {
     orgLists();
     api.on(
       "POST /api/v1/departments",
-      json(unit({ id: "d-9", name: "Test new" }, { parent_id: null, head_employee_id: null }), 201),
+      json(
+        unit(
+          { id: "d-9", name: "Test new" },
+          { description: "Test work", parent_id: null, head_employee_id: null },
+        ),
+        201,
+      ),
     );
     const user = userEvent.setup();
-    renderSignedIn(api, HR_ADMIN_ME, "/organization");
+    renderSignedIn(api, HR_ADMIN_ME, "/organization?tab=departments");
     await user.click(await screen.findByRole("button", { name: "Add department" }));
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText("Code"), "NEW");
     await user.type(within(dialog).getByLabelText("Name"), "Test new");
+    await user.type(within(dialog).getByLabelText("Description (optional)"), "Test work");
     await user.click(within(dialog).getByRole("button", { name: "Add department" }));
     expect(await screen.findByText("Department added")).toBeInTheDocument();
     expect(api.called("POST /api/v1/departments")[0]?.body).toEqual({
       code: "NEW",
       name: "Test new",
+      description: "Test work",
       parent_id: null,
+      head_employee_id: null,
     });
   });
 
   it("is read-only without org.manage", async () => {
     orgLists();
-    renderSignedIn(api, EMPLOYEE_ME, "/organization");
+    renderSignedIn(api, EMPLOYEE_ME, "/organization?tab=departments");
     expect(await screen.findByRole("table", { name: "Departments" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add department" })).not.toBeInTheDocument();
+  });
+  it("shows set-up progress and headcounts, and opens a tab from a step", async () => {
+    orgLists();
+    api.on("GET /api/v1/employees/statistics", json(STATISTICS));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/organization");
+    expect(await screen.findByRole("heading", { name: "Organization set up" })).toBeInTheDocument();
+    const figures = screen.getByRole("group", { name: "Organization figures" });
+    expect(await within(figures).findByText("Employed today")).toBeInTheDocument();
+    const byDepartment = await screen.findByRole("list", { name: "Employees by department" });
+    expect(within(byDepartment).getByRole("link", { name: "Test department" })).toHaveAttribute(
+      "href",
+      `/employees?department=${DEPARTMENT.id}`,
+    );
+    expect(within(byDepartment).getByText("42 people")).toBeInTheDocument();
+    expect(await axe(document.body)).toHaveNoViolations();
+    await user.click(screen.getByRole("button", { name: "Open locations" }));
+    expect(await screen.findByRole("table", { name: "Locations" })).toBeInTheDocument();
+  });
+
+  it("makes each missing step actionable when nothing is set up", async () => {
+    api
+      .on("GET /api/v1/departments", json({ items: [] }))
+      .on("GET /api/v1/designations", json({ items: [] }))
+      .on("GET /api/v1/locations", json({ items: [] }))
+      .on("GET /api/v1/employees/statistics", json({ ...STATISTICS, employed: 0 }));
+    renderSignedIn(api, HR_ADMIN_ME, "/organization");
+    expect(await screen.findByRole("heading", { name: "Set up your organization" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add locations" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add departments" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add designations" })).toBeInTheDocument();
+    expect(await screen.findByText("No one employed yet")).toBeInTheDocument();
+  });
+
+  it("filters a list by search text and shows the employee count per record", async () => {
+    orgLists();
+    api.on("GET /api/v1/employees/statistics", json(STATISTICS));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/organization?tab=departments");
+    const table = await screen.findByRole("table", { name: "Departments" });
+    expect(await within(table).findByRole("link", { name: "42" })).toHaveAttribute(
+      "href",
+      `/employees?department=${DEPARTMENT.id}`,
+    );
+    await user.type(screen.getByRole("searchbox", { name: "Search departments" }), "nothing like it");
+    expect(await screen.findByText("No departments match this search")).toBeInTheDocument();
+  });
+
+  it("warns before archiving and explains why the API refused it", async () => {
+    orgLists();
+    api.on(
+      `PATCH /api/v1/locations/${LOCATION.id}`,
+      json(
+        {
+          type: "/problems/conflict",
+          title: "Conflict",
+          status: 409,
+          detail:
+            "3 employees are still placed in this location. Record a job change for them first, then archive it.",
+          request_id: null,
+          code: "org.in_use",
+        },
+        409,
+      ),
+    );
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/organization?tab=locations");
+    await user.click(await screen.findByRole("button", { name: `Edit ${LOCATION.name}` }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText(/Archiving hides this location/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /Status/ }));
+    await user.click(await screen.findByRole("option", { name: "Archived" }));
+    expect(within(dialog).getByText(/Archiving hides this location/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Archive location" }));
+    expect(await within(dialog).findByText(/3 employees are still placed/)).toBeInTheDocument();
+    const [call] = api.called(`PATCH /api/v1/locations/${LOCATION.id}`);
+    expect(call?.body).toMatchObject({ status: "archived" });
+    expect(call?.headers.get("If-Match")).toBe('"1"');
+  });
+});
+
+describe("employee list filters", () => {
+  it("sends the designation filter and sort order and keeps them in the URL", async () => {
+    orgLists();
+    api.on("GET /api/v1/employees", json({ items: [summary()], next_cursor: null }));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/employees?sort=joined_newest");
+    await screen.findByRole("table", { name: "Employees" });
+    await user.click(screen.getByRole("button", { name: /Designation/ }));
+    await user.click(await screen.findByRole("option", { name: DESIGNATION.name }));
+    await waitFor(() => {
+      const last = api.called("GET /api/v1/employees").at(-1);
+      expect(last?.query.get("designation_id")).toBe(DESIGNATION.id);
+      expect(last?.query.get("sort")).toBe("joined_newest");
+    });
+  });
+});
+
+describe("linking an existing account", () => {
+  function account(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "01900000-0000-7000-8000-0000000000b1",
+      email: "test.person@dev.example",
+      status: "active",
+      employee_id: null,
+      locked: false,
+      mfa_reenrolment_required: false,
+      last_login_at: null,
+      created_at: "2026-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  function usersFor(candidate: ReturnType<typeof account> | null) {
+    api.on("GET /api/v1/users", (call) =>
+      json({
+        items: call.query.get("employee_id") || !candidate ? [] : [candidate],
+        next_cursor: null,
+      }),
+    );
+  }
+
+  it("links the account that uses the work email, with a reason", async () => {
+    const candidate = account();
+    usersFor(candidate);
+    api
+      .on(`GET /api/v1/employees/${EMPLOYEE_ID}`, json(employee()))
+      .on(
+        `POST /api/v1/users/${candidate.id}/employee-link`,
+        json({ ...candidate, employee_id: EMPLOYEE_ID }),
+      );
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, `/employees/${EMPLOYEE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "HRMS account" }));
+    await user.click(await screen.findByRole("button", { name: "Link an existing account" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText("test.person@dev.example", { selector: "dd *, dd" }),
+    ).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Link account" }));
+    expect(await within(dialog).findByText("Say why the account is linked now.")).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("Reason"), "Test: invited before the record existed");
+    await user.click(within(dialog).getByRole("button", { name: "Link account" }));
+    await waitFor(() => {
+      expect(api.called(`POST /api/v1/users/${candidate.id}/employee-link`)).toHaveLength(1);
+    });
+    expect(api.called(`POST /api/v1/users/${candidate.id}/employee-link`)[0]?.body).toEqual({
+      employee_id: EMPLOYEE_ID,
+      reason: "Test: invited before the record existed",
+    });
+  });
+
+  it("says when the account belongs to another record, or when none exists", async () => {
+    usersFor(account({ employee_id: "01900000-0000-7000-8000-0000000000e9" }));
+    api.on(`GET /api/v1/employees/${EMPLOYEE_ID}`, json(employee()));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, `/employees/${EMPLOYEE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "HRMS account" }));
+    await user.click(await screen.findByRole("button", { name: "Link an existing account" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText(/already linked to another employee record/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Link account" })).not.toBeInTheDocument();
+  });
+});
+
+describe("department heads and employment filters", () => {
+  it("picks a head from the employee search and shows it in the list", async () => {
+    api
+      .on(
+        "GET /api/v1/departments",
+        json({
+          items: [
+            unit(DEPARTMENT, {
+              description: null,
+              parent_id: null,
+              head_employee_id: EMPLOYEE_ID,
+              head_name: "Test Person",
+            }),
+          ],
+        }),
+      )
+      .on("GET /api/v1/designations", json({ items: [] }))
+      .on("GET /api/v1/locations", json({ items: [] }))
+      .on("GET /api/v1/employees/statistics", json(STATISTICS))
+      .on("GET /api/v1/employees", json({ items: [summary()], next_cursor: null }));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/organization?tab=departments");
+    const table = await screen.findByRole("table", { name: "Departments" });
+    expect(within(table).getByText("Test Person")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: `Edit ${DEPARTMENT.name}` }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("combobox", { name: "Head (optional)" })).toHaveValue("Test Person");
+  });
+
+  it("lists people employed today by default and can show former employees", async () => {
+    orgLists();
+    api.on("GET /api/v1/employees", json({ items: [summary()], next_cursor: null }));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/employees");
+    await screen.findByRole("table", { name: "Employees" });
+    expect(api.called("GET /api/v1/employees")[0]?.query.get("employment")).toBe("current");
+    await user.click(screen.getByRole("button", { name: /Employment/ }));
+    await user.click(await screen.findByRole("option", { name: "Former employees" }));
+    await waitFor(() => {
+      expect(api.called("GET /api/v1/employees").at(-1)?.query.get("employment")).toBe("former");
+    });
   });
 });

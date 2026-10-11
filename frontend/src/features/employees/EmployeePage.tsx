@@ -20,6 +20,7 @@ import { client, unwrap } from "../../lib/api";
 import { addDays, localIsoDate } from "../../lib/format";
 import { ApiError } from "../../lib/problem";
 import { DaysTable } from "../attendance/DaysTable";
+import { LeaveBalances } from "../leave/LeaveBalances";
 import { AccountSection, JobHistorySection, OverviewSection, StatusSection } from "./EmployeeSections";
 import { PersonalDetails } from "./PersonalDetails";
 import { PEOPLE_KEY, STATUS_LABELS, STATUS_TONES, useEmployee } from "./queries";
@@ -77,6 +78,9 @@ export function EmployeePage() {
       label: "Attendance",
       content: <EmployeeAttendance employeeId={record.id} />,
     });
+  }
+  if (canSee(permissions, { anyOf: ["leave.read.team", "leave.read.all"] })) {
+    tabs.push({ id: "leave", label: "Leave", content: <LeaveBalances employeeId={record.id} /> });
   }
   if (hasPermission(permissions, "user.read.all")) {
     tabs.push({ id: "account", label: "HRMS account", content: <AccountSection employee={record} /> });

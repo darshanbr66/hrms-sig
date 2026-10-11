@@ -28,6 +28,7 @@ NOT_YET_USED = {
     "employee.sensitive.read.all": IDENTIFIERS,
     "employee.sensitive.update.all": IDENTIFIERS,
     "employee.export": "M5 (exports)",
+    "leave.export": "M5 (exports)",
     "attendance.correction.request.self": POLICIES,
     "attendance.correction.approve.team": POLICIES,
     "attendance.correction.approve.all": POLICIES,
@@ -42,7 +43,6 @@ SERVICE_CHECKED = {
 # Domains whose modules do not exist yet (M2 onwards): their permissions are all unused.
 LATER_DOMAINS = (
     "shift.",
-    "leave.",
     "document.",
     "notification.",
 )
@@ -143,6 +143,8 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{employee}": "{employee_id}",
         "{calendar}": "{calendar_id}",
         "{holiday}": "{holiday_id}",
+        "{leave_type}": "{leave_type_id}",
+        "{request}": "{request_id}",
         # The matrix changes one concrete setting.
         "email.delivery.max_attempts": "{key}",
     }

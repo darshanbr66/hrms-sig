@@ -33,6 +33,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Final, Protocol
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.identity import defaults, devices, notifications
@@ -75,7 +76,7 @@ from app.platform.errors import ProblemError, ProblemType
 from app.platform.ratelimit import RateLimiter, RateLimitExceeded
 from app.platform.security import passwords, tokens, totp
 from app.platform.security.crypto import DecryptionError, Encrypted, FieldCipher
-from app.platform.security.emails import EmailHasher
+from app.platform.security.emails import EmailHasher, canonical_email
 
 SECRET_PURPOSE: Final = b"identity.mfa_factors.secret:"
 
@@ -1323,6 +1324,87 @@ class IdentityService:
                     target_id=user.id,
                     subject_employee_id=user.employee_id,
                     changes={"status": ValueChange(before, user.status)},
+                ),
+            )
+            return user
+
+    async def link_employee(
+        self, admin: Actor, context: RequestContext, user_id: uuid.UUID, employee_id: uuid.UUID, reason: str
+    ) -> User:
+        """Link an existing account to an employee record (docs/security-architecture.md §3.1).
+
+        The same rules as linking at invite, because the link gives the account that
+        employee's self-service access: `user.invite`, `employee.lifecycle.manage` covering
+        the employee (existence is not confirmed without it), and the account's email must be
+        the employee's work email. On top of that: step-up, a recorded reason, never one's own
+        account (SOD-4), never an administrator account (`system_admin`, `super_admin`), whose
+        holders keep a separate account for their own employee self-service, and never a
+        disabled account. One account per employee and one employee per account: an account
+        already linked elsewhere, or an employee who already has an account, is refused (409).
+        Repeating a link that already exists changes nothing. The account row is locked and the
+        database's unique constraint on the employee decides a race between two accounts."""
+        now = self._clock.now()
+        async with self._db.unit_of_work() as session:
+            granted = await self._authz.require(session, admin, "user.invite")
+            await self._authz.require(
+                session,
+                admin,
+                "employee.lifecycle.manage",
+                subject_employee_id=employee_id,
+                hide_existence=True,
+            )
+            self._authz.require_step_up(admin)
+            refuse_self(admin, user_id, SodRule.OWN_ACCOUNT)
+            user = await repo.lock_user(session, user_id)
+            if user is None:
+                raise ProblemError(ProblemType.NOT_FOUND)
+            if user.employee_id == employee_id:
+                return user
+            if user.employee_id is not None:
+                raise conflict(
+                    "user.already_linked",
+                    "This account is already linked to another employee record. An account belongs to "
+                    "one person.",
+                )
+            if user.status == UserStatus.DISABLED:
+                raise conflict("user.not_active", "This account is disabled. Enable it before linking it.")
+            if await self._roles.role_keys(session, user_id, now) & ADMIN_ACCOUNT_ROLES:
+                raise conflict(
+                    "user.admin_account",
+                    "Administrator accounts are not linked to employee records. The person signs in "
+                    "with a separate employee account for their own records.",
+                )
+            exists, work_email = await people.work_email(session, employee_id)
+            if not exists:
+                raise ProblemError(ProblemType.NOT_FOUND)
+            if await repo.user_for_employee(session, employee_id) is not None:
+                raise conflict("user.employee_has_account", "This employee already has an account.")
+            if work_email is None or canonical_email(work_email) != user.email:
+                raise conflict(
+                    "user.email_not_work_email",
+                    "An account linked to an employee must use that employee's work email. Check the "
+                    "work email on the employee record.",
+                )
+            user.employee_id = employee_id
+            user.updated_at = now
+            user.version += 1
+            try:
+                async with session.begin_nested():
+                    await session.flush()
+            except IntegrityError as exc:
+                raise conflict("user.employee_has_account", "This employee already has an account.") from exc
+            await self._audit.record(
+                session,
+                AuditEvent(
+                    action="identity.user.employee_linked",
+                    actor=admin.audit_actor(),
+                    context=context,
+                    permission_used=granted.key,
+                    target_type="user",
+                    target_id=user.id,
+                    subject_employee_id=employee_id,
+                    changes={"employee_id": ValueChange(None, employee_id)},
+                    reason=reason,
                 ),
             )
             return user

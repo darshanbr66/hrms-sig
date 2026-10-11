@@ -14,7 +14,10 @@ from app.platform.authz.engine import AccessDenied
 class SodRule(StrEnum):
     OWN_ROLES = "sod.own_roles"  # SOD-3
     OWN_ACCOUNT = "sod.own_account"  # SOD-4
-    OWN_REQUEST = "sod.own_request"  # SOD-8, SOD-9: nobody decides a request they made or that is about them
+    OWN_REQUEST = (
+        "sod.own_request"  # SOD-1, SOD-8, SOD-9: nobody decides a request they made or that is about them
+    )
+    OWN_BALANCE = "sod.own_balance"  # SOD-6: nobody adjusts their own leave balance
     SUPER_ADMIN_DATA_ROLE = "sod.super_admin_data_role"  # SOD-10
 
 

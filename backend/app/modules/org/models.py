@@ -49,6 +49,8 @@ class Department(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
     code: Mapped[str] = mapped_column(CITEXT(), unique=True)
     name: Mapped[str]
+    # What the department does (revision 0017).
+    description: Mapped[str | None]
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("org.departments.id", ondelete="RESTRICT"))
     # Foreign key to people.employees; added by revision 0004 because that table is created there.
     head_employee_id: Mapped[uuid.UUID | None] = mapped_column(

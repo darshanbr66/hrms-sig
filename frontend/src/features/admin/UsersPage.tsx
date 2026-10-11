@@ -65,7 +65,11 @@ export function UsersPage() {
         </span>
       ),
     },
-    { key: "employee", header: "Employee record", cell: (row) => (row.employee_id ? "Linked" : "None") },
+    {
+      key: "employee",
+      header: "Employee record",
+      cell: (row) => (row.employee_id ? "Linked" : "Account only"),
+    },
     {
       key: "login",
       header: "Last sign-in",

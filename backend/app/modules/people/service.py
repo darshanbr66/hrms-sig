@@ -116,9 +116,16 @@ class Statistics:
     active: int
     on_notice: int
     pre_joining: int
+    future_joiners: int
+    former: int
     joined_recently: int
     starting_soon: list[tuple[uuid.UUID, str, date]]
     anniversaries: list[tuple[uuid.UUID, str, date, int]]
+    recent_joiners: list[tuple[uuid.UUID, str, date]]
+    # (unit ID, unit name, employees employed today), largest first.
+    by_department: list[tuple[uuid.UUID, str, int]]
+    by_designation: list[tuple[uuid.UUID, str, int]]
+    by_location: list[tuple[uuid.UUID, str, int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +216,16 @@ class PeopleService:
         scope = self._authz.scope_filter(actor, "employee.profile.read", Employee.id)
         async with self._db.unit_of_work() as session:
             rows = await repo.statistics_rows(session, scope)
+            counts = {
+                column: await repo.headcounts(session, scope, today, column)
+                for column in ("department_id", "designation_id", "location_id")
+            }
+            names = await org.unit_names(
+                session,
+                department_ids=[unit for unit, _ in counts["department_id"]],
+                designation_ids=[unit for unit, _ in counts["designation_id"]],
+                location_ids=[unit for unit, _ in counts["location_id"]],
+            )
         employed = [
             row
             for row in rows
@@ -231,16 +248,30 @@ class PeopleService:
             ),
             key=lambda item: (item[2], item[1]),
         )
+        recent = sorted(
+            (
+                (row.id, row.name, row.date_of_joining)
+                for row in employed
+                if today - RECENT_JOINERS_WINDOW <= row.date_of_joining <= today
+            ),
+            key=lambda item: (-item[2].toordinal(), item[1]),
+        )
         return Statistics(
             employed=len(employed),
             active=sum(row.status == EmployeeStatus.ACTIVE for row in employed),
             on_notice=sum(row.status == EmployeeStatus.ON_NOTICE for row in employed),
             pre_joining=sum(row.status == EmployeeStatus.PRE_JOINING for row in rows),
+            future_joiners=sum(row.date_of_joining > today for row in rows),
+            former=sum(row.date_of_exit is not None and row.date_of_exit < today for row in rows),
             joined_recently=sum(
                 today - RECENT_JOINERS_WINDOW <= row.date_of_joining <= today for row in employed
             ),
             starting_soon=starting[:MAX_LISTED],
             anniversaries=anniversaries[:MAX_LISTED],
+            recent_joiners=recent[:MAX_LISTED],
+            by_department=_ranked(counts["department_id"], names.departments),
+            by_designation=_ranked(counts["designation_id"], names.designations),
+            by_location=_ranked(counts["location_id"], names.locations),
         )
 
     # --- one record ----------------------------------------------------------------------------
@@ -712,6 +743,15 @@ class PeopleService:
                 "job.manager_cycle",
                 "This manager reports to this person, directly or indirectly. Choose someone else.",
             )
+
+
+def _ranked(
+    counts: list[tuple[uuid.UUID, int]], names: Mapping[uuid.UUID, str]
+) -> list[tuple[uuid.UUID, str, int]]:
+    return sorted(
+        ((unit, names.get(unit, ""), count) for unit, count in counts),
+        key=lambda item: (-item[2], item[1].lower()),
+    )
 
 
 def _words(status: str) -> str:

@@ -7,6 +7,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
+from app.modules.people.models import EmployeeStatus
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
 from tests.people_data import OrgUnits, add_job, create_employee, create_org_units, fake_code
@@ -392,3 +393,394 @@ async def test_personal_details_are_separate_audited_and_never_copied_to_audit(a
     assert [row[0] for row in rows] == ["employee.personal.updated", "employee.personal.read"]
     assert "Test Street" not in rows[0][1]
     assert "00000" not in rows[0][1]
+
+
+# --- organization management (M2) ---------------------------------------------------------------
+
+
+async def test_a_unit_in_use_cannot_be_archived_until_its_people_move(api: Api) -> None:
+    admin = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
+    org_units = await units(api)
+    spare = await units(api)
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        employee = await create_employee(session, joined=today - timedelta(days=50))
+        await add_job(
+            session, org_units, employee, manager_id=None, effective_from=today - timedelta(days=50)
+        )
+    async with api.client() as client:
+        await api.sign_in(client, admin)
+        for kind, unit_id in (
+            ("departments", org_units.department_id),
+            ("designations", org_units.designation_id),
+            ("locations", org_units.location_id),
+        ):
+            refused = await client.patch(
+                f"/api/v1/{kind}/{unit_id}", json={"status": "archived"}, headers={"If-Match": '"1"'}
+            )
+            assert refused.status_code == 409, (kind, refused.text)
+            assert refused.json()["code"] == "org.in_use"
+            assert "1 employee is still placed" in refused.json()["detail"]
+
+        # Once the employee moves, the old units are free to archive.
+        moved = await client.post(
+            f"/api/v1/employees/{employee}/jobs",
+            json={
+                "effective_from": today.isoformat(),
+                "department_id": str(spare.department_id),
+                "designation_id": str(spare.designation_id),
+                "location_id": str(spare.location_id),
+                "employment_type": "full_time",
+                "change_reason": "transfer",
+            },
+        )
+        assert moved.status_code == 201, moved.text
+        archived = await client.patch(
+            f"/api/v1/departments/{org_units.department_id}",
+            json={"status": "archived"},
+            headers={"If-Match": '"1"'},
+        )
+        assert archived.status_code == 200, archived.text
+        assert archived.json()["status"] == "archived"
+
+        # A future-dated placement also counts.
+        later = await units(api)
+        future = await client.post(
+            "/api/v1/employees",
+            json=employee_body(later, joined=(today + timedelta(days=20)).isoformat()),
+        )
+        assert future.status_code == 201
+        busy = await client.patch(
+            f"/api/v1/locations/{later.location_id}", json={"status": "archived"}, headers={"If-Match": '"1"'}
+        )
+        assert busy.status_code == 409
+
+
+async def test_department_descriptions_parents_and_children_are_checked(api: Api) -> None:
+    admin = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
+    async with api.client() as client:
+        await api.sign_in(client, admin)
+        parent = await client.post(
+            "/api/v1/departments",
+            json={"code": fake_code(), "name": "Test parent", "description": "  Runs the tests.  "},
+        )
+        assert parent.status_code == 201, parent.text
+        parent_id = parent.json()["id"]
+        assert parent.json()["description"] == "Runs the tests."
+        too_long = await client.post(
+            "/api/v1/departments", json={"code": fake_code(), "name": "Long", "description": "x" * 1001}
+        )
+        assert too_long.status_code == 422
+        child = await client.post(
+            "/api/v1/departments", json={"code": fake_code(), "name": "Test child", "parent_id": parent_id}
+        )
+        child_id = child.json()["id"]
+
+        busy = await client.patch(
+            f"/api/v1/departments/{parent_id}", json={"status": "archived"}, headers={"If-Match": '"1"'}
+        )
+        assert busy.status_code == 409
+        assert busy.json()["code"] == "department.has_active_children"
+
+        archived_child = await client.patch(
+            f"/api/v1/departments/{child_id}", json={"status": "archived"}, headers={"If-Match": '"1"'}
+        )
+        assert archived_child.status_code == 200
+        under_archived = await client.post(
+            "/api/v1/departments", json={"code": fake_code(), "name": "Orphan", "parent_id": child_id}
+        )
+        assert under_archived.status_code == 422
+        assert under_archived.json()["errors"][0]["code"] == "department.parent_archived"
+
+        cleared = await client.patch(
+            f"/api/v1/departments/{parent_id}", json={"description": None}, headers={"If-Match": '"1"'}
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["description"] is None
+
+    [(changes,)] = await api.fetch(
+        "SELECT changes FROM audit.audit_log WHERE target_id = :id AND action = 'org.department.updated'",
+        id=parent_id,
+    )
+    assert changes["description"] == {"old": "Runs the tests.", "new": None}
+
+
+async def test_the_employee_list_filters_sorts_pages_and_rejects_bad_parameters(api: Api) -> None:
+    org_units = await units(api)
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+    today = api.clock.now().date()
+    joined = [today - timedelta(days=days) for days in (300, 10, 120)]
+    ids = []
+    async with api.database.unit_of_work() as session:
+        for date_of_joining in joined:
+            employee = await create_employee(session, joined=date_of_joining)
+            await add_job(session, org_units, employee, manager_id=None, effective_from=date_of_joining)
+            ids.append(str(employee))
+    newest_first = [ids[1], ids[2], ids[0]]
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        listed = await client.get(
+            "/api/v1/employees",
+            params={"designation_id": str(org_units.designation_id), "sort": "joined_newest", "limit": 100},
+        )
+        assert listed.status_code == 200, listed.text
+        assert [item["id"] for item in listed.json()["items"]] == newest_first
+
+        paged: list[str] = []
+        cursor = None
+        while True:
+            params: dict[str, Any] = {
+                "location_id": str(org_units.location_id),
+                "sort": "joined_newest",
+                "limit": 1,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            page = (await client.get("/api/v1/employees", params=params)).json()
+            paged += [item["id"] for item in page["items"]]
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert paged == newest_first
+
+        oldest = await client.get(
+            "/api/v1/employees",
+            params={"department_id": str(org_units.department_id), "sort": "joined_oldest"},
+        )
+        assert [item["id"] for item in oldest.json()["items"]] == list(reversed(newest_first))
+        by_code = await client.get(
+            "/api/v1/employees", params={"department_id": str(org_units.department_id), "sort": "code"}
+        )
+        codes = [item["employee_code"] for item in by_code.json()["items"]]
+        assert codes == sorted(codes, key=str.lower)
+
+        for bad in (
+            {"sort": "salary"},
+            {"limit": 0},
+            {"limit": 101},
+            {"department_id": "not-an-id"},
+            {"status": "retired"},
+            {"q": "x" * 101},
+        ):
+            assert (await client.get("/api/v1/employees", params=bad)).status_code == 422, bad
+
+
+async def test_headcounts_by_unit_stay_within_the_readers_scope(api: Api) -> None:
+    org_units = await units(api)
+    other = await units(api)
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        manager = await create_employee(session, joined=today - timedelta(days=200))
+        await add_job(
+            session, org_units, manager, manager_id=None, effective_from=today - timedelta(days=200)
+        )
+        report = await create_employee(session, joined=today - timedelta(days=3))
+        await add_job(
+            session, org_units, report, manager_id=manager, effective_from=today - timedelta(days=3)
+        )
+        stranger = await create_employee(session, joined=today - timedelta(days=200))
+        await add_job(session, other, stranger, manager_id=None, effective_from=today - timedelta(days=200))
+    manager_account = await api.create_account(employee_id=manager)
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+
+    async with api.client() as client:
+        await api.sign_in(client, manager_account)
+        stats = (await client.get("/api/v1/employees/statistics")).json()
+        assert stats["by_department"] == [
+            {"id": str(org_units.department_id), "name": "Test department", "employed": 2}
+        ]
+        assert {item["id"] for item in stats["by_location"]} == {str(org_units.location_id)}
+        assert [item["employee"]["id"] for item in stats["recent_joiners"]] == [str(report)]
+
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        stats = (await client.get("/api/v1/employees/statistics")).json()
+        departments = {item["id"]: item["employed"] for item in stats["by_department"]}
+        assert departments[str(org_units.department_id)] == 2
+        assert departments[str(other.department_id)] == 1
+        counts = [item["employed"] for item in stats["by_department"]]
+        assert counts == sorted(counts, reverse=True)
+
+
+# --- department heads -----------------------------------------------------------------------------
+
+
+async def test_a_department_head_must_be_a_current_or_future_employee(api: Api) -> None:
+    admin = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
+    org_units = await units(api)
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        head = await create_employee(session, joined=today - timedelta(days=100))
+        await add_job(session, org_units, head, manager_id=None, effective_from=today - timedelta(days=100))
+        left = await create_employee(
+            session, joined=today - timedelta(days=300), exited=today - timedelta(days=1)
+        )
+        leaving_today = await create_employee(session, joined=today - timedelta(days=300), exited=today)
+    [(head_code,)] = await api.fetch("SELECT employee_code FROM people.employees WHERE id = :id", id=head)
+    async with api.client() as client:
+        await api.sign_in(client, admin)
+        created = await client.post(
+            "/api/v1/departments",
+            json={"code": fake_code(), "name": "Test headed", "head_employee_id": str(head)},
+        )
+        assert created.status_code == 201, created.text
+        department = created.json()
+        assert department["head_employee_id"] == str(head)
+        assert department["head_name"] == f"Test {head_code}"
+        listed = (await client.get("/api/v1/departments")).json()["items"]
+        assert next(d for d in listed if d["id"] == department["id"])["head_name"] == f"Test {head_code}"
+
+        path = f"/api/v1/departments/{department['id']}"
+        unknown = await client.patch(
+            path, json={"head_employee_id": str(uuid.uuid4())}, headers={"If-Match": '"1"'}
+        )
+        assert unknown.status_code == 422
+        assert unknown.json()["errors"][0]["code"] == "org.unknown_employee"
+        gone = await client.patch(path, json={"head_employee_id": str(left)}, headers={"If-Match": '"1"'})
+        assert gone.status_code == 422
+        assert gone.json()["errors"][0]["code"] == "department.head_left"
+        bad_create = await client.post(
+            "/api/v1/departments", json={"code": fake_code(), "name": "Bad", "head_employee_id": str(left)}
+        )
+        assert bad_create.status_code == 422
+        # The last working day is still a working day.
+        last_day = await client.patch(
+            path, json={"head_employee_id": str(leaving_today)}, headers={"If-Match": '"1"'}
+        )
+        assert last_day.status_code == 200, last_day.text
+        cleared = await client.patch(path, json={"head_employee_id": None}, headers={"If-Match": '"2"'})
+        assert cleared.json()["head_name"] is None
+
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        refused = await client.patch(
+            f"/api/v1/departments/{department['id']}",
+            json={"head_employee_id": str(head)},
+            headers={"If-Match": '"3"'},
+        )
+        assert refused.status_code == 403
+
+
+# --- employment definitions (EMP-7) -------------------------------------------------------------
+
+
+async def test_current_future_and_former_follow_the_dates_and_match_the_counts(api: Api) -> None:
+    org_units = await units(api)
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        joined_today = await create_employee(session, joined=today)
+        await add_job(session, org_units, joined_today, manager_id=None, effective_from=today)
+        long_ago = await create_employee(session, joined=today - timedelta(days=400))
+        await add_job(
+            session, org_units, long_ago, manager_id=None, effective_from=today - timedelta(days=400)
+        )
+        last_day_today = await create_employee(session, joined=today - timedelta(days=400), exited=today)
+        await add_job(
+            session, org_units, last_day_today, manager_id=None, effective_from=today - timedelta(days=400)
+        )
+        left_yesterday = await create_employee(
+            session, joined=today - timedelta(days=400), exited=today - timedelta(days=1)
+        )
+        await add_job(
+            session,
+            org_units,
+            left_yesterday,
+            manager_id=None,
+            effective_from=today - timedelta(days=400),
+            effective_to=today,
+        )
+        joins_tomorrow = await create_employee(
+            session, joined=today + timedelta(days=1), status=EmployeeStatus.PRE_JOINING
+        )
+        await add_job(
+            session, org_units, joins_tomorrow, manager_id=None, effective_from=today + timedelta(days=1)
+        )
+
+    async def listed(client: Any, employment: str) -> set[str]:
+        page = await client.get(
+            "/api/v1/employees",
+            params={"department_id": str(org_units.department_id), "employment": employment, "limit": 100},
+        )
+        assert page.status_code == 200, page.text
+        return {item["id"] for item in page.json()["items"]}
+
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        # The department filter uses the job row that applies today, so former and future
+        # people are found without it.
+        current = await listed(client, "current")
+        assert current == {str(joined_today), str(long_ago), str(last_day_today)}
+        future = await client.get("/api/v1/employees", params={"employment": "future", "limit": 100})
+        assert str(joins_tomorrow) in {item["id"] for item in future.json()["items"]}
+        assert str(long_ago) not in {item["id"] for item in future.json()["items"]}
+        former = await client.get("/api/v1/employees", params={"employment": "former", "limit": 100})
+        former_ids = {item["id"] for item in former.json()["items"]}
+        assert str(left_yesterday) in former_ids
+        assert str(last_day_today) not in former_ids
+        assert (await client.get("/api/v1/employees", params={"employment": "past"})).status_code == 422
+
+        stats = (await client.get("/api/v1/employees/statistics")).json()
+        headcount = next(d for d in stats["by_department"] if d["id"] == str(org_units.department_id))
+        assert headcount["employed"] == len(current)
+        assert str(joined_today) in {item["employee"]["id"] for item in stats["recent_joiners"]}
+        assert stats["future_joiners"] >= 1
+        assert stats["former"] >= 1
+
+
+async def test_today_is_the_utc_date_at_the_boundary(api: Api) -> None:
+    org_units = await units(api)
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+    now = api.clock.now()
+    api.clock.current = now.replace(hour=23, minute=59, second=0, microsecond=0)
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        starter = await create_employee(
+            session, joined=today + timedelta(days=1), status=EmployeeStatus.PRE_JOINING
+        )
+        await add_job(session, org_units, starter, manager_id=None, effective_from=today + timedelta(days=1))
+    params = {"location_id": str(org_units.location_id), "employment": "current"}
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        before = (await client.get("/api/v1/employees", params=params)).json()["items"]
+        assert before == []
+        # Two minutes later it is the next UTC date (in India it already was): now current.
+        api.clock.advance(timedelta(minutes=2))
+        after = (await client.get("/api/v1/employees", params=params)).json()["items"]
+        assert [item["id"] for item in after] == [str(starter)]
+
+
+async def test_a_managers_counts_cover_only_their_current_team(api: Api) -> None:
+    org_units = await units(api)
+    today = api.clock.now().date()
+    async with api.database.unit_of_work() as session:
+        manager = await create_employee(session, joined=today - timedelta(days=200))
+        await add_job(
+            session, org_units, manager, manager_id=None, effective_from=today - timedelta(days=200)
+        )
+        report = await create_employee(session, joined=today - timedelta(days=50))
+        await add_job(
+            session, org_units, report, manager_id=manager, effective_from=today - timedelta(days=50)
+        )
+        future_report = await create_employee(
+            session, joined=today + timedelta(days=10), status=EmployeeStatus.PRE_JOINING
+        )
+        await add_job(
+            session, org_units, future_report, manager_id=manager, effective_from=today + timedelta(days=10)
+        )
+        stranger = await create_employee(session, joined=today - timedelta(days=50))
+        await add_job(
+            session, org_units, stranger, manager_id=None, effective_from=today - timedelta(days=50)
+        )
+    account = await api.create_account(employee_id=manager)
+    async with api.client() as client:
+        await api.sign_in(client, account)
+        stats = (await client.get("/api/v1/employees/statistics")).json()
+        assert stats["employed"] == 2
+        assert stats["future_joiners"] == 0
+        assert stats["by_department"][0]["employed"] == 2
+        current = (await client.get("/api/v1/employees", params={"employment": "current"})).json()["items"]
+        assert {item["id"] for item in current} == {str(manager), str(report)}
+        # Someone joining the team later is not part of it yet (authorization-model §7).
+        assert (await client.get(f"/api/v1/employees/{future_report}")).status_code == 404

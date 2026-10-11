@@ -10,11 +10,16 @@ import {
   ArrowRight,
   Building2,
   CalendarDays,
+  CalendarCheck,
+  CalendarCog,
   CalendarRange,
+  ClipboardList,
   Cake,
   KeyRound,
+  Scale,
   ShieldAlert,
   UserPlus,
+  UserRoundPlus,
   Users,
   UsersRound,
 } from "lucide-react";
@@ -35,6 +40,8 @@ import { addDays, formatDate, formatLongToday, formatRelative, localIsoDate, plu
 import { ClockCard } from "../attendance/ClockCard";
 import { ATTENDANCE_KEY } from "../attendance/queries";
 import { PEOPLE_KEY, useStatistics } from "../employees/queries";
+import { Headcounts } from "../employees/Headcounts";
+import { LEAVE_KEY, formatDays, formatSpan, useBalances } from "../leave/queries";
 import { HOLIDAYS_KEY } from "../holidays/MyHolidaysPage";
 import { useDepartments, useDesignations, useLocations } from "../organization/queries";
 
@@ -76,8 +83,8 @@ export function DashboardPage() {
 
       {!isEmployee ? (
         <Banner tone="info">
-          Your account is not linked to an employee record, so attendance, holidays and a profile are not
-          available to you. Everything you can manage is in the navigation.
+          Your account is not linked to an employee record, so attendance, leave, holidays and a profile are
+          not available to you. Everything you can manage is in the navigation.
         </Banner>
       ) : null}
 
@@ -90,11 +97,17 @@ export function DashboardPage() {
         {isEmployee && hasPermission(data, "holiday.read") ? <UpcomingHolidays /> : null}
       </div>
 
-      {readsPeople ? <Workforce /> : null}
+      {readsPeople ? <Workforce canCreate={hasPermission(data, "employee.create")} /> : null}
       {readsTeam ? <TeamToday /> : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
+        {hasPermission(data, "leave.request.self") && isEmployee ? <MyLeave /> : null}
+        {canSee(data, { anyOf: ["leave.request.approve.team", "leave.request.approve.all"] }) ? (
+          <LeaveWaiting />
+        ) : null}
+        {readsPeople ? <RecentJoiners /> : null}
         {readsPeople ? <PeopleMoments /> : null}
+        {hasPermission(data, "role.elevation.request") && !readsPeople ? <TemporaryAccess /> : null}
         {hasPermission(data, "role.read") ? <PendingAccessRequests /> : null}
         {hasPermission(data, "auth.session.read.self") ? <RecentSignIns /> : null}
         <QuickActions me={data} />
@@ -123,11 +136,28 @@ function SetupChecklist() {
   const departments = useDepartments();
   const designations = useDesignations();
   const locations = useLocations();
+  const lists = [locations, departments, designations];
+  const failed = lists.find((query) => query.isError);
+  if (failed) {
+    return (
+      <ProblemMessage
+        error={failed.error}
+        fallback="We couldn't check the organization set-up."
+        onRetry={() => {
+          for (const query of lists) void query.refetch();
+        }}
+      />
+    );
+  }
   if (!departments.isSuccess || !designations.isSuccess || !locations.isSuccess) return null;
   const steps = [
-    { done: locations.data.items.length > 0, text: "Add your locations, with their time zones" },
-    { done: departments.data.items.length > 0, text: "Add your departments" },
-    { done: designations.data.items.length > 0, text: "Add your designations" },
+    {
+      done: locations.data.items.length > 0,
+      text: "Add your locations, with their time zones",
+      tab: "locations",
+    },
+    { done: departments.data.items.length > 0, text: "Add your departments", tab: "departments" },
+    { done: designations.data.items.length > 0, text: "Add your designations", tab: "designations" },
   ];
   if (steps.every((step) => step.done)) return null;
   return (
@@ -151,9 +181,13 @@ function SetupChecklist() {
             >
               {index + 1}
             </span>
-            <span className={step.done ? "text-neutral-500 line-through" : "text-neutral-900"}>
-              {step.text}
-            </span>
+            {step.done ? (
+              <span className="text-neutral-500 line-through">{step.text}</span>
+            ) : (
+              <Link className="text-accent-700 hover:underline" to={`/organization?tab=${step.tab}`}>
+                {step.text}
+              </Link>
+            )}
             <span className="sr-only">{step.done ? "(done)" : "(to do)"}</span>
           </li>
         ))}
@@ -201,7 +235,7 @@ function UpcomingHolidays() {
   );
 }
 
-function Workforce() {
+function Workforce({ canCreate }: { canCreate: boolean }) {
   const stats = useStatistics(true);
   return (
     <section aria-labelledby="workforce-heading" className="flex flex-col gap-3">
@@ -215,22 +249,71 @@ function Workforce() {
       </div>
       <Loading query={stats} label="Loading people figures" fallback="We couldn't load the people figures." />
       {stats.isSuccess ? (
-        stats.data.employed === 0 && stats.data.pre_joining === 0 ? (
-          <EmptyState icon={Users} title="No employee records yet">
-            Figures appear here once employee records exist.
+        stats.data.employed === 0 && stats.data.future_joiners === 0 ? (
+          <EmptyState
+            icon={Users}
+            title="No employee records yet"
+            action={
+              canCreate ? (
+                <ButtonLink to="/employees/new" size="sm">
+                  Add an employee
+                </ButtonLink>
+              ) : undefined
+            }
+          >
+            Figures appear here once employee records you can read exist.
           </EmptyState>
         ) : (
-          <StatGrid label="People figures">
-            <Stat label="Employed today" value={stats.data.employed} to="/employees" />
-            <Stat label="On notice" value={stats.data.on_notice} to="/employees?status=on_notice" />
-            <Stat
-              label="Joining soon"
-              value={stats.data.pre_joining}
-              hint="Records before their joining date"
-              to="/employees?status=pre_joining"
-            />
-            <Stat label="Joined in the last 30 days" value={stats.data.joined_last_30_days} />
-          </StatGrid>
+          <>
+            <StatGrid label="People figures" columns={5}>
+              <Stat label="Employed today" value={stats.data.employed} to="/employees" />
+              <Stat label="On notice" value={stats.data.on_notice} to="/employees?status=on_notice" />
+              <Stat
+                label="Joining in the future"
+                value={stats.data.future_joiners}
+                hint="Joining date after today"
+                to="/employees?employment=future"
+              />
+              <Stat
+                label="Former employees"
+                value={stats.data.former}
+                hint="Last working day before today"
+                to="/employees?employment=former"
+              />
+              <Stat label="Joined in the last 30 days" value={stats.data.joined_last_30_days} />
+            </StatGrid>
+            <p className="text-xs text-neutral-600">
+              Employed today means joined on or before today and not past the last working day, as on the
+              Employees list. The headcounts below count only people employed today.
+            </p>
+            {stats.data.employed > 0 ? (
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Panel
+                  title="Employees by department"
+                  action={
+                    <Link className="text-sm text-accent-700 hover:underline" to="/organization">
+                      Organization
+                    </Link>
+                  }
+                >
+                  <Headcounts
+                    items={stats.data.by_department}
+                    filter="department"
+                    limit={5}
+                    label="Employees by department"
+                  />
+                </Panel>
+                <Panel title="Employees by location">
+                  <Headcounts
+                    items={stats.data.by_location}
+                    filter="location"
+                    limit={5}
+                    label="Employees by location"
+                  />
+                </Panel>
+              </div>
+            ) : null}
+          </>
         )
       ) : null}
     </section>
@@ -278,6 +361,114 @@ function TeamToday() {
         </>
       ) : null}
     </section>
+  );
+}
+
+function MyLeave() {
+  const balances = useBalances(null);
+  const items = (balances.data?.items ?? []).filter((item) => item.eligible);
+  return (
+    <Panel
+      title="My leave"
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/leave/request">
+          Request leave
+        </Link>
+      }
+    >
+      <Loading query={balances} label="Loading your leave" fallback="We couldn't load your leave." />
+      {balances.isSuccess && items.length === 0 ? (
+        <EmptyState icon={CalendarDays} title="No leave type set up for you yet">
+          HR adds leave types and the policies that cover you.
+        </EmptyState>
+      ) : null}
+      <ul className="flex flex-col gap-3">
+        {items.map((item) => (
+          <li key={item.leave_type.id} className="flex items-center justify-between gap-3 text-sm">
+            <Link className="font-semibold text-neutral-900 hover:underline" to="/leave">
+              {item.leave_type.name}
+            </Link>
+            <span className="tabular text-neutral-700">{formatDays(item.available)} available</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+function LeaveWaiting() {
+  const waiting = useQuery({
+    queryKey: [...LEAVE_KEY, "requests", "scope", { awaiting_my_decision: true, dashboard: true }],
+    queryFn: () =>
+      unwrap(
+        client.GET("/api/v1/leave-requests", { params: { query: { awaiting_my_decision: true, limit: 5 } } }),
+      ),
+  });
+  const items = waiting.data?.items ?? [];
+  return (
+    <Panel
+      title="Leave waiting for you"
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/leave/approvals">
+          Leave approvals
+        </Link>
+      }
+    >
+      <Loading
+        query={waiting}
+        label="Loading leave to decide"
+        fallback="We couldn't load the leave requests."
+      />
+      {waiting.isSuccess && items.length === 0 ? (
+        <EmptyState icon={CalendarDays} title="Nothing waiting for your decision" />
+      ) : null}
+      <ul className="flex flex-col gap-3">
+        {items.map((item) => (
+          <li key={item.id} className="text-sm">
+            <Link
+              className="font-semibold text-neutral-900 hover:underline"
+              to={`/leave/requests/${item.id}`}
+            >
+              {item.employee.name}: {item.leave_type.name}
+            </Link>
+            <p className="text-neutral-600">
+              {formatSpan(item)} · {formatDays(item.days_requested)}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+function RecentJoiners() {
+  const stats = useStatistics(true);
+  const joiners = stats.data?.recent_joiners ?? [];
+  return (
+    <Panel
+      title="Recent joiners"
+      description="People who joined in the last 30 days, newest first."
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/employees?sort=joined_newest">
+          All by joining date
+        </Link>
+      }
+    >
+      <Loading query={stats} label="Loading recent joiners" fallback="We couldn't load the recent joiners." />
+      {stats.isSuccess && joiners.length === 0 ? (
+        <EmptyState icon={UserRoundPlus} title="No one joined in the last 30 days" />
+      ) : null}
+      <ul className="flex flex-col gap-3">
+        {joiners.map((item) => (
+          <MomentRow
+            key={item.employee.id}
+            id={item.employee.id}
+            name={item.employee.name}
+            detail={`Joined ${formatDate(item.date_of_joining, { year: false })}`}
+          />
+        ))}
+      </ul>
+    </Panel>
   );
 }
 
@@ -372,6 +563,29 @@ function PendingAccessRequests() {
   );
 }
 
+/** For a super admin: HR data is out of reach by design; how to get time-bound access to it. */
+function TemporaryAccess() {
+  return (
+    <Panel
+      title="HR data needs temporary access"
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/admin/access-requests">
+          Access requests
+        </Link>
+      }
+    >
+      <div className="flex flex-col gap-2 text-sm text-neutral-700">
+        <p>
+          A super admin sees no employee, attendance or leave data. To work as HR, ask for a role such as HR
+          admin for a few hours on Access requests; another super admin approves it. The access ends by
+          itself.
+        </p>
+        <p>Both steps ask for a code from your authenticator app, and every step is recorded.</p>
+      </div>
+    </Panel>
+  );
+}
+
 function RecentSignIns() {
   const history = useQuery({
     queryKey: ["identity", "login-history", "recent"],
@@ -427,10 +641,40 @@ function QuickActions({ me }: { me: Me | null | undefined }) {
       show: hasPermission(me, "employee.create"),
     },
     {
+      to: "/employees",
+      label: "Employees",
+      icon: Users,
+      show: canSee(me, { anyOf: READS_PEOPLE }),
+    },
+    {
       to: "/organization",
       label: "Manage organization",
       icon: Building2,
       show: hasPermission(me, "org.manage"),
+    },
+    {
+      to: "/leave/approvals",
+      label: "Leave approvals",
+      icon: CalendarCheck,
+      show: canSee(me, { anyOf: ["leave.request.approve.team", "leave.request.approve.all"] }),
+    },
+    {
+      to: "/leave/overview",
+      label: "Leave overview",
+      icon: ClipboardList,
+      show: hasPermission(me, "leave.read.all"),
+    },
+    {
+      to: "/leave/balances",
+      label: "Leave balances",
+      icon: Scale,
+      show: hasPermission(me, "leave.balance.adjust"),
+    },
+    {
+      to: "/setup/leave-types",
+      label: "Leave types",
+      icon: CalendarCog,
+      show: hasPermission(me, "leave.policy.manage"),
     },
     {
       to: "/setup/holiday-calendars",

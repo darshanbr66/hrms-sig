@@ -87,6 +87,7 @@ class EmployeeJob(Base):
             postgresql_where=text("manager_employee_id IS NOT NULL"),
         ),
         Index("ix_employee_jobs_department_id", "department_id"),
+        Index("ix_employee_jobs_designation_id", "designation_id"),
         Index("ix_employee_jobs_location_id", "location_id"),
         {"schema": SCHEMA},
     )

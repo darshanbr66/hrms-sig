@@ -153,12 +153,30 @@ pnpm dev
 
 ### Windows shortcut
 
-`run-backend.cmd` in the repository root runs 3.1 to 3.4 in one go. It checks that Docker is
-running, starts the services, runs `uv sync` and the migrations, creates the anchor bucket if
-it is missing, opens the worker in a new
-window and then runs the API in the current one. Run it from the repository root with
-`.\run-backend.cmd`, or double-click it. Press `Ctrl+C` to stop the API. Close the worker
-window to stop the worker. Start the web app separately (3.5).
+`run-backend.cmd` in the repository root runs 3.1 to 3.4 in one go (the steps are in
+`run-backend.ps1`; the `.cmd` file lets you double-click it). It checks that Docker is running
+and that no API (port 8000) or worker is already running, starts the services, runs `uv sync`,
+checks the target database, runs the migrations, creates the anchor bucket if it is missing,
+opens the worker in a new window and then runs the API in the current one. Run it from the
+repository root with `.\run-backend.cmd`, or double-click it. Press `Ctrl+C` to stop the API.
+Close the worker window to stop the worker. Start the web app separately (3.5).
+
+With no arguments it uses the database named in the `DATABASE_URL_*` settings in `.env`
+(normally `hrms`) and `AUDIT_ANCHOR_BUCKET`. To run against another existing local database,
+name it and its own anchor bucket (3.2):
+
+```powershell
+.\run-backend.cmd -Database <database name> -AnchorBucket <bucket name for that database>
+```
+
+The script sets the database and bucket explicitly for the migrations, the worker and the API,
+so variables left in the window from an earlier session cannot redirect them. Before migrating
+it runs `python -m scripts.check_local_target`, which stops unless all four `DATABASE_URL_*`
+settings name that database on this machine, the migrator really connects to it, and the bucket
+matches. It never creates or resets a database, and it refuses another database without a
+bucket of its own. Each window title shows the database (`HRMS API (hrms)`), and an account
+exists only in the database where it was created: signing in to the wrong one fails as an
+unknown account.
 
 ## 4. Database (PostgreSQL 18)
 
@@ -400,9 +418,22 @@ Mailpit.
 The bootstrapped super admins have no employee record, so their dashboard shows access
 requests, recent sign-ins and shortcuts, and no attendance, holidays or profile.
 
-To try the HR screens locally (organization, employees, holiday calendars, team attendance), a
+The dashboard shows each widget only to holders of its permission (the API decides every read):
+
+| Role | Dashboard |
+|---|---|
+| `super_admin` | Access requests waiting, recent sign-ins, how to get temporary HR access, shortcuts to Users and Access requests. No employee, attendance or leave data. |
+| `hr_admin` | People figures (employed today, on notice, joining in the future, former, joined in the last 30 days) with headcounts by department and location, recent joiners, organization set-up progress, attendance today, leave waiting for a decision, access requests, shortcuts to Employees, Organization, Leave approvals, Leave overview, Leave balances and Leave types. |
+| `hr` | As `hr_admin` without organization set-up, access requests and the Leave types shortcut. |
+| `manager` (derived) | The same people figures and attendance for their team only, their own clock, leave and holidays, and leave waiting for their decision. |
+| `employee` (derived) | Their own clock, leave, holidays and sign-ins; no figures about others. |
+
+Self-service widgets (clock, My leave, holidays) appear only for an account linked to an employee
+record, which the bootstrapped super admins are not.
+
+To try the HR screens locally (organization, employees, holiday calendars, team attendance, leave), a
 super admin asks for temporary `hr_admin` access on Access requests and the other super admin
-approves it; the elevated account then sees Organization, Employees, Holiday calendars and Team
+approves it (both super admins must be active: activate the second one from its invite first); the elevated account then sees Organization, Employees, Holiday calendars and Team
 attendance until the elevation ends. A typical first run: add a location (with its IANA time
 zone), a department and a designation; add an employee whose work email is an address you can
 read in Mailpit; on the employee's record, open **HRMS account** and send the invite (this also
@@ -410,6 +441,20 @@ needs `user.invite`, which `hr_admin` holds); activate the account from the emai
 that employee to clock in and out and see the dashboard as an employee. Create a holiday
 calendar for the current year, add holidays and assign the location to see them on the
 employee's dashboard. Use obviously fake names and `dev.example`-style addresses only.
+
+To try leave (revision 0018), with the elevated `hr_admin` account: open **Leave types**
+(`/setup/leave-types`), add a test leave type (every rule is a yes or no you choose) and a policy
+version for the employee's location (leave year start, optionally days given each leave year).
+Use **Allocate a leave year**, or record an opening balance on **Leave balances**. Make a second
+test employee the first one's manager (a job change on the record), invite both, and sign in as
+the employee: **My leave** shows the balance and **Request leave** previews how the days count
+before sending. Sign in as the manager: **Leave approvals** lists the request, and its page
+approves it (or rejects it, with a note). Emails to the manager and the employee reach Mailpit.
+The values you enter are test configuration, not Sigvitas policy.
+
+If an account already exists for a person (for example invited before their record), link it
+from the record: **HRMS account**, **Link an existing account**. The account's email must be the
+record's work email; a reason and an authenticator code are asked for.
 
 An administrator's MFA reset (`POST /users/{id}/mfa-reset`, `system_admin`) emails a
 re-enrolment link to Mailpit. The link opens `/mfa-reenrolment/<token>`, which asks for the
@@ -456,6 +501,7 @@ Run through these with the web app, API and worker running.
 | `password authentication failed for user "hrms_..."` | The role passwords in `.env` changed after the volume was created. Put the old values back, or reset the local database (4.4). |
 | Sign-in says "Sign-in is temporarily unavailable. Try again in a minute." (API answers `503`, log shows `ratelimit.store_unavailable`) | Redis is not reachable, and the sign-in limits fail closed by design (section 5). Usually the Compose services stopped when Docker Desktop or the computer restarted. Run `docker compose --env-file .env -f infra/compose.yaml up -d --wait` (or `run-backend.cmd`), check with the `ping` in section 5, then sign in again. The API does not need a restart. `/api/health/ready` stays `ok` because it checks only PostgreSQL. |
 | Sign-in or other requests fail with "We couldn't complete this request" after updating the code (API log shows `UndefinedColumn` or `UndefinedTable`) | The database is behind the code. Apply the migrations (3.2) to every local database you use, for example `hrms` and `hrms_acceptance`, then retry. |
+| Sign-in fails for an account that worked before, and the API's `audit.security_events` rows show `login.failed` with `"known_user": false` | The API is running against a different local database from the one the account was created in, for example after a restart with plain `run-backend.cmd` (which uses `.env`, normally `hrms`). Stop the API and the worker and start them again with `.\run-backend.cmd -Database NAME -AnchorBucket NAME` for that database. The window titles show the database in use. |
 | Sign-in says the email "is not a valid email address" for an `@example.test` account | The `.test` domain is a special-use name that address validation refuses. Use accounts on `example.com` (section 9.2). |
 | Migration fails | Check that PostgreSQL is healthy and that `DATABASE_URL_MIGRATOR` uses `hrms_migrator` and port 5433. Read the error. A half-applied local database can be reset (4.4). Never fix it with `alembic downgrade` or `procrastinate schema --apply`. |
 | Port 8000, 5173, 5433, 6380, 1025 or 8025 already in use | Find the process with `Get-NetTCPConnection -LocalPort 8000 -State Listen \| Select-Object OwningProcess`, then stop it with `Stop-Process -Id <pid>` if it is an old API or Vite instance. On macOS or Linux, use `lsof -i :8000`. Vite refuses to pick another port, because the origin must match `APP_BASE_URL`. |
@@ -516,8 +562,10 @@ must be empty unless you changed the API on purpose. CI fails on a stale contrac
 ## 13. Project status
 
 Current state: **M1 Checkpoints A–F** complete; **Checkpoint G** (frontend) delivered together
-with the first slices of M2 (organization and employee records), M3 (attendance clock events,
-without shifts or policies) and M4 (holiday calendars), migrations up to `0016`. See
+with the first slices of M2 (organization and employee records, then organization management,
+account linking and department heads on 2026-10-11), M3 (attendance clock events, without
+shifts or policies) and M4 (holiday calendars, then leave management on 2026-10-11),
+migrations up to `0018`. See
 `docs/m1-implementation-plan.md` §12.
 
 Update this document in the same change whenever any of these change: local setup, commands,

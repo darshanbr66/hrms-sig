@@ -169,6 +169,28 @@ def placed_employee_ids_query(
     return query
 
 
+async def placed_in_unit_count(session: AsyncSession, unit_column: str, unit_id: uuid.UUID, on: date) -> int:
+    """How many employees not yet past their exit date have a current or future job row in a
+    department, designation or location (`unit_column` names the job column). Archiving a unit
+    with any is refused: they would be left on a unit nobody can choose."""
+    job, employee = aliased(EmployeeJob), aliased(Employee)
+    column = {
+        "department_id": job.department_id,
+        "designation_id": job.designation_id,
+        "location_id": job.location_id,
+    }[unit_column]
+    query = (
+        select(func.count(func.distinct(job.employee_id)))
+        .join(employee, employee.id == job.employee_id)
+        .where(
+            column == unit_id,
+            or_(job.effective_to.is_(None), job.effective_to > on),
+            or_(employee.date_of_exit.is_(None), employee.date_of_exit >= on),
+        )
+    )
+    return int((await session.execute(query)).scalar_one())
+
+
 async def first_name(session: AsyncSession, employee_id: uuid.UUID) -> str | None:
     """Preferred name, else legal first name (`public_internal` directory fields)."""
     query = select(func.coalesce(Employee.preferred_name, Employee.legal_first_name)).where(
@@ -215,8 +237,41 @@ class EmployeeFilters:
     text: str | None = None
     statuses: tuple[str, ...] = ()
     department_id: uuid.UUID | None = None
+    designation_id: uuid.UUID | None = None
     location_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
+    # current | future | former (dates on the day, see `employment_on`); None for everyone.
+    employment: str | None = None
+    # name | code | joined_newest | joined_oldest
+    sort: str = "name"
+
+
+def employment_on(employment: str, on: date) -> ColumnElement[bool]:
+    """The employment definitions every list and count uses (docs/product-requirements.md
+    EMP-7), all on one calendar date (the UTC date, like authorization):
+
+    - current: joined on or before the date, and no last working day before it;
+    - future: joining after the date;
+    - former: last working day before the date.
+
+    These follow the dates, not the recorded status: someone whose last working day is today
+    is still current today although their status is already `exited`, and someone whose
+    joining date has passed is current although HR has not yet marked them active."""
+    if employment == "future":
+        return Employee.date_of_joining > on
+    if employment == "former":
+        return and_(Employee.date_of_exit.is_not(None), Employee.date_of_exit < on)
+    return _employed_on(Employee, on)
+
+
+def _sort_key(sort: str) -> tuple[ColumnElement[str], bool]:
+    """The text sort key for keyset pagination, and whether it runs newest first. ISO dates
+    sort correctly as text."""
+    if sort == "code":
+        return func.lower(Employee.employee_code), False
+    if sort in ("joined_newest", "joined_oldest"):
+        return func.to_char(Employee.date_of_joining, "YYYY-MM-DD"), sort == "joined_newest"
+    return func.lower(display_name()), False
 
 
 async def list_employees(
@@ -228,25 +283,31 @@ async def list_employees(
     after: tuple[str, uuid.UUID] | None,
     limit: int,
 ) -> list[tuple[Employee, str]]:
-    """Employees in scope with their sort name, ordered by name then ID."""
-    sort = func.lower(display_name())
-    query = select(Employee, sort.label("sort_name")).where(scope)
+    """Employees in scope with their sort key, ordered by the chosen key then ID."""
+    sort, descending = _sort_key(filters.sort)
+    query = select(Employee, sort.label("sort_key")).where(scope)
     if filters.text:
         query = query.where(_search(filters.text))
     if filters.statuses:
         query = query.where(Employee.status.in_(filters.statuses))
-    if filters.department_id or filters.location_id or filters.manager_id:
+    if filters.employment:
+        query = query.where(employment_on(filters.employment, on))
+    if filters.department_id or filters.designation_id or filters.location_id or filters.manager_id:
         job = aliased(EmployeeJob)
         query = query.join(job, and_(job.employee_id == Employee.id, _job_applies_on(job, on)))
         if filters.department_id:
             query = query.where(job.department_id == filters.department_id)
+        if filters.designation_id:
+            query = query.where(job.designation_id == filters.designation_id)
         if filters.location_id:
             query = query.where(job.location_id == filters.location_id)
         if filters.manager_id:
             query = query.where(job.manager_employee_id == filters.manager_id)
     if after is not None:
-        query = query.where(tuple_(sort, Employee.id) > tuple_(literal(after[0]), literal(after[1])))
-    rows = (await session.execute(query.order_by(sort, Employee.id).limit(limit + 1))).all()
+        key, after_key = tuple_(sort, Employee.id), tuple_(literal(after[0]), literal(after[1]))
+        query = query.where(key < after_key if descending else key > after_key)
+    order = (sort.desc(), Employee.id.desc()) if descending else (sort, Employee.id)
+    rows = (await session.execute(query.order_by(*order).limit(limit + 1))).all()
     return [(row[0], row[1]) for row in rows]
 
 
@@ -326,6 +387,27 @@ async def statistics_rows(session: AsyncSession, scope: ColumnElement[bool]) -> 
     return list((await session.execute(query)).all())
 
 
+async def headcounts(
+    session: AsyncSession, scope: ColumnElement[bool], on: date, unit_column: str
+) -> list[tuple[uuid.UUID, int]]:
+    """Employees in scope employed on the date, counted by the department, designation or
+    location (`unit_column`) of the job row that applies on it."""
+    job = aliased(EmployeeJob)
+    column = {
+        "department_id": job.department_id,
+        "designation_id": job.designation_id,
+        "location_id": job.location_id,
+    }[unit_column]
+    query = (
+        select(column, func.count())
+        .select_from(Employee)
+        .join(job, and_(job.employee_id == Employee.id, _job_applies_on(job, on)))
+        .where(scope, _employed_on(Employee, on))
+        .group_by(column)
+    )
+    return [(row[0], int(row[1])) for row in (await session.execute(query)).all()]
+
+
 async def status_history(session: AsyncSession, employee_id: uuid.UUID) -> list[EmployeeStatusChange]:
     query = (
         select(EmployeeStatusChange)
@@ -333,6 +415,14 @@ async def status_history(session: AsyncSession, employee_id: uuid.UUID) -> list[
         .order_by(EmployeeStatusChange.created_at.desc(), EmployeeStatusChange.id.desc())
     )
     return list(await session.scalars(query))
+
+
+async def exit_date(session: AsyncSession, employee_id: uuid.UUID) -> tuple[bool, date | None]:
+    """Whether the employee exists, and their last working day if they have left or are leaving."""
+    row = (
+        await session.execute(select(Employee.date_of_exit).where(Employee.id == employee_id))
+    ).one_or_none()
+    return (False, None) if row is None else (True, row.date_of_exit)
 
 
 async def employee_exists(session: AsyncSession, employee_id: uuid.UUID) -> bool:

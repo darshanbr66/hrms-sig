@@ -251,6 +251,15 @@ class MfaResetRequest(_Request):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 
+class EmployeeLinkRequest(_Request):
+    """Link an existing account to an employee record. The reason is recorded in the audit
+    log: say why the account was not linked at invite (for example, invited before the record
+    existed), not personal details."""
+
+    employee_id: uuid.UUID
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
 class MfaReenrolmentRequest(_Request):
     password: PasswordInput
 

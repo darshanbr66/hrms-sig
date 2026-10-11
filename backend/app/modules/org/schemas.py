@@ -14,6 +14,7 @@ type Code = Annotated[
 ]
 type Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 type StatusValue = Literal["active", "archived"]
+type Description = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 
 
 class _Request(BaseModel):
@@ -67,11 +68,14 @@ class LocationList(_Response):
 class DepartmentCreate(_Request):
     code: Code
     name: Name
+    description: Description | None = None
     parent_id: uuid.UUID | None = None
+    head_employee_id: uuid.UUID | None = None
 
 
 class DepartmentUpdate(_Request):
     name: Name | None = None
+    description: Description | None = None
     parent_id: uuid.UUID | None = None
     head_employee_id: uuid.UUID | None = None
     status: StatusValue | None = None
@@ -81,8 +85,11 @@ class DepartmentView(_Response):
     id: uuid.UUID
     code: str
     name: str
+    description: str | None
     parent_id: uuid.UUID | None
     head_employee_id: uuid.UUID | None
+    # The head's display name (a directory field), when there is a head.
+    head_name: str | None
     status: StatusValue
     version: int
     created_at: datetime

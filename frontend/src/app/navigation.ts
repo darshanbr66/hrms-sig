@@ -3,20 +3,25 @@
  * working with, and each item shown only when the person holds a permission for it. Hiding an
  * item is cosmetic: the API decides every request (CLAUDE.md rule 1).
  *
- * Every item leads to a working page. Features that are not built yet (leave, documents,
+ * Every item leads to a working page. Features that are not built yet (documents,
  * notifications, reports) are not listed at all.
  */
 import {
   Activity,
   Building2,
+  CalendarCheck,
+  CalendarCog,
   CalendarDays,
+  CalendarHeart,
   CalendarRange,
+  ClipboardList,
   Clock,
   ContactRound,
   FileClock,
   KeyRound,
   LayoutDashboard,
   type LucideIcon,
+  Scale,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -49,6 +54,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     items: [
       { to: "/", label: "Dashboard", icon: LayoutDashboard, anyOf: [], end: true },
       { to: "/attendance", label: "My attendance", icon: Clock, anyOf: ["attendance.clock.self"] },
+      { to: "/leave", label: "My leave", icon: CalendarHeart, anyOf: ["leave.request.self"], end: true },
       { to: "/holidays", label: "Holidays", icon: CalendarDays, anyOf: ["holiday.read"] },
       { to: "/profile", label: "My profile", icon: UserRound, anyOf: ["employee.profile.read.self"] },
       { to: "/account/security", label: "Account security", icon: ShieldCheck, anyOf: [] },
@@ -63,6 +69,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: UsersRound,
         anyOf: ["attendance.read.team", "attendance.read.all"],
       },
+      {
+        to: "/leave/approvals",
+        label: "Leave approvals",
+        icon: CalendarCheck,
+        anyOf: ["leave.request.approve.team", "leave.request.approve.all"],
+      },
+      {
+        to: "/leave/calendar",
+        label: "Leave calendar",
+        icon: CalendarDays,
+        anyOf: ["leave.read.team", "leave.read.all"],
+      },
     ],
   },
   {
@@ -76,6 +94,8 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       },
       { to: "/directory", label: "Directory", icon: ContactRound, anyOf: ["employee.directory.read"] },
       { to: "/organization", label: "Organization", icon: Building2, anyOf: ["org.read"] },
+      { to: "/leave/overview", label: "Leave overview", icon: ClipboardList, anyOf: ["leave.read.all"] },
+      { to: "/leave/balances", label: "Leave balances", icon: Scale, anyOf: ["leave.balance.adjust"] },
     ],
   },
   {
@@ -87,6 +107,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: CalendarRange,
         anyOf: ["holiday.manage"],
       },
+      { to: "/setup/leave-types", label: "Leave types", icon: CalendarCog, anyOf: ["leave.policy.manage"] },
     ],
   },
   {
@@ -128,6 +149,8 @@ export function titleFor(pathname: string): string {
   const items = NAV_GROUPS.flatMap((group) => group.items);
   const exact = items.find((item) => item.to === pathname);
   if (exact) return exact.label;
+  if (pathname === "/leave/request") return "Request leave";
+  if (pathname.startsWith("/leave/requests/")) return "Leave request";
   const prefixed = items
     .filter((item) => item.to !== "/" && pathname.startsWith(item.to))
     .sort((a, b) => b.to.length - a.to.length)[0];

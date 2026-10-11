@@ -9,6 +9,7 @@ import type { Me } from "../app/session";
 export interface Call {
   method: string;
   path: string;
+  query: URLSearchParams;
   body: unknown;
   headers: Headers;
 }
@@ -73,6 +74,7 @@ export class FakeApi {
       const call: Call = {
         method: request.method,
         path: url.pathname,
+        query: url.searchParams,
         body: text ? (JSON.parse(text) as unknown) : null,
         headers: request.headers,
       };

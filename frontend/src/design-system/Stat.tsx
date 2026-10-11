@@ -32,9 +32,22 @@ export function Stat({
   );
 }
 
-export function StatGrid({ children, label }: { children: ReactNode; label: string }) {
+export function StatGrid({
+  children,
+  label,
+  columns = 4,
+}: {
+  children: ReactNode;
+  label: string;
+  /** How many figures share a row on wide screens; phones show two, tablets three. */
+  columns?: 4 | 5;
+}) {
   return (
-    <div role="group" aria-label={label} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div
+      role="group"
+      aria-label={label}
+      className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${columns === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}
+    >
       {children}
     </div>
   );

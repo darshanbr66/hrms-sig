@@ -23,6 +23,8 @@ const EMPLOYEE_PERMISSIONS = [
   "attendance.clock.self",
   "attendance.read.self",
   "holiday.read",
+  "leave.request.self",
+  "leave.read.self",
 ];
 
 export const EMPLOYEE_ME: Me = {
@@ -35,7 +37,13 @@ export const EMPLOYEE_ME: Me = {
 export const MANAGER_ME: Me = {
   ...EMPLOYEE_ME,
   roles: ["employee", "manager"],
-  permissions: [...EMPLOYEE_PERMISSIONS, "employee.profile.read.team", "attendance.read.team"],
+  permissions: [
+    ...EMPLOYEE_PERMISSIONS,
+    "employee.profile.read.team",
+    "attendance.read.team",
+    "leave.read.team",
+    "leave.request.approve.team",
+  ],
 };
 
 export const HR_ADMIN_ME: Me = {
@@ -58,6 +66,10 @@ export const HR_ADMIN_ME: Me = {
     "employee.create",
     "employee.lifecycle.manage",
     "attendance.read.all",
+    "leave.read.all",
+    "leave.request.approve.all",
+    "leave.balance.adjust",
+    "leave.policy.manage",
     "role.read",
     "settings.read",
   ],
@@ -156,7 +168,57 @@ export const STATISTICS: Schemas["EmployeeStatistics"] = {
   active: 40,
   on_notice: 2,
   pre_joining: 3,
+  future_joiners: 3,
+  former: 4,
   joined_last_30_days: 5,
   starting_soon: [{ employee: { id: MANAGER_ID, name: "Test Joiner" }, date_of_joining: "2026-10-20" }],
   work_anniversaries: [],
+  recent_joiners: [{ employee: { id: EMPLOYEE_ID, name: "Test Newcomer" }, date_of_joining: "2026-10-01" }],
+  by_department: [{ ...DEPARTMENT, employed: 42 }],
+  by_designation: [{ ...DESIGNATION, employed: 42 }],
+  by_location: [{ ...LOCATION, employed: 42 }],
 };
+
+export const LEAVE_TYPE = { id: "01900000-0000-7000-8000-0000000000f1", name: "Test leave" };
+
+export function leaveBalance(overrides: Partial<Schemas["BalanceView"]> = {}): Schemas["BalanceView"] {
+  return {
+    leave_type: LEAVE_TYPE,
+    is_paid: true,
+    allows_half_day: true,
+    requires_approval: true,
+    balance: "5.00",
+    reserved: "1.00",
+    available: "4.00",
+    eligible: true,
+    allow_negative_balance: false,
+    max_negative_days: null,
+    ...overrides,
+  };
+}
+
+export function leaveRequest(overrides: Partial<Schemas["RequestDetail"]> = {}): Schemas["RequestDetail"] {
+  return {
+    id: "01900000-0000-7000-8000-0000000000a1",
+    employee: { id: EMPLOYEE_ID, name: "Test Person" },
+    leave_type: LEAVE_TYPE,
+    start_date: "2026-11-02",
+    end_date: "2026-11-03",
+    start_half: null,
+    end_half: null,
+    days_requested: "2.00",
+    status: "pending",
+    created_at: "2026-10-11T09:00:00Z",
+    reason: "Test family event",
+    reason_visible: true,
+    days: [
+      { date: "2026-11-02", portion: "1.00", counted: true, not_counted_reason: null },
+      { date: "2026-11-03", portion: "1.00", counted: true, not_counted_reason: null },
+    ],
+    decisions: [],
+    can_decide: false,
+    can_cancel: true,
+    version: 1,
+    ...overrides,
+  };
+}

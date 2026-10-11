@@ -62,7 +62,7 @@ A higher scope does not imply a lower one automatically in the catalog; the engi
 | Permission | Description | Flags |
 |---|---|---|
 | `org.read` | Departments, designations, locations | |
-| `org.manage` | Create/update/archive departments, designations, locations | R |
+| `org.manage` | Create/update/archive departments, designations, locations (archiving is refused while employees are placed in the record) | R |
 | `employee.directory.read` | Directory fields of active employees | |
 | `employee.profile.read.self` / `.team` / `.all` | `internal` tier: job details, reporting line, joining date, employment type, status | |
 | `employee.profile.update.self` | Self-editable fields only (preferred name, photo, pronouns if enabled) | |
@@ -110,6 +110,8 @@ A higher scope does not imply a lower one automatically in the catalog; the engi
 | `holiday.manage` | Maintain holiday calendars | R |
 
 Team members' leave reasons are `personal`: managers deciding a request see the reason for that request; the team calendar shows only "on leave" and the leave type.
+
+Built (revision 0018): reading balances, ledgers, requests and the calendar follows `leave.read` at its scope (a request outside it is answered as not found). Only the employee and someone holding `leave.request.approve` covering them see a request's reason and decision notes; `leave.read.all` alone (payroll admin) sees the request without them. Deciding needs `leave.request.approve` covering the employee on the day of the decision, never on a request the actor is the subject of or submitted (SOD-1). `leave.balance.adjust` covers adjustments, opening balances and the upfront allocation, never on the actor's own balance (SOD-6; the allocation skips the actor's own record). Configuration needs `leave.policy.manage`. `super_admin`, `system_admin` and `auditor` hold no leave permission. Linking an account to an employee (`POST /users/{id}/employee-link`) needs `user.invite` and `employee.lifecycle.manage` over the employee, like linking at invite, plus step-up.
 
 ### 3.5 Compensation and payroll (Phase 2)
 
@@ -310,7 +312,7 @@ Enforced in `platform/authz` regardless of permissions held:
 | SOD-3 Actor cannot assign or remove their own roles | `role.assign` |
 | SOD-4 Actor cannot reset their own MFA or disable their own account via admin endpoints | `security.mfa.reset`, `user.disable` |
 | SOD-5 Payroll period finalizer must differ from the person who moved it to review | `payroll.period.finalize` |
-| SOD-6 Actor cannot adjust their own leave balance | `leave.balance.adjust` |
+| SOD-6 Actor cannot adjust their own leave balance | `leave.balance.adjust` (adjustments, opening balances; the allocation skips the actor's own record) |
 | SOD-7 HR-initiated attendance corrections for an employee are applied immediately but notify the employee and their manager; corrections to the actor's own attendance always go through normal approval | `attendance.correction.create.all` |
 | SOD-8 Assigning the `super_admin` role requires approval by a second super admin (not the assigner, not the assignee) | `role.assign` for `super_admin` |
 | SOD-9 An elevation request cannot be approved by its requester; break-glass is limited to `system_admin` for 1 hour | `role.elevation.*` |

@@ -12,4 +12,10 @@ configure({ asyncUtilTimeout: 5000 });
 
 afterEach(() => {
   cleanup();
+  // React Aria's live announcer lives on document.body for the whole file and keeps its last
+  // announcements, which point at labels of pages already unmounted. Emptying it (not removing
+  // it: React Aria keeps a reference) stops one test's announcements leaking into the next.
+  for (const region of document.querySelectorAll('body > div [role="log"]')) {
+    region.replaceChildren();
+  }
 });

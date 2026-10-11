@@ -6,12 +6,18 @@ EMP-2).
 - Records are never deleted: they are archived, which keeps them on existing job history
   and hides them from new placements.
 - Changes carry the version they were based on (If-Match); a stale one is refused.
+- A record is archived only when nothing still depends on it: no employee who has not left
+  has a current or future job row in it, and (for a department) no active department sits
+  inside it. A parent department must be active.
+- A department head must be an existing employee who has not left (no last working day
+  before today).
 - A location's time zone must be an IANA zone name. A department cannot become its own
   ancestor. No organization record is seeded: Sigvitas enters its own.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any, Final
 from zoneinfo import available_timezones
 
@@ -37,6 +43,11 @@ _KINDS: Final[dict[type[Any], str]] = {
     Location: "location",
     Department: "department",
     Designation: "designation",
+}
+_JOB_COLUMNS: Final[dict[type[Any], str]] = {
+    Location: "location_id",
+    Department: "department_id",
+    Designation: "designation_id",
 }
 # Departments nest; a deeper chain than this is refused rather than walked for ever.
 MAX_DEPARTMENT_DEPTH: Final = 20
@@ -71,6 +82,13 @@ class OrgService:
         async with self._db.unit_of_work() as session:
             return list(await session.scalars(query))
 
+    async def head_names(self, departments: Sequence[Department]) -> dict[uuid.UUID, str]:
+        heads = {d.head_employee_id for d in departments if d.head_employee_id is not None}
+        if not heads:
+            return {}
+        async with self._db.unit_of_work() as session:
+            return await people.employee_names(session, heads)
+
     async def get(self, model: type[OrgRecord], record_id: uuid.UUID) -> Any:
         async with self._db.unit_of_work() as session:
             record = await session.get(model, record_id)
@@ -89,6 +107,8 @@ class OrgService:
             granted = await self._authz.require(session, actor, "org.manage")
             if model is Department and values.get("parent_id") is not None:
                 await _check_parent(session, None, values["parent_id"])
+            if model is Department and values.get("head_employee_id") is not None:
+                await _check_head(session, values["head_employee_id"], self._authz.today())
             record: Any = model(**values)
             session.add(record)
             await _flush_unique(session)
@@ -129,15 +149,13 @@ class OrgService:
             for required in ("name", "status", "time_zone", "country_code"):
                 if required in values and values[required] is None:
                     raise field_error(required, "org.required", "Enter a value.")
+            if values.get("status") == OrgUnitStatus.ARCHIVED.value and record.status != values["status"]:
+                await self._check_unused(session, record)
             if isinstance(record, Department):
                 if values.get("parent_id") is not None:
                     await _check_parent(session, record.id, values["parent_id"])
-                if values.get("head_employee_id") is not None and not await people.employee_exists(
-                    session, values["head_employee_id"]
-                ):
-                    raise field_error(
-                        "head_employee_id", "org.unknown_employee", "Choose an existing employee."
-                    )
+                if values.get("head_employee_id") is not None:
+                    await _check_head(session, values["head_employee_id"], self._authz.today())
             changes = {
                 name: change_of(name, getattr(record, name), value)
                 for name, value in values.items()
@@ -164,6 +182,40 @@ class OrgService:
                 )
         return record
 
+    async def _check_unused(self, session: AsyncSession, record: OrgRecord) -> None:
+        kind = _KINDS[type(record)]
+        placed = await people.placed_in_unit_count(
+            session, _JOB_COLUMNS[type(record)], record.id, self._authz.today()
+        )
+        if placed:
+            noun = "employee is" if placed == 1 else "employees are"
+            raise _conflict(
+                "org.in_use",
+                f"{placed} {noun} still placed in this {kind}. "
+                "Record a job change for them first, then archive it.",
+            )
+        if isinstance(record, Department):
+            children = await session.scalar(
+                select(func.count())
+                .select_from(Department)
+                .where(Department.parent_id == record.id, Department.status == OrgUnitStatus.ACTIVE.value)
+            )
+            if children:
+                raise _conflict(
+                    "department.has_active_children",
+                    "Active departments sit inside this one. Move or archive them first.",
+                )
+
+
+async def _check_head(session: AsyncSession, employee_id: uuid.UUID, today: date) -> None:
+    exists, left_on = await people.exit_date(session, employee_id)
+    if not exists:
+        raise field_error("head_employee_id", "org.unknown_employee", "Choose an existing employee.")
+    if left_on is not None and left_on < today:
+        raise field_error(
+            "head_employee_id", "department.head_left", "This person has left. Choose a current employee."
+        )
+
 
 def _check_time_zone(value: str) -> None:
     if value not in _TIME_ZONES:
@@ -187,6 +239,10 @@ async def _check_parent(session: AsyncSession, department_id: uuid.UUID | None, 
         parent = await session.get(Department, current)
         if parent is None:
             raise field_error("parent_id", "department.unknown_parent", "Choose an existing department.")
+        if current == parent_id and parent.status != OrgUnitStatus.ACTIVE.value:
+            raise field_error(
+                "parent_id", "department.parent_archived", "Choose an active department as the parent."
+            )
         current = parent.parent_id
     raise field_error("parent_id", "department.too_deep", "This department structure is too deep.")
 

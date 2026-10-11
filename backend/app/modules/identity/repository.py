@@ -42,6 +42,11 @@ async def get_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     return await session.get(User, user_id)
 
 
+async def user_for_employee(session: AsyncSession, employee_id: uuid.UUID) -> User | None:
+    """The account linked to an employee record, if any (at most one, `uq_users_employee_id`)."""
+    return (await session.execute(select(User).where(User.employee_id == employee_id))).scalar_one_or_none()
+
+
 async def lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     """The account row, locked for the rest of the transaction."""
     query = select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True)

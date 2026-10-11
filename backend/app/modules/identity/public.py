@@ -92,6 +92,12 @@ async def active_user_ids(session: AsyncSession, user_ids: Collection[uuid.UUID]
     return await repo.active_user_ids(session, user_ids)
 
 
+async def account_for_employee(session: AsyncSession, employee_id: uuid.UUID) -> uuid.UUID | None:
+    """The active account linked to an employee record, for notifying them; None otherwise."""
+    user = await repo.user_for_employee(session, employee_id)
+    return user.id if user is not None and user.status == UserStatus.ACTIVE else None
+
+
 async def active_email(session: AsyncSession, user_id: uuid.UUID) -> str | None:
     """The address of an active account, for an email the worker is about to send."""
     query = select(User.email).where(User.id == user_id, User.status == UserStatus.ACTIVE.value)

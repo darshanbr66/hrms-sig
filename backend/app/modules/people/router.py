@@ -214,8 +214,11 @@ async def list_employees(
     q: SearchText = None,
     employee_status: Annotated[list[s.StatusValue] | None, Query(alias="status", max_length=4)] = None,
     department_id: uuid.UUID | None = None,
+    designation_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
+    employment: s.Employment | None = None,
+    sort: s.EmployeeSort = "name",
     limit: Limit = 50,
     cursor: Cursor = None,
 ) -> s.EmployeePage:
@@ -223,8 +226,11 @@ async def list_employees(
         text=q,
         statuses=tuple(employee_status or ()),
         department_id=department_id,
+        designation_id=designation_id,
         location_id=location_id,
         manager_id=manager_id,
+        employment=employment,
+        sort=sort,
     )
     listing = await people.employees(actor, filters, _page_after(cursor), limit)
     return s.EmployeePage(items=[_summary(r) for r in listing.records], next_cursor=_next(listing))
@@ -240,6 +246,8 @@ async def employee_statistics(
         active=stats.active,
         on_notice=stats.on_notice,
         pre_joining=stats.pre_joining,
+        future_joiners=stats.future_joiners,
+        former=stats.former,
         joined_last_30_days=stats.joined_recently,
         starting_soon=[
             s.StartingSoon(employee=s.PersonRef(id=i, name=n), date_of_joining=d)
@@ -249,6 +257,13 @@ async def employee_statistics(
             s.Anniversary(employee=s.PersonRef(id=i, name=n), date=d, years=y)
             for i, n, d, y in stats.anniversaries
         ],
+        recent_joiners=[
+            s.RecentJoiner(employee=s.PersonRef(id=i, name=n), date_of_joining=d)
+            for i, n, d in stats.recent_joiners
+        ],
+        by_department=[s.Headcount(id=i, name=n, employed=c) for i, n, c in stats.by_department],
+        by_designation=[s.Headcount(id=i, name=n, employed=c) for i, n, c in stats.by_designation],
+        by_location=[s.Headcount(id=i, name=n, employed=c) for i, n, c in stats.by_location],
     )
 
 

@@ -16,6 +16,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
 type StatusValue = Literal["pre_joining", "active", "on_notice", "exited"]
 type EmploymentTypeValue = Literal["full_time", "part_time", "contract", "intern"]
+type EmployeeSort = Literal["name", "code", "joined_newest", "joined_oldest"]
+# docs/product-requirements.md EMP-7: by dates on the day, not by recorded status.
+type Employment = Literal["current", "future", "former"]
 type JobChangeReasonValue = Literal["transfer", "promotion", "manager_change", "correction", "other"]
 type Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 type Phone = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
@@ -208,16 +211,40 @@ class StartingSoon(_Response):
     date_of_joining: date
 
 
+class RecentJoiner(_Response):
+    employee: PersonRef
+    date_of_joining: date
+
+
+class Headcount(_Response):
+    """Employees employed today whose current job is in one department, designation or location."""
+
+    id: uuid.UUID
+    name: str
+    employed: int
+
+
 class EmployeeStatistics(_Response):
-    """Counts over the employees the actor may read, employed today unless stated."""
+    """Counts over the employees the actor may read (docs/product-requirements.md EMP-7):
+    `employed` is the `current` employment of the employee list today; `active` and `on_notice`
+    split it by recorded status; `future_joiners` and `former` match `future` and `former`.
+    `pre_joining` counts the recorded status, whatever the dates. Headcounts and recent joiners
+    count `current` employees only."""
 
     employed: int
     active: int
     on_notice: int
     pre_joining: int
+    future_joiners: int
+    former: int
     joined_last_30_days: int
     starting_soon: list[StartingSoon]
     work_anniversaries: list[Anniversary]
+    # Joined in the last 30 days, newest first (at most 10).
+    recent_joiners: list[RecentJoiner]
+    by_department: list[Headcount]
+    by_designation: list[Headcount]
+    by_location: list[Headcount]
 
 
 # --- personal tier ------------------------------------------------------------------------------

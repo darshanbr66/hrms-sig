@@ -635,6 +635,8 @@ export function AccountSection({ employee }: { employee: Employee }) {
   });
   const linked = account.data?.items[0];
   const canInvite = hasPermission(me.data, "user.invite");
+  const canLink = canInvite && hasPermission(me.data, "employee.lifecycle.manage");
+  const [linking, setLinking] = useState(false);
   return (
     <Panel title="HRMS account" description="The sign-in account linked to this record, if any.">
       {account.isPending ? <Skeleton label="Loading the account" lines={2} /> : null}
@@ -674,15 +676,28 @@ export function AccountSection({ employee }: { employee: Employee }) {
           icon={Mail}
           title="No HRMS account yet"
           action={
-            canInvite && employee.work_email && employee.status !== "exited" ? (
-              <Button
-                size="sm"
-                onPress={() => {
-                  setConfirming(true);
-                }}
-              >
-                Invite to the HRMS
-              </Button>
+            employee.work_email && employee.status !== "exited" && canInvite ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onPress={() => {
+                    setConfirming(true);
+                  }}
+                >
+                  Invite to the HRMS
+                </Button>
+                {canLink ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={() => {
+                      setLinking(true);
+                    }}
+                  >
+                    Link an existing account
+                  </Button>
+                ) : null}
+              </div>
             ) : undefined
           }
         >
@@ -690,6 +705,20 @@ export function AccountSection({ employee }: { employee: Employee }) {
             ? "An invite emails a single-use link. The person sets a password and an authenticator app before they can sign in."
             : "Add a work email to this record before inviting the person."}
         </EmptyState>
+      ) : null}
+      {linking && employee.work_email ? (
+        <LinkAccountDialog
+          employee={employee}
+          workEmail={employee.work_email}
+          onClose={() => {
+            setLinking(false);
+          }}
+          onLinked={async () => {
+            await queryClient.invalidateQueries({ queryKey: accountKey });
+            setLinking(false);
+            toast("Account linked");
+          }}
+        />
       ) : null}
       <ConfirmDialog
         title={`Invite ${employee.name}?`}
@@ -711,5 +740,122 @@ export function AccountSection({ employee }: { employee: Employee }) {
         ) : null}
       </ConfirmDialog>
     </Panel>
+  );
+}
+
+/**
+ * Link an account that already exists (for example, invited before this record existed) to
+ * this employee. The API requires the account's email to be the work email, so the dialog
+ * looks that email up and says plainly when no account uses it, when it belongs to another
+ * record, or when it is an administrator account. Step-up and a reason are required.
+ */
+function LinkAccountDialog({
+  employee,
+  workEmail,
+  onClose,
+  onLinked,
+}: {
+  employee: Employee;
+  workEmail: string;
+  onClose: () => void;
+  onLinked: () => Promise<void>;
+}) {
+  const withStepUp = useStepUp();
+  const [reason, setReason] = useState("");
+  const [reasonError, setReasonError] = useState<string | undefined>();
+  const candidates = useQuery({
+    queryKey: [...PEOPLE_KEY, "account-candidates", workEmail],
+    queryFn: () => unwrap(client.GET("/api/v1/users", { params: { query: { q: workEmail, limit: 20 } } })),
+  });
+  const match = candidates.data?.items.find((item) => item.email.toLowerCase() === workEmail.toLowerCase());
+  const link = useMutation({
+    mutationFn: (userId: string) =>
+      withStepUp(() =>
+        unwrap(
+          client.POST("/api/v1/users/{user_id}/employee-link", {
+            params: { path: { user_id: userId } },
+            body: { employee_id: employee.id, reason: reason.trim() },
+          }),
+        ),
+      ),
+    onSuccess: onLinked,
+  });
+  const linkedElsewhere = match?.employee_id && match.employee_id !== employee.id;
+  return (
+    <Dialog title={`Link an account to ${employee.name}`} isOpen onOpenChange={onClose}>
+      <div className="flex flex-col gap-4 text-sm">
+        <p className="text-neutral-700">
+          The account must use the work email on this record,{" "}
+          <span className="font-semibold">{workEmail}</span>. Linking gives it {employee.name}&apos;s
+          self-service access.
+        </p>
+        {candidates.isPending ? <Skeleton label="Looking for the account" lines={2} /> : null}
+        {candidates.isError ? (
+          <ProblemMessage
+            error={candidates.error}
+            fallback="We couldn't look up the accounts."
+            onRetry={() => void candidates.refetch()}
+          />
+        ) : null}
+        {candidates.isSuccess && !match ? (
+          <Banner tone="info">No account uses {workEmail}. Invite the person instead.</Banner>
+        ) : null}
+        {match && linkedElsewhere ? (
+          <Banner tone="warning">
+            The account {match.email} is already linked to another employee record. An account belongs to one
+            person.
+          </Banner>
+        ) : null}
+        {match && !linkedElsewhere ? (
+          <>
+            <DescriptionList
+              items={[
+                { label: "Account", value: match.email },
+                {
+                  label: "Status",
+                  value: (
+                    <Badge tone={ACCOUNT_STATUS[match.status].tone}>
+                      {ACCOUNT_STATUS[match.status].label}
+                    </Badge>
+                  ),
+                },
+              ]}
+            />
+            <TextArea
+              label="Reason"
+              name="reason"
+              value={reason}
+              onChange={setReason}
+              maxLength={500}
+              description="Recorded in the audit log, for example why the account was not linked when it was invited."
+              error={reasonError}
+            />
+            {link.isError ? (
+              <p className="text-danger-700">{problemText(link.error, "We couldn't link the account.")}</p>
+            ) : null}
+          </>
+        ) : null}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onPress={onClose}>
+            Cancel
+          </Button>
+          {match && !linkedElsewhere ? (
+            <Button
+              isPending={link.isPending}
+              onPress={() => {
+                if (reason.trim() === "") {
+                  setReasonError("Say why the account is linked now.");
+                  return;
+                }
+                setReasonError(undefined);
+                if (!link.isPending) link.mutate(match.id);
+              }}
+            >
+              Link account
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Dialog>
   );
 }
