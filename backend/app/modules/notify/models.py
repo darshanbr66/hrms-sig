@@ -1,6 +1,7 @@
-"""SQLAlchemy model for `notify.email_outbox` (docs/database-design.md §4.9, revision 0010).
+"""SQLAlchemy models for the `notify` schema (docs/database-design.md §4.9): the email outbox
+(revision 0010), in-app notifications and notification preferences (revision 0019).
 
-One row per email to send. The row names the recipient account and a template, never an
+Outbox: one row per email to send. The row names the recipient account and a template, never an
 address or a secret: the worker resolves the address and builds any link token at send time.
 """
 
@@ -9,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, SmallInteger, func, text
+from sqlalchemy import ForeignKey, Index, SmallInteger, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,6 +39,7 @@ class EmailTemplate(StrEnum):
     GRANT_REQUEST = "access.grant_request"
     AUDIT_CHAIN_MISMATCH = "audit.chain_mismatch"
     LEAVE_REQUEST = "leave.request"
+    ATTENDANCE_CORRECTION = "attendance.correction"
 
 
 class EmailOutbox(Base):
@@ -70,3 +72,50 @@ class EmailOutbox(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
     sent_at: Mapped[datetime | None]
+
+
+class Notification(Base):
+    """An in-app notification for one account (revision 0019). The title, body and link are
+    display text built from non-sensitive values; nothing else is stored."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        Index(
+            "ix_notifications_recipient_user_id_created_at",
+            "recipient_user_id",
+            "created_at",
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "ix_notifications_recipient_user_id_unread",
+            "recipient_user_id",
+            postgresql_where=text("deleted_at IS NULL AND read_at IS NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
+    recipient_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
+    type: Mapped[str]
+    subject_type: Mapped[str | None]
+    subject_id: Mapped[uuid.UUID | None]
+    title: Mapped[str]
+    body: Mapped[str | None]
+    link: Mapped[str | None]
+    idempotency_key: Mapped[str] = mapped_column(unique=True)
+    read_at: Mapped[datetime | None]
+    deleted_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+    __table_args__ = (UniqueConstraint("user_id", "type", "channel"), {"schema": SCHEMA})
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
+    type: Mapped[str]
+    channel: Mapped[str]
+    enabled: Mapped[bool]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

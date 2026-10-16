@@ -9,6 +9,9 @@ transaction through the notify outbox.
 
 The rows carry the event, the leave type's name, the dates and the day count: never the reason
 or a decision note, which may hold personal details, and never an address.
+
+Each event also creates an in-app notification with the same text (NTF-1); a recipient who
+muted the type in the app or by email gets neither on that channel (NTF-3).
 """
 
 import uuid
@@ -17,9 +20,12 @@ from datetime import date, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.identity import public as identity
+from app.modules.leave.emails import message
 from app.modules.leave.models import LeaveRequest
-from app.modules.notify.public import EmailTemplate, enqueue
+from app.modules.notify.public import EmailTemplate, NotificationType, email_wanted, enqueue, notify
 from app.modules.people import public as people
+
+_FOR_DECIDER = frozenset({"submitted", "cancellation_requested"})
 
 
 def _data(request: LeaveRequest, leave_type: str, event: str) -> dict[str, str | int | bool | None]:
@@ -44,14 +50,38 @@ async def _send(
 ) -> None:
     if user_id is None:
         return
-    await enqueue(
-        session,
-        user_id=user_id,
-        template=EmailTemplate.LEAVE_REQUEST,
-        idempotency_key=f"leave_request:{request.id}:{request.version}:{event}:{user_id}",
-        now=now,
-        data=_data(request, leave_type, event),
+    data = _data(request, leave_type, event)
+    key = f"leave_request:{request.id}:{request.version}:{event}:{user_id}"
+    kind = (
+        NotificationType.LEAVE_APPROVAL_REQUESTED
+        if event in _FOR_DECIDER
+        else NotificationType.LEAVE_REQUEST_UPDATED
     )
+    text = message(data)
+    if text is not None:
+        title, body, link = text
+        if event in _FOR_DECIDER:
+            name = (await people.employee_names(session, {request.employee_id})).get(request.employee_id)
+            body = body.replace("A member of your team", name, 1) if name else body
+        await notify(
+            session,
+            user_id=user_id,
+            kind=kind,
+            title=title,
+            body=body,
+            link=link if event in _FOR_DECIDER else f"/leave/requests/{request.id}",
+            idempotency_key=key,
+            subject=("leave_request", request.id),
+        )
+    if await email_wanted(session, user_id, kind):
+        await enqueue(
+            session,
+            user_id=user_id,
+            template=EmailTemplate.LEAVE_REQUEST,
+            idempotency_key=key,
+            now=now,
+            data=data,
+        )
 
 
 async def to_manager(

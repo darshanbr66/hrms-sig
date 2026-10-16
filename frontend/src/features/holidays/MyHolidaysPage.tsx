@@ -35,7 +35,10 @@ export function MyHolidaysPage() {
   const nextIndex = items.findIndex((item) => item.date >= today);
   return (
     <div className="flex max-w-3xl flex-col gap-6">
-      <PageHeader title="Holidays" description="The holiday calendar your work location uses." />
+      <PageHeader
+        title="Holidays"
+        description="The holiday calendar your work location uses, including any working day announced on a usual day off."
+      />
       {linked ? (
         <div className="max-w-xs">
           <Select
@@ -80,6 +83,7 @@ export function MyHolidaysPage() {
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   {index === nextIndex ? <Badge tone="accent">Next</Badge> : null}
+                  {item.kind === "working_day" ? <Badge tone="warning">Working day</Badge> : null}
                   {item.is_optional ? <Badge tone="info">Optional</Badge> : null}
                   {past ? <Badge>Past</Badge> : null}
                 </div>

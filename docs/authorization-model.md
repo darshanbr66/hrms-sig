@@ -187,78 +187,16 @@ Deriving `manager` from reporting lines removes a common failure: a manager is m
 
 ### 4.1 Default role → permission matrix
 
-`●` granted. Scope shown where relevant.
+The matrix is generated from the code into `roles-and-permissions.md` §7 (`uv run python -m scripts.role_matrix` from `backend/`), and `tests/contract/test_role_matrix_doc.py` fails when it drifts. That document also describes each role's pages, limits and workflows. This section keeps the rules the matrix must follow.
 
-| Permission | employee | manager | hr | hr_admin | payroll_admin | system_admin | super_admin | auditor |
-|---|---|---|---|---|---|---|---|---|
-| auth.session.read/revoke.self | (account baseline: every active account) | | | | | | | |
-| auth.session.read.all | | | | | | ● | | ● |
-| auth.session.revoke.all | | | | | | ● | | |
-| user.read.all | | | ● | ● | | ● | ● | |
-| user.invite | | | ● | ● | | ● | | |
-| user.disable | | | ● | ● | | ● | | |
-| security.mfa.reset | | | | | | ● | | |
-| security.event.read | | | | | | ● | ● | ● |
-| security.settings.manage | | | | | | ● | | |
-| role.read | | | | ● | | ● | ● | ● |
-| role.manage / role.assign | | | | | | | ● | |
-| role.elevation.request / approve / break_glass | | | | | | | ● | |
-| audit.read | | | | | | | ● | ● |
-| audit.export | | | | | | | | ● |
-| settings.read | | | | ● | | ● | ● | |
-| settings.manage | | | | | | ● | | |
-| org.read | ● | | ● | ● | | | | |
-| org.manage | | | | ● | | | | |
-| employee.directory.read | ● | | | | | | | |
-| employee.profile.read | self | team | all | all | all | | | |
-| employee.profile.update.self | ● | | | | | | | |
-| employee.profile.update.all | | | ● | ● | | | | |
-| employee.personal.read / update | self | | all | all | | | | |
-| employee.emergency_contact.read.team | | (optional) | | | | | | |
-| employee.sensitive.read | self | | | all | all (bank only, Phase 2) | | | |
-| employee.sensitive.update.all | | | | ● | | | | |
-| employee.create | | | ● | ● | | | | |
-| employee.lifecycle.manage | | | ● | ● | | | | |
-| employee.export | | | | ● | | | | |
-| attendance.clock.self | ● | | | | | | | |
-| attendance.read | self | team | all | all | all | | | |
-| attendance.correction.request.self | ● | | | | | | | |
-| attendance.correction.approve | | team | all | all | | | | |
-| attendance.correction.create.all | | | ● | ● | | | | |
-| attendance.export | | | ● | ● | ● | | | |
-| shift.read | ● | | | | | | | |
-| shift.manage | | | | ● | | | | |
-| attendance.policy.manage | | | | ● | | | | |
-| shift.assign.all | | | ● | ● | | | | |
-| leave.request.self | ● | | | | | | | |
-| leave.read | self | team | all | all | all | | | |
-| leave.request.approve | | team | all | all | | | | |
-| leave.balance.adjust | | | ● | ● | | | | |
-| leave.policy.manage | | | | ● | | | | |
-| leave.export | | | ● | ● | ● | | | |
-| holiday.read | ● | | ● | ● | | | | |
-| holiday.manage | | | | ● | | | | |
-| compensation.read | self | | | | all | | | |
-| compensation.update / export | | | | | ● | | | |
-| payroll.* | | | | | ● | | | |
-| payslip.read | self | | | | all | | | |
-| document.read | self | team | all | all | | | | |
-| document.upload.self | ● | | | | | | | |
-| document.sensitive.read.all | | | | ● | | | | |
-| document.manage.all | | | ● | ● | | | | |
-| document.category.manage | | | | ● | | | | |
-| document.company.read | ● | | | | | | | |
-| document.company.manage | | | ● | ● | | | | |
-| notification.* (self) | ● | | | | | | | |
-
-Roles are additive: an HR person is also an `employee` and possibly a `manager`. Every active account also holds the **account baseline** (`auth.session.read.self`, `auth.session.revoke.self`: its own sessions and sign-in history), whether or not it is linked to an employee record, because accounts such as the bootstrapped super admins have none. The account's own sign-in security (`/me`, password, MFA factors, recovery codes, step-up, sign-out) needs no permission: those routes are on an explicit account allow-list. The derived `employee` role applies while the linked employee is employed on the day (joined, not past the exit date), the same rule team resolution uses. Notably:
+Roles are additive: an HR person is also an `employee` and possibly a `manager`. Every active account also holds the **account baseline** (`auth.session.read.self`, `auth.session.revoke.self`, `notification.read.self`, `notification.preference.update.self`: its own sessions, sign-in history and notifications), whether or not it is linked to an employee record, because accounts such as the bootstrapped super admins have none. The account's own sign-in security (`/me`, password, MFA factors, recovery codes, step-up, sign-out) needs no permission: those routes are on an explicit account allow-list. The derived `employee` role applies while the linked employee is employed on the day (joined, not past the exit date), the same rule team resolution uses. Notably:
 
 - `system_admin` has **no** employee data, document, or compensation access.
 - `super_admin` has **no** compensation, payroll, personal, sensitive, document or message access (§4.2).
 - `hr` and `hr_admin` have **no** compensation access unless also `payroll_admin`.
 - `manager` has **no** personal, sensitive or compensation access to team members.
 
-`org.read` and `holiday.read` were added to `hr` and `hr_admin` by revision 0014 (2026-10-10): both roles create employees and maintain the organization and holiday calendars, which needs the departments, designations, locations and calendars to choose from, and an HR account is not always linked to an employee record. Neither permission reaches personal data.
+`org.read` and `holiday.read` were added to `hr` and `hr_admin` by revision 0014 (2026-10-10): both roles create employees and maintain the organization and holiday calendars, which needs the departments, designations, locations and calendars to choose from, and an HR account is not always linked to an employee record. Neither permission reaches personal data. `shift.read` was added to both by revision 0025 for the same reason: HR assigns shifts and HR admins define shifts and attendance policies. Since the notifications work (revision 0019) the account baseline also holds `notification.read.self` and `notification.preference.update.self`, because HR and administrator accounts are not always linked to an employee record and still receive approval and export notifications.
 
 The least-privilege boundaries above are fixed architecture. The exact grants in the matrix are a proposed default for Sigvitas HR to confirm before M2 (see roadmap §6). Changing them is a data migration, not a code change.
 
@@ -367,7 +305,7 @@ Implementation (`platform/authz`): `requires(permission)` on the route is the fa
 - Every list repository function requires a scope filter parameter (enforced by signature, tested).
 - Every response model is tied to a tier; tests assert that team/directory models contain no personal/sensitive/restricted fields.
 - SoD rules have one unit test each for both the allowed and the blocked case.
-- Role matrix above is generated from code into this document in Phase 1 so documentation cannot drift (a script prints the matrix; CI checks it matches).
+- The role matrix is generated from code into `roles-and-permissions.md` §7 so documentation cannot drift (`scripts/role_matrix.py`; `tests/contract/test_role_matrix_doc.py` checks it matches).
 
 ## 10. Private messaging access (Future)
 

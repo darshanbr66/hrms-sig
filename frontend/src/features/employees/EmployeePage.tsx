@@ -6,6 +6,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { canSee } from "../../app/navigation";
@@ -19,9 +20,12 @@ import { Tabs, type TabItem } from "../../design-system/Tabs";
 import { client, unwrap } from "../../lib/api";
 import { addDays, localIsoDate } from "../../lib/format";
 import { ApiError } from "../../lib/problem";
-import { DaysTable } from "../attendance/DaysTable";
+import { CorrectionDialog } from "../attendance/CorrectionDialog";
+import { DaysTable, type Day } from "../attendance/DaysTable";
+import { DocumentList } from "../documents/DocumentList";
 import { LeaveBalances } from "../leave/LeaveBalances";
 import { AccountSection, JobHistorySection, OverviewSection, StatusSection } from "./EmployeeSections";
+import { EmergencyContacts } from "./EmergencyContacts";
 import { PersonalDetails } from "./PersonalDetails";
 import { PEOPLE_KEY, STATUS_LABELS, STATUS_TONES, useEmployee } from "./queries";
 
@@ -65,10 +69,16 @@ export function EmployeePage() {
       id: "personal",
       label: "Personal",
       content: (
-        <PersonalDetails
-          employeeId={record.id}
-          canEdit={hasPermission(permissions, "employee.personal.update.all")}
-        />
+        <div className="flex flex-col gap-6">
+          <PersonalDetails
+            employeeId={record.id}
+            canEdit={hasPermission(permissions, "employee.personal.update.all")}
+          />
+          <EmergencyContacts
+            employeeId={record.id}
+            canEdit={hasPermission(permissions, "employee.personal.update.all")}
+          />
+        </div>
       ),
     });
   }
@@ -81,6 +91,23 @@ export function EmployeePage() {
   }
   if (canSee(permissions, { anyOf: ["leave.read.team", "leave.read.all"] })) {
     tabs.push({ id: "leave", label: "Leave", content: <LeaveBalances employeeId={record.id} /> });
+  }
+  if (
+    canSee(permissions, { anyOf: ["document.read.team", "document.read.all", "document.manage.all"] }) &&
+    !isSelf
+  ) {
+    tabs.push({
+      id: "documents",
+      label: "Documents",
+      content: (
+        <DocumentList
+          owner={{ kind: "employee", id: record.id }}
+          canUpload={hasPermission(permissions, "document.manage.all")}
+          uploadableCategory={(category) => category.status === "active"}
+          emptyText="Documents uploaded for this employee appear here, in the categories you may see."
+        />
+      ),
+    });
   }
   if (hasPermission(permissions, "user.read.all")) {
     tabs.push({ id: "account", label: "HRMS account", content: <AccountSection employee={record} /> });
@@ -131,6 +158,10 @@ function BackLink() {
 }
 
 function EmployeeAttendance({ employeeId }: { employeeId: string }) {
+  const me = useMe();
+  const canRecord =
+    hasPermission(me.data, "attendance.correction.create.all") && me.data?.employee_id !== employeeId;
+  const [correcting, setCorrecting] = useState<Day | null>(null);
   const to = localIsoDate();
   const from = addDays(to, -30);
   const days = useQuery({
@@ -154,7 +185,29 @@ function EmployeeAttendance({ employeeId }: { employeeId: string }) {
         />
       ) : null}
       {days.isSuccess ? (
-        <DaysTable days={days.data.items} timeZone={days.data.time_zone} label="Attendance days" />
+        <DaysTable
+          days={days.data.items}
+          timeZone={days.data.time_zone}
+          label="Attendance days"
+          {...(canRecord
+            ? {
+                onCorrect: (day: Day) => {
+                  setCorrecting(day);
+                },
+              }
+            : {})}
+        />
+      ) : null}
+      {correcting && days.isSuccess ? (
+        <CorrectionDialog
+          day={correcting}
+          workDate={correcting.work_date}
+          timeZone={days.data.time_zone}
+          employeeId={employeeId}
+          onClose={() => {
+            setCorrecting(null);
+          }}
+        />
       ) : null}
     </div>
   );

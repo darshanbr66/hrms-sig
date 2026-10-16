@@ -3649,7 +3649,7 @@
           "people"
         ],
         "summary": "Change Employee Status",
-        "description": "Exiting someone does not disable their account by itself; the account is disabled\nthrough `POST /users/{id}/disable`, which the same screen offers.",
+        "description": "Records a status change. To record someone leaving, use `POST /employees/{id}/exit`,\nwhich also disables their account and revokes their sessions in the same step.",
         "operationId": "change_employee_status_api_v1_employees__employee_id__status_changes_post",
         "parameters": [
           {
@@ -3680,6 +3680,215 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatusChangeView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/exit": {
+      "post": {
+        "tags": [
+          "people"
+        ],
+        "summary": "Exit Employee",
+        "description": "The employee leaves: the record is marked exited from the last working day and their\naccount is disabled with every session revoked, in one step (needs `user.disable` and a\nrecent step-up when an account is linked).",
+        "operationId": "exit_employee_api_v1_employees__employee_id__exit_post",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExitCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExitView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/emergency-contacts": {
+      "get": {
+        "tags": [
+          "people"
+        ],
+        "summary": "Employee Emergency Contacts",
+        "description": "Personal tier: HR (`employee.personal.read.all`), audited. A manager reaches their team's\ncontacts only if Sigvitas grants `employee.emergency_contact.read.team`.",
+        "operationId": "employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_get",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyContactList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "people"
+        ],
+        "summary": "Replace Employee Emergency Contacts",
+        "operationId": "replace_employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_put",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmergencyContactsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyContactList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/emergency-contacts": {
+      "get": {
+        "tags": [
+          "people"
+        ],
+        "summary": "My Emergency Contacts",
+        "operationId": "my_emergency_contacts_api_v1_me_emergency_contacts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyContactList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "people"
+        ],
+        "summary": "Replace My Emergency Contacts",
+        "operationId": "replace_my_emergency_contacts_api_v1_me_emergency_contacts_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmergencyContactsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmergencyContactList"
                 }
               }
             }
@@ -4295,6 +4504,1321 @@
         }
       }
     },
+    "/api/v1/attendance/register": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Attendance Register",
+        "description": "Everyone in the viewer's scope employed on the date, with that day judged.",
+        "operationId": "attendance_register_api_v1_attendance_register_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "Date"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StatusFilter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/report": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Attendance Report",
+        "description": "Per person in scope: days per status and the period's totals (RPT-1: only what the\nviewer may already read).",
+        "operationId": "attendance_report_api_v1_attendance_report_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "To"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttendanceReportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/attendance/corrections": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Request Correction",
+        "description": "Ask to add or remove events on one of your work dates, with a reason.",
+        "operationId": "request_correction_api_v1_me_attendance_corrections_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "My Corrections",
+        "operationId": "my_corrections_api_v1_me_attendance_corrections_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/attendance/corrections/{correction_id}/cancel": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Cancel Correction",
+        "operationId": "cancel_correction_api_v1_me_attendance_corrections__correction_id__cancel_post",
+        "parameters": [
+          {
+            "name": "correction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Correction Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/attendance/corrections": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Record Correction",
+        "description": "HR records a correction on the employee's behalf (ATT-8). It applies at once and the\nemployee and their manager are told (SOD-7). Never on one's own attendance.",
+        "operationId": "record_correction_api_v1_employees__employee_id__attendance_corrections_post",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 100,
+              "pattern": "^[\\x21-\\x7e]+$",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/corrections": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Corrections",
+        "description": "Corrections in the viewer's scope, or with `for_decision` those waiting for a decision\nthe viewer may make. Reasons are never listed.",
+        "operationId": "list_corrections_api_v1_attendance_corrections_get",
+        "parameters": [
+          {
+            "name": "for_decision",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "For Decision"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "pending",
+                      "approved",
+                      "rejected",
+                      "cancelled"
+                    ],
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "employee_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/corrections/{correction_id}": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Correction Detail",
+        "description": "The correction with the day before and after it, side by side (ATT-7).",
+        "operationId": "correction_detail_api_v1_attendance_corrections__correction_id__get",
+        "parameters": [
+          {
+            "name": "correction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Correction Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/corrections/{correction_id}/approve": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Approve Correction",
+        "operationId": "approve_correction_api_v1_attendance_corrections__correction_id__approve_post",
+        "parameters": [
+          {
+            "name": "correction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Correction Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/corrections/{correction_id}/reject": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Reject Correction",
+        "operationId": "reject_correction_api_v1_attendance_corrections__correction_id__reject_post",
+        "parameters": [
+          {
+            "name": "correction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Correction Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionDetailView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shifts": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Shifts",
+        "operationId": "list_shifts_api_v1_shifts_get",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Create Shift",
+        "operationId": "create_shift_api_v1_shifts_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShiftCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shifts/{shift_id}": {
+      "patch": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Update Shift",
+        "operationId": "update_shift_api_v1_shifts__shift_id__patch",
+        "parameters": [
+          {
+            "name": "shift_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Shift Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShiftUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shifts/{shift_id}/versions": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Add Shift Version",
+        "description": "New times or weekly offs from a date. The current version ends that day; past days keep\nthe version they were judged with.",
+        "operationId": "add_shift_version_api_v1_shifts__shift_id__versions_post",
+        "parameters": [
+          {
+            "name": "shift_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Shift Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShiftVersionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/location-default-shifts": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Default Shifts",
+        "operationId": "list_default_shifts_api_v1_location_default_shifts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultShiftList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Set Default Shift",
+        "description": "The shift everyone at a location works unless they have their own assignment.",
+        "operationId": "set_default_shift_api_v1_location_default_shifts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefaultShiftCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultShiftView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/shift-assignments": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Employee Shift Assignments",
+        "operationId": "employee_shift_assignments_api_v1_employees__employee_id__shift_assignments_get",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftAssignmentList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/shift-assignments": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Assign Shift",
+        "description": "Assign a shift from a date to one or more people; each one's current assignment ends\nthat day.",
+        "operationId": "assign_shift_api_v1_shift_assignments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShiftAssignmentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftAssignmentResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance-policies": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Attendance Policies",
+        "operationId": "list_attendance_policies_api_v1_attendance_policies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Create Attendance Policy",
+        "description": "A new policy version for a scope from a date; the current one of that scope ends then.\nEvery value is entered here: none is assumed.",
+        "operationId": "create_attendance_policy_api_v1_attendance_policies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/locks": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Attendance Locks",
+        "operationId": "list_attendance_locks_api_v1_attendance_locks_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Create Attendance Lock",
+        "description": "Close past dates to corrections, except by HR holding `attendance.correction.approve.all`.",
+        "operationId": "create_attendance_lock_api_v1_attendance_locks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/locks/{lock_id}/release": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Release Attendance Lock",
+        "operationId": "release_attendance_lock_api_v1_attendance_locks__lock_id__release_post",
+        "parameters": [
+          {
+            "name": "lock_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Lock Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockRelease"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/setup": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Attendance Setup",
+        "description": "Who in the viewer's scope has no shift, or no attendance policy, today (ATT-12).",
+        "operationId": "attendance_setup_api_v1_attendance_setup_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/holiday-calendars": {
       "get": {
         "tags": [
@@ -4567,6 +6091,84 @@
       }
     },
     "/api/v1/holiday-calendars/{calendar_id}/holidays/{holiday_id}": {
+      "patch": {
+        "tags": [
+          "holidays"
+        ],
+        "summary": "Update Holiday",
+        "operationId": "update_holiday_api_v1_holiday_calendars__calendar_id__holidays__holiday_id__patch",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Calendar Id"
+            }
+          },
+          {
+            "name": "holiday_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Holiday Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HolidayUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "holidays"
@@ -5353,6 +6955,207 @@
         }
       }
     },
+    "/api/v1/leave/report": {
+      "get": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Leave Report",
+        "description": "Days taken and pending per person and leave type in the period, for the people the\nreader may see (RPT-1). Reasons are never included.",
+        "operationId": "leave_report_api_v1_leave_report_get",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "To"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaveReportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-year-end": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Close Leave Year",
+        "description": "Close a leave year for one leave type: carry each balance forward up to the policy's\ncap and lapse or keep the rest. With `apply: false` nothing is recorded; each employee is\nclosed at most once.",
+        "operationId": "close_leave_year_api_v1_leave_year_end_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YearEndRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YearEndResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leave-opening-balances": {
+      "post": {
+        "tags": [
+          "leave"
+        ],
+        "summary": "Import Opening Balances",
+        "description": "Check opening balances row by row; with `apply: true` and every row fine, record them\nas one import batch. A file with any refused row records nothing.",
+        "operationId": "import_opening_balances_api_v1_leave_opening_balances_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpeningBalanceImport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/me/leave-requests/preview": {
       "post": {
         "tags": [
@@ -6050,10 +7853,1357 @@
           }
         }
       }
+    },
+    "/api/v1/me/notifications": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "My Notifications",
+        "operationId": "my_notifications_api_v1_me_notifications_get",
+        "parameters": [
+          {
+            "name": "unread",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Unread"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 30,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/notifications/unread-count": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "My Unread Count",
+        "description": "For the header badge. Send `X-SV-Background: 1` when polling, so polling does not keep\nan idle session alive.",
+        "operationId": "my_unread_count_api_v1_me_notifications_unread_count_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCount"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/notifications/read-all": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Read All Notifications",
+        "operationId": "read_all_notifications_api_v1_me_notifications_read_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadAllResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/notifications/{notification_id}/read": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Read Notification",
+        "operationId": "read_notification_api_v1_me_notifications__notification_id__read_post",
+        "parameters": [
+          {
+            "name": "notification_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Notification Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/notifications/{notification_id}": {
+      "delete": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Remove Notification",
+        "operationId": "remove_notification_api_v1_me_notifications__notification_id__delete",
+        "parameters": [
+          {
+            "name": "notification_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Notification Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/notification-preferences": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "My Notification Preferences",
+        "operationId": "my_notification_preferences_api_v1_me_notification_preferences_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferenceList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Update Notification Preferences",
+        "description": "Turn notification types on or off per channel. Security emails are not listed and are\nalways sent.",
+        "operationId": "update_notification_preferences_api_v1_me_notification_preferences_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferenceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferenceList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/document-categories": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "List Document Categories",
+        "operationId": "list_document_categories_api_v1_document_categories_get",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Create Document Category",
+        "operationId": "create_document_category_api_v1_document_categories_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/document-categories/{category_id}": {
+      "patch": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Update Document Category",
+        "operationId": "update_document_category_api_v1_document_categories__category_id__patch",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/documents": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "My Documents",
+        "operationId": "my_documents_api_v1_me_documents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Upload My Document",
+        "description": "Add a document to your own record, in a category that allows it.",
+        "operationId": "upload_my_document_api_v1_me_documents_post",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "title": "Title"
+            }
+          },
+          {
+            "name": "expires_on",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires On"
+            }
+          },
+          {
+            "name": "X-File-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-File-Name"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employees/{employee_id}/documents": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Employee Documents",
+        "description": "The employee's documents in the categories the reader may see (DOC-2).",
+        "operationId": "employee_documents_api_v1_employees__employee_id__documents_get",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Upload Employee Document",
+        "operationId": "upload_employee_document_api_v1_employees__employee_id__documents_post",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Employee Id"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "title": "Title"
+            }
+          },
+          {
+            "name": "expires_on",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires On"
+            }
+          },
+          {
+            "name": "X-File-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-File-Name"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/company-documents": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Company Documents",
+        "operationId": "company_documents_api_v1_company_documents_get",
+        "parameters": [
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Upload Company Document",
+        "operationId": "upload_company_document_api_v1_company_documents_post",
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "title": "Title"
+            }
+          },
+          {
+            "name": "expires_on",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires On"
+            }
+          },
+          {
+            "name": "X-File-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-File-Name"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Document Detail",
+        "operationId": "document_detail_api_v1_documents__document_id__get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Update Document",
+        "description": "Change the title or expiry date, or archive or restore the document (HR).",
+        "operationId": "update_document_api_v1_documents__document_id__patch",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/versions/{version_id}/download": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Download Document",
+        "description": "A link to the file valid for 60 seconds, once it passed the virus check. Every\ndownload is audited (DOC-3, DOC-4).",
+        "operationId": "download_document_api_v1_documents__document_id__versions__version_id__download_post",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDownloadLink"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/versions": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "summary": "Upload Document Version",
+        "description": "A new version of a document (DOC-6); earlier versions stay available.",
+        "operationId": "upload_document_version_api_v1_documents__document_id__versions_post",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "X-File-Name",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-File-Name"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/attendance-summary": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Attendance Summary",
+        "description": "Per person: days per status and the period's totals. Needs a recent step-up.",
+        "operationId": "export_attendance_summary_api_v1_exports_attendance_summary_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeriodBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/attendance-days": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Attendance Days",
+        "description": "One row per person and day, as judged. Needs a recent step-up.",
+        "operationId": "export_attendance_days_api_v1_exports_attendance_days_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeriodBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/leave-requests": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Leave Requests",
+        "description": "Leave requests overlapping the period, without reasons. Needs a recent step-up.",
+        "operationId": "export_leave_requests_api_v1_exports_leave_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeriodBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/leave-balances": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Leave Balances",
+        "description": "Each person's balance per leave type on the day the file is produced.",
+        "operationId": "export_leave_balances_api_v1_exports_leave_balances_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/employees": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Employees",
+        "description": "Employee records (job details and dates; no personal details).",
+        "operationId": "export_employees_api_v1_exports_employees_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/exports/audit-log": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Export Audit Log",
+        "description": "The audit log recorded in the period. Needs a recent step-up.",
+        "operationId": "export_audit_log_api_v1_exports_audit_log_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/exports": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "My Exports",
+        "description": "Exports you asked for, newest first.",
+        "operationId": "my_exports_api_v1_me_exports_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/exports/{export_id}/download": {
+      "post": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Download Export",
+        "description": "A 60-second link to an export you asked for, until it expires. Audited.",
+        "operationId": "download_export_api_v1_me_exports__export_id__download_post",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportDownloadLink"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccrualMethodValue": {
+        "type": "string",
+        "enum": [
+          "none",
+          "upfront_per_leave_year",
+          "periodic"
+        ]
+      },
       "Address": {
         "properties": {
           "line1": {
@@ -6138,7 +9288,7 @@
             "title": "Entry Type"
           },
           "amount": {
-            "$ref": "#/components/schemas/app__modules__leave__schemas__Days__3"
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Amount__3"
           },
           "effective_date": {
             "type": "string",
@@ -6146,7 +9296,7 @@
             "title": "Effective Date"
           },
           "reason": {
-            "$ref": "#/components/schemas/Reason"
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Reason"
           }
         },
         "additionalProperties": false,
@@ -6255,6 +9405,10 @@
           "skipped_own": {
             "type": "integer",
             "title": "Skipped Own"
+          },
+          "nothing_due": {
+            "type": "integer",
+            "title": "Nothing Due"
           }
         },
         "additionalProperties": false,
@@ -6264,7 +9418,8 @@
           "already_allocated",
           "no_policy",
           "no_allocation_in_policy",
-          "skipped_own"
+          "skipped_own",
+          "nothing_due"
         ],
         "title": "AllocationResult"
       },
@@ -6490,6 +9645,119 @@
           "created_at"
         ],
         "title": "AssignmentView"
+      },
+      "AttendanceReportRow": {
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/TeamMemberRef"
+          },
+          "days": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Days"
+          },
+          "not_judged_days": {
+            "type": "integer",
+            "title": "Not Judged Days"
+          },
+          "effective_minutes": {
+            "type": "integer",
+            "title": "Effective Minutes"
+          },
+          "late_days": {
+            "type": "integer",
+            "title": "Late Days"
+          },
+          "late_minutes": {
+            "type": "integer",
+            "title": "Late Minutes"
+          },
+          "early_leave_days": {
+            "type": "integer",
+            "title": "Early Leave Days"
+          },
+          "overtime_minutes": {
+            "type": "integer",
+            "title": "Overtime Minutes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee",
+          "days",
+          "not_judged_days",
+          "effective_minutes",
+          "late_days",
+          "late_minutes",
+          "early_leave_days",
+          "overtime_minutes"
+        ],
+        "title": "AttendanceReportRow"
+      },
+      "AttendanceReportView": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AttendanceReportRow"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "items",
+          "next_cursor"
+        ],
+        "title": "AttendanceReportView"
+      },
+      "AuditBody": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "title": "To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "AuditBody"
       },
       "AuditPage": {
         "properties": {
@@ -6801,7 +10069,7 @@
       "BreakGlassCreate": {
         "properties": {
           "reason": {
-            "$ref": "#/components/schemas/Reason"
+            "$ref": "#/components/schemas/app__modules__access__schemas__Reason"
           },
           "duration_minutes": {
             "type": "integer",
@@ -6879,6 +10147,10 @@
             "type": "integer",
             "title": "Holiday Count"
           },
+          "working_day_count": {
+            "type": "integer",
+            "title": "Working Day Count"
+          },
           "location_count": {
             "type": "integer",
             "title": "Location Count"
@@ -6892,6 +10164,7 @@
           "year",
           "status",
           "holiday_count",
+          "working_day_count",
           "location_count"
         ],
         "title": "CalendarSummaryView"
@@ -6989,6 +10262,239 @@
         ],
         "title": "CalendarView"
       },
+      "CarryModeValue": {
+        "type": "string",
+        "enum": [
+          "none",
+          "capped",
+          "unlimited"
+        ]
+      },
+      "CategoryCreate": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/Code"
+          },
+          "name": {
+            "$ref": "#/components/schemas/app__modules__documents__router__Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Description"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sensitivity": {
+            "$ref": "#/components/schemas/SensitivityValue"
+          },
+          "employee_visible": {
+            "type": "boolean",
+            "title": "Employee Visible"
+          },
+          "employee_can_upload": {
+            "type": "boolean",
+            "title": "Employee Can Upload"
+          },
+          "requires_expiry": {
+            "type": "boolean",
+            "title": "Requires Expiry"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "sensitivity",
+          "employee_visible",
+          "employee_can_upload",
+          "requires_expiry"
+        ],
+        "title": "CategoryCreate"
+      },
+      "CategoryList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CategoryList"
+      },
+      "CategoryUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__documents__router__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Description"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SensitivityValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "employee_visible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Visible"
+          },
+          "employee_can_upload": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Can Upload"
+          },
+          "requires_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requires Expiry"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CategoryUpdate"
+      },
+      "CategoryView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "sensitivity": {
+            "$ref": "#/components/schemas/SensitivityValue"
+          },
+          "employee_visible": {
+            "type": "boolean",
+            "title": "Employee Visible"
+          },
+          "employee_can_upload": {
+            "type": "boolean",
+            "title": "Employee Can Upload"
+          },
+          "requires_expiry": {
+            "type": "boolean",
+            "title": "Requires Expiry"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "description",
+          "sensitivity",
+          "employee_visible",
+          "employee_can_upload",
+          "requires_expiry",
+          "status",
+          "version"
+        ],
+        "title": "CategoryView"
+      },
+      "ChannelValue": {
+        "type": "string",
+        "enum": [
+          "in_app",
+          "email"
+        ]
+      },
       "Code": {
         "type": "string",
         "maxLength": 32,
@@ -6999,6 +10505,369 @@
         "type": "string",
         "maxLength": 32,
         "minLength": 1
+      },
+      "CorrectionCreate": {
+        "properties": {
+          "work_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Work Date"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/app__modules__attendance__schemas__Reason"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CorrectionItemCreate"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "work_date",
+          "reason",
+          "items"
+        ],
+        "title": "CorrectionCreate"
+      },
+      "CorrectionDecision": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__attendance__schemas__Reason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CorrectionDecision"
+      },
+      "CorrectionDetailView": {
+        "properties": {
+          "correction": {
+            "$ref": "#/components/schemas/CorrectionSummary"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "requested_by": {
+            "type": "string",
+            "title": "Requested By"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CorrectionItemView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone"
+          },
+          "before": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEventView"
+            },
+            "type": "array",
+            "title": "Before"
+          },
+          "after": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEventView"
+            },
+            "type": "array",
+            "title": "After"
+          },
+          "still_valid": {
+            "type": "boolean",
+            "title": "Still Valid"
+          },
+          "can_decide": {
+            "type": "boolean",
+            "title": "Can Decide"
+          },
+          "can_cancel": {
+            "type": "boolean",
+            "title": "Can Cancel"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "correction",
+          "reason",
+          "decision_note",
+          "requested_by",
+          "decided_by",
+          "items",
+          "time_zone",
+          "before",
+          "after",
+          "still_valid",
+          "can_decide",
+          "can_cancel",
+          "version"
+        ],
+        "title": "CorrectionDetailView"
+      },
+      "CorrectionItemCreate": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "add",
+              "void"
+            ],
+            "title": "Action"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventTypeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed At"
+          },
+          "target_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "CorrectionItemCreate"
+      },
+      "CorrectionItemView": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "add",
+              "void"
+            ],
+            "title": "Action"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventTypeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed At"
+          },
+          "target_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "event_type",
+          "proposed_at",
+          "target_event_id"
+        ],
+        "title": "CorrectionItemView"
+      },
+      "CorrectionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CorrectionSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "CorrectionList"
+      },
+      "CorrectionStatusValue": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "cancelled"
+        ]
+      },
+      "CorrectionSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Employee Id"
+          },
+          "employee_name": {
+            "type": "string",
+            "title": "Employee Name"
+          },
+          "work_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Work Date"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "request",
+              "hr_recorded"
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CorrectionStatusValue"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "locked_period": {
+            "type": "boolean",
+            "title": "Locked Period"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee_id",
+          "employee_name",
+          "work_date",
+          "kind",
+          "status",
+          "requested_at",
+          "decided_at",
+          "locked_period"
+        ],
+        "title": "CorrectionSummary"
       },
       "CurrentElevation": {
         "properties": {
@@ -7085,6 +10954,19 @@
         ],
         "title": "DayList"
       },
+      "DayStatusValue": {
+        "type": "string",
+        "enum": [
+          "present",
+          "half_day",
+          "absent",
+          "on_leave",
+          "holiday",
+          "weekly_off",
+          "incomplete",
+          "pending_correction"
+        ]
+      },
       "DayView": {
         "properties": {
           "work_date": {
@@ -7136,6 +11018,86 @@
             "type": "boolean",
             "title": "Missing Break End"
           },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DayStatusValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judged": {
+            "type": "boolean",
+            "title": "Judged"
+          },
+          "shift_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift Name"
+          },
+          "shift_start_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift Start At"
+          },
+          "shift_end_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift End At"
+          },
+          "effective_minutes": {
+            "type": "integer",
+            "title": "Effective Minutes"
+          },
+          "late_minutes": {
+            "type": "integer",
+            "title": "Late Minutes"
+          },
+          "early_leave_minutes": {
+            "type": "integer",
+            "title": "Early Leave Minutes"
+          },
+          "overtime_minutes": {
+            "type": "integer",
+            "title": "Overtime Minutes"
+          },
+          "anomalies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Anomalies"
+          },
+          "holiday": {
+            "type": "boolean",
+            "title": "Holiday"
+          },
+          "leave_portion": {
+            "type": "string",
+            "title": "Leave Portion"
+          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/EventView"
@@ -7155,9 +11117,34 @@
           "open_session",
           "on_break",
           "missing_break_end",
+          "status",
+          "judged",
+          "shift_name",
+          "shift_start_at",
+          "shift_end_at",
+          "effective_minutes",
+          "late_minutes",
+          "early_leave_minutes",
+          "overtime_minutes",
+          "anomalies",
+          "holiday",
+          "leave_portion",
           "events"
         ],
         "title": "DayView"
+      },
+      "Days": {
+        "anyOf": [
+          {
+            "type": "number",
+            "multipleOf": 0.5,
+            "minimum": 0.0
+          },
+          {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,3}|(?=[\\d.]{1,6}0*$)\\d{0,3}\\.\\d{0,2}0*$)"
+          }
+        ]
       },
       "Decide": {
         "properties": {
@@ -7218,6 +11205,106 @@
           "decided_at"
         ],
         "title": "DecisionView"
+      },
+      "DefaultShiftCreate": {
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "shift_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Shift Id"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "location_id",
+          "shift_id",
+          "effective_from"
+        ],
+        "title": "DefaultShiftCreate"
+      },
+      "DefaultShiftList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DefaultShiftView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "DefaultShiftList"
+      },
+      "DefaultShiftView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "location_name": {
+            "type": "string",
+            "title": "Location Name"
+          },
+          "shift_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Shift Id"
+          },
+          "shift_name": {
+            "type": "string",
+            "title": "Shift Name"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "location_id",
+          "location_name",
+          "shift_id",
+          "shift_name",
+          "effective_from",
+          "effective_to"
+        ],
+        "title": "DefaultShiftView"
       },
       "DepartmentCreate": {
         "properties": {
@@ -7768,6 +11855,196 @@
         ],
         "title": "DirectoryPage"
       },
+      "DocumentDownloadLink": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "title": "Expires In Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url",
+          "expires_in_seconds"
+        ],
+        "title": "DocumentDownloadLink"
+      },
+      "DocumentList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "sensitive_hidden": {
+            "type": "integer",
+            "title": "Sensitive Hidden"
+          },
+          "storage_ready": {
+            "type": "boolean",
+            "title": "Storage Ready"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "sensitive_hidden",
+          "storage_ready"
+        ],
+        "title": "DocumentList"
+      },
+      "DocumentUpdate": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__documents__router__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DocumentUpdate"
+      },
+      "DocumentView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "owner_employee_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Employee Id"
+          },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
+          },
+          "category": {
+            "$ref": "#/components/schemas/CategoryView"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "expires_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/VersionView"
+            },
+            "type": "array",
+            "title": "Versions"
+          },
+          "can_manage": {
+            "type": "boolean",
+            "title": "Can Manage"
+          },
+          "can_add_version": {
+            "type": "boolean",
+            "title": "Can Add Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "owner_employee_id",
+          "owner_name",
+          "category",
+          "title",
+          "expires_on",
+          "status",
+          "version",
+          "created_at",
+          "versions",
+          "can_manage",
+          "can_add_version"
+        ],
+        "title": "DocumentView"
+      },
       "ElevationCreate": {
         "properties": {
           "role_key": {
@@ -7777,7 +12054,7 @@
             "title": "Role Key"
           },
           "reason": {
-            "$ref": "#/components/schemas/Reason"
+            "$ref": "#/components/schemas/app__modules__access__schemas__Reason"
           },
           "duration_minutes": {
             "type": "integer",
@@ -7823,6 +12100,99 @@
         "type": "string",
         "maxLength": 254,
         "format": "email"
+      },
+      "EmergencyContactList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EmergencyContactView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "EmergencyContactList"
+      },
+      "EmergencyContactValue": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "relationship": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Relationship"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^\\+?[0-9 ()-]{5,30}$",
+            "title": "Phone"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "relationship",
+          "phone"
+        ],
+        "title": "EmergencyContactValue"
+      },
+      "EmergencyContactView": {
+        "properties": {
+          "priority": {
+            "type": "integer",
+            "title": "Priority"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "relationship": {
+            "type": "string",
+            "title": "Relationship"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "priority",
+          "name",
+          "relationship",
+          "phone"
+        ],
+        "title": "EmergencyContactView"
+      },
+      "EmergencyContactsUpdate": {
+        "properties": {
+          "contacts": {
+            "items": {
+              "$ref": "#/components/schemas/EmergencyContactValue"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Contacts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "contacts"
+        ],
+        "title": "EmergencyContactsUpdate"
       },
       "EmployeeCreate": {
         "properties": {
@@ -7927,6 +12297,9 @@
             "type": "boolean",
             "title": "Is Optional"
           },
+          "kind": {
+            "$ref": "#/components/schemas/HolidayKindValue"
+          },
           "calendar": {
             "type": "string",
             "title": "Calendar"
@@ -7938,6 +12311,7 @@
           "date",
           "name",
           "is_optional",
+          "kind",
           "calendar"
         ],
         "title": "EmployeeHolidayView"
@@ -8382,7 +12756,11 @@
           "accrual",
           "usage",
           "usage_reversal",
-          "adjustment"
+          "adjustment",
+          "carry_forward_out",
+          "carry_forward",
+          "carry_forward_expiry",
+          "lapse"
         ]
       },
       "EventCreate": {
@@ -8443,6 +12821,22 @@
               "import"
             ],
             "title": "Source"
+          },
+          "voided": {
+            "type": "boolean",
+            "title": "Voided"
+          },
+          "correction_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Id"
           }
         },
         "additionalProperties": false,
@@ -8451,9 +12845,247 @@
           "id",
           "event_type",
           "occurred_at",
-          "source"
+          "source",
+          "voided",
+          "correction_id"
         ],
         "title": "EventView"
+      },
+      "ExcessValue": {
+        "type": "string",
+        "enum": [
+          "lapse",
+          "keep"
+        ]
+      },
+      "ExitCreate": {
+        "properties": {
+          "last_working_day": {
+            "type": "string",
+            "format": "date",
+            "title": "Last Working Day"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_working_day",
+          "reason"
+        ],
+        "title": "ExitCreate"
+      },
+      "ExitView": {
+        "properties": {
+          "status_change": {
+            "$ref": "#/components/schemas/StatusChangeView"
+          },
+          "account": {
+            "type": "string",
+            "enum": [
+              "none",
+              "disabled",
+              "already_disabled",
+              "administrator_left_active"
+            ],
+            "title": "Account"
+          },
+          "sessions_revoked": {
+            "type": "integer",
+            "title": "Sessions Revoked"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status_change",
+          "account",
+          "sessions_revoked"
+        ],
+        "title": "ExitView"
+      },
+      "ExportDownloadLink": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "title": "Expires In Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url",
+          "expires_in_seconds"
+        ],
+        "title": "ExportDownloadLink"
+      },
+      "ExportList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExportView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "storage_ready": {
+            "type": "boolean",
+            "title": "Storage Ready"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "storage_ready"
+        ],
+        "title": "ExportList"
+      },
+      "ExportTypeValue": {
+        "type": "string",
+        "enum": [
+          "attendance_summary",
+          "attendance_days",
+          "leave_requests",
+          "leave_balances",
+          "employees",
+          "audit_log"
+        ]
+      },
+      "ExportView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "export_type": {
+            "$ref": "#/components/schemas/ExportTypeValue"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed",
+              "expired"
+            ],
+            "title": "Status"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "downloaded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloaded At"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "export_type",
+          "status",
+          "start",
+          "end",
+          "requested_at",
+          "completed_at",
+          "expires_at",
+          "downloaded_at",
+          "row_count",
+          "file_name"
+        ],
+        "title": "ExportView"
       },
       "Factor": {
         "properties": {
@@ -8517,12 +13149,19 @@
         ],
         "title": "FactorList"
       },
+      "FrequencyValue": {
+        "type": "string",
+        "enum": [
+          "monthly",
+          "quarterly"
+        ]
+      },
       "GrantDecision": {
         "properties": {
           "note": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Reason"
+                "$ref": "#/components/schemas/app__modules__access__schemas__Reason"
               },
               {
                 "type": "null"
@@ -8863,6 +13502,10 @@
             "type": "boolean",
             "title": "Is Optional",
             "default": false
+          },
+          "kind": {
+            "$ref": "#/components/schemas/HolidayKindValue",
+            "default": "holiday"
           }
         },
         "additionalProperties": false,
@@ -8872,6 +13515,42 @@
           "name"
         ],
         "title": "HolidayCreate"
+      },
+      "HolidayKindValue": {
+        "type": "string",
+        "enum": [
+          "holiday",
+          "working_day"
+        ]
+      },
+      "HolidayUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__leave__router__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_optional": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Optional"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "HolidayUpdate",
+        "description": "The name, or whether a holiday is optional. The date and the kind do not change."
       },
       "HolidayView": {
         "properties": {
@@ -8892,6 +13571,9 @@
           "is_optional": {
             "type": "boolean",
             "title": "Is Optional"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/HolidayKindValue"
           }
         },
         "additionalProperties": false,
@@ -8900,9 +13582,82 @@
           "id",
           "date",
           "name",
-          "is_optional"
+          "is_optional",
+          "kind"
         ],
         "title": "HolidayView"
+      },
+      "ImportResult": {
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRowView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "applied",
+          "batch_id",
+          "counts",
+          "items"
+        ],
+        "title": "ImportResult"
+      },
+      "ImportRowView": {
+        "properties": {
+          "line": {
+            "type": "integer",
+            "title": "Line"
+          },
+          "employee_code": {
+            "type": "string",
+            "title": "Employee Code"
+          },
+          "leave_type_code": {
+            "type": "string",
+            "title": "Leave Type Code"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "line",
+          "employee_code",
+          "leave_type_code",
+          "outcome"
+        ],
+        "title": "ImportRowView"
       },
       "InviteActivated": {
         "properties": {
@@ -9441,17 +14196,64 @@
             "title": "Leave Year Start Day"
           },
           "accrual_method": {
-            "type": "string",
-            "enum": [
-              "none",
-              "upfront_per_leave_year"
-            ],
-            "title": "Accrual Method"
+            "$ref": "#/components/schemas/AccrualMethodValue"
           },
           "accrual_amount": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/app__modules__leave__schemas__Days__1"
+                "$ref": "#/components/schemas/app__modules__leave__schemas__Amount__1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accrual_frequency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrequencyValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accrual_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimingValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prorate_on_joining": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prorate On Joining"
+          },
+          "prorate_on_exit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prorate On Exit"
+          },
+          "proration_rounding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoundingValue"
               },
               {
                 "type": "null"
@@ -9465,12 +14267,55 @@
           "max_negative_days": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/app__modules__leave__schemas__Days__2"
+                "$ref": "#/components/schemas/Days"
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "carry_forward_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CarryModeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "carry_forward_cap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__leave__schemas__Amount__2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "excess_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExcessValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "carried_expire_after_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 24.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried Expire After Months"
           }
         },
         "additionalProperties": false,
@@ -9559,12 +14404,7 @@
             "title": "Leave Year Start Day"
           },
           "accrual_method": {
-            "type": "string",
-            "enum": [
-              "none",
-              "upfront_per_leave_year"
-            ],
-            "title": "Accrual Method"
+            "$ref": "#/components/schemas/AccrualMethodValue"
           },
           "accrual_amount": {
             "anyOf": [
@@ -9577,6 +14417,58 @@
               }
             ],
             "title": "Accrual Amount"
+          },
+          "accrual_frequency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrequencyValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accrual_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimingValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prorate_on_joining": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prorate On Joining"
+          },
+          "prorate_on_exit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prorate On Exit"
+          },
+          "proration_rounding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoundingValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "allow_negative_balance": {
             "type": "boolean",
@@ -9593,6 +14485,49 @@
               }
             ],
             "title": "Max Negative Days"
+          },
+          "carry_forward_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CarryModeValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "carry_forward_cap": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carry Forward Cap"
+          },
+          "excess_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExcessValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "carried_expire_after_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried Expire After Months"
           },
           "created_at": {
             "type": "string",
@@ -9613,11 +14548,119 @@
           "leave_year_start_day",
           "accrual_method",
           "accrual_amount",
+          "accrual_frequency",
+          "accrual_timing",
+          "prorate_on_joining",
+          "prorate_on_exit",
+          "proration_rounding",
           "allow_negative_balance",
           "max_negative_days",
+          "carry_forward_mode",
+          "carry_forward_cap",
+          "excess_action",
+          "carried_expire_after_months",
           "created_at"
         ],
         "title": "LeavePolicyView"
+      },
+      "LeaveReportRow": {
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "employee_code": {
+            "type": "string",
+            "title": "Employee Code"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "leave_type": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "taken": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taken"
+          },
+          "pending": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Pending"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee",
+          "employee_code",
+          "department",
+          "location",
+          "leave_type",
+          "taken",
+          "pending"
+        ],
+        "title": "LeaveReportRow"
+      },
+      "LeaveReportView": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaveReportRow"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "items",
+          "next_cursor"
+        ],
+        "title": "LeaveReportView"
       },
       "LeaveTypeCreate": {
         "properties": {
@@ -9914,6 +14957,18 @@
             ],
             "title": "Leave Request Id"
           },
+          "period_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
           "reason": {
             "anyOf": [
               {
@@ -9941,6 +14996,7 @@
           "amount",
           "effective_date",
           "leave_request_id",
+          "period_start",
           "reason",
           "created_at"
         ],
@@ -10175,6 +15231,130 @@
           "updated_at"
         ],
         "title": "LocationView"
+      },
+      "LockCreate": {
+        "properties": {
+          "period_start": {
+            "type": "string",
+            "format": "date",
+            "title": "Period Start"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Period End"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period_start",
+          "period_end",
+          "reason"
+        ],
+        "title": "LockCreate"
+      },
+      "LockList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LockView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "LockList"
+      },
+      "LockRelease": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "LockRelease"
+      },
+      "LockView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date",
+            "title": "Period Start"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Period End"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "locked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Locked At"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          },
+          "release_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "period_start",
+          "period_end",
+          "reason",
+          "locked_at",
+          "released_at",
+          "release_reason"
+        ],
+        "title": "LockView"
       },
       "LoginChallenge": {
         "properties": {
@@ -10429,6 +15609,162 @@
         "title": "MfaResetRequest",
         "description": "Why the reset is needed, recorded in the audit log. Record the identity check that was\ndone (docs/runbooks), not personal details."
       },
+      "Minutes": {
+        "type": "integer",
+        "maximum": 1440.0,
+        "minimum": 0.0
+      },
+      "NotificationPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "unread_count": {
+            "type": "integer",
+            "title": "Unread Count"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "unread_count",
+          "next_cursor"
+        ],
+        "title": "NotificationPage"
+      },
+      "NotificationView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/TypeValue"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link"
+          },
+          "read": {
+            "type": "boolean",
+            "title": "Read"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "title",
+          "body",
+          "link",
+          "read",
+          "created_at"
+        ],
+        "title": "NotificationView"
+      },
+      "OpeningBalanceImport": {
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Reason"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/OpeningBalanceRow"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Rows"
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason",
+          "rows",
+          "apply"
+        ],
+        "title": "OpeningBalanceImport"
+      },
+      "OpeningBalanceRow": {
+        "properties": {
+          "employee_code": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Employee Code"
+          },
+          "leave_type_code": {
+            "$ref": "#/components/schemas/Code"
+          },
+          "days": {
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Amount__3"
+          },
+          "effective_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_code",
+          "leave_type_code",
+          "days",
+          "effective_date"
+        ],
+        "title": "OpeningBalanceRow"
+      },
       "PasswordChange": {
         "properties": {
           "current_password": {
@@ -10479,6 +15815,51 @@
           "email"
         ],
         "title": "PasswordResetRequest"
+      },
+      "PeriodBody": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "title": "To"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "PeriodBody"
       },
       "PersonRef": {
         "properties": {
@@ -10638,6 +16019,423 @@
         "maxLength": 32,
         "minLength": 1
       },
+      "PolicyCreate": {
+        "properties": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "organization",
+              "location",
+              "shift"
+            ],
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "grace_minutes": {
+            "$ref": "#/components/schemas/Minutes"
+          },
+          "early_departure_grace_minutes": {
+            "$ref": "#/components/schemas/Minutes"
+          },
+          "duration_basis": {
+            "type": "string",
+            "enum": [
+              "effective",
+              "gross"
+            ],
+            "title": "Duration Basis"
+          },
+          "full_day_min_minutes": {
+            "type": "integer",
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Full Day Min Minutes"
+          },
+          "half_day_min_minutes": {
+            "type": "integer",
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Half Day Min Minutes"
+          },
+          "max_break_minutes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Minutes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "breaks_count_as_work": {
+            "type": "boolean",
+            "title": "Breaks Count As Work"
+          },
+          "break_excess_action": {
+            "type": "string",
+            "enum": [
+              "flag",
+              "deduct"
+            ],
+            "title": "Break Excess Action"
+          },
+          "overtime_enabled": {
+            "type": "boolean",
+            "title": "Overtime Enabled"
+          },
+          "overtime_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "beyond_full_day",
+                  "beyond_shift_end"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overtime Basis"
+          },
+          "overtime_min_minutes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Minutes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overtime_requires_approval": {
+            "type": "boolean",
+            "title": "Overtime Requires Approval"
+          },
+          "incomplete_after_minutes": {
+            "$ref": "#/components/schemas/Minutes"
+          },
+          "allow_multiple_sessions": {
+            "type": "boolean",
+            "title": "Allow Multiple Sessions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope_type",
+          "effective_from",
+          "grace_minutes",
+          "early_departure_grace_minutes",
+          "duration_basis",
+          "full_day_min_minutes",
+          "half_day_min_minutes",
+          "breaks_count_as_work",
+          "break_excess_action",
+          "overtime_enabled",
+          "overtime_requires_approval",
+          "incomplete_after_minutes",
+          "allow_multiple_sessions"
+        ],
+        "title": "PolicyCreate"
+      },
+      "PolicyList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "PolicyList"
+      },
+      "PolicyView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "organization",
+              "location",
+              "shift"
+            ],
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Name"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "grace_minutes": {
+            "type": "integer",
+            "title": "Grace Minutes"
+          },
+          "early_departure_grace_minutes": {
+            "type": "integer",
+            "title": "Early Departure Grace Minutes"
+          },
+          "duration_basis": {
+            "type": "string",
+            "enum": [
+              "effective",
+              "gross"
+            ],
+            "title": "Duration Basis"
+          },
+          "full_day_min_minutes": {
+            "type": "integer",
+            "title": "Full Day Min Minutes"
+          },
+          "half_day_min_minutes": {
+            "type": "integer",
+            "title": "Half Day Min Minutes"
+          },
+          "max_break_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Break Minutes"
+          },
+          "breaks_count_as_work": {
+            "type": "boolean",
+            "title": "Breaks Count As Work"
+          },
+          "break_excess_action": {
+            "type": "string",
+            "enum": [
+              "flag",
+              "deduct"
+            ],
+            "title": "Break Excess Action"
+          },
+          "overtime_enabled": {
+            "type": "boolean",
+            "title": "Overtime Enabled"
+          },
+          "overtime_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "beyond_full_day",
+                  "beyond_shift_end"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overtime Basis"
+          },
+          "overtime_min_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overtime Min Minutes"
+          },
+          "overtime_requires_approval": {
+            "type": "boolean",
+            "title": "Overtime Requires Approval"
+          },
+          "incomplete_after_minutes": {
+            "type": "integer",
+            "title": "Incomplete After Minutes"
+          },
+          "allow_multiple_sessions": {
+            "type": "boolean",
+            "title": "Allow Multiple Sessions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "scope_type",
+          "scope_id",
+          "scope_name",
+          "effective_from",
+          "effective_to",
+          "grace_minutes",
+          "early_departure_grace_minutes",
+          "duration_basis",
+          "full_day_min_minutes",
+          "half_day_min_minutes",
+          "max_break_minutes",
+          "breaks_count_as_work",
+          "break_excess_action",
+          "overtime_enabled",
+          "overtime_basis",
+          "overtime_min_minutes",
+          "overtime_requires_approval",
+          "incomplete_after_minutes",
+          "allow_multiple_sessions"
+        ],
+        "title": "PolicyView"
+      },
+      "PreferenceChange": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/TypeValue"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/ChannelValue"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "channel",
+          "enabled"
+        ],
+        "title": "PreferenceChange"
+      },
+      "PreferenceList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "PreferenceList"
+      },
+      "PreferenceUpdate": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceChange"
+            },
+            "type": "array",
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Changes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "title": "PreferenceUpdate"
+      },
+      "PreferenceView": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/TypeValue"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "channels": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ChannelValue"
+            },
+            "type": "object",
+            "title": "Channels"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "label",
+          "description",
+          "channels"
+        ],
+        "title": "PreferenceView"
+      },
       "PreviewView": {
         "properties": {
           "days": {
@@ -10688,10 +16486,19 @@
         ],
         "title": "PreviewView"
       },
-      "Reason": {
-        "type": "string",
-        "maxLength": 500,
-        "minLength": 1
+      "ReadAllResult": {
+        "properties": {
+          "marked_read": {
+            "type": "integer",
+            "title": "Marked Read"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "marked_read"
+        ],
+        "title": "ReadAllResult"
       },
       "RecentJoiner": {
         "properties": {
@@ -10749,6 +16556,76 @@
           "name"
         ],
         "title": "Ref"
+      },
+      "RegisterEntryView": {
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/TeamMemberRef"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone"
+          },
+          "day": {
+            "$ref": "#/components/schemas/DayView"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee",
+          "time_zone",
+          "day"
+        ],
+        "title": "RegisterEntryView"
+      },
+      "RegisterView": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "in_scope": {
+            "type": "integer",
+            "title": "In Scope"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RegisterEntryView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "in_scope",
+          "counts",
+          "items",
+          "next_cursor"
+        ],
+        "title": "RegisterView"
       },
       "RequestCreate": {
         "properties": {
@@ -11152,6 +17029,46 @@
         ],
         "title": "RoleView"
       },
+      "RoundingValue": {
+        "type": "string",
+        "enum": [
+          "exact",
+          "nearest_half",
+          "down_half",
+          "up_half"
+        ]
+      },
+      "ScopeBody": {
+        "properties": {
+          "department_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ScopeBody"
+      },
       "SecurityPage": {
         "properties": {
           "items": {
@@ -11314,6 +17231,14 @@
         ],
         "title": "SelfProfileUpdate",
         "description": "The fields employees edit themselves (authorization-model §3.2)."
+      },
+      "SensitivityValue": {
+        "type": "string",
+        "enum": [
+          "internal",
+          "personal",
+          "sensitive"
+        ]
       },
       "SessionList": {
         "properties": {
@@ -11496,6 +17421,425 @@
         ],
         "title": "SettingView"
       },
+      "SetupView": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "active_shifts": {
+            "type": "integer",
+            "title": "Active Shifts"
+          },
+          "policies_in_effect": {
+            "type": "integer",
+            "title": "Policies In Effect"
+          },
+          "organization_policy": {
+            "type": "boolean",
+            "title": "Organization Policy"
+          },
+          "employees_in_scope": {
+            "type": "integer",
+            "title": "Employees In Scope"
+          },
+          "without_shift": {
+            "items": {
+              "$ref": "#/components/schemas/TeamMemberRef"
+            },
+            "type": "array",
+            "title": "Without Shift"
+          },
+          "without_policy": {
+            "items": {
+              "$ref": "#/components/schemas/TeamMemberRef"
+            },
+            "type": "array",
+            "title": "Without Policy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "active_shifts",
+          "policies_in_effect",
+          "organization_policy",
+          "employees_in_scope",
+          "without_shift",
+          "without_policy"
+        ],
+        "title": "SetupView"
+      },
+      "ShiftAssignmentCreate": {
+        "properties": {
+          "employee_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Employee Ids"
+          },
+          "shift_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Shift Id"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_ids",
+          "shift_id",
+          "effective_from"
+        ],
+        "title": "ShiftAssignmentCreate"
+      },
+      "ShiftAssignmentList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShiftAssignmentView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ShiftAssignmentList"
+      },
+      "ShiftAssignmentResult": {
+        "properties": {
+          "assigned": {
+            "type": "integer",
+            "title": "Assigned"
+          },
+          "skipped_not_permitted": {
+            "type": "integer",
+            "title": "Skipped Not Permitted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "assigned",
+          "skipped_not_permitted"
+        ],
+        "title": "ShiftAssignmentResult"
+      },
+      "ShiftAssignmentView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "shift_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Shift Id"
+          },
+          "shift_name": {
+            "type": "string",
+            "title": "Shift Name"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "shift_id",
+          "shift_name",
+          "effective_from",
+          "effective_to"
+        ],
+        "title": "ShiftAssignmentView"
+      },
+      "ShiftCreate": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/Code"
+          },
+          "name": {
+            "$ref": "#/components/schemas/app__modules__attendance__schemas__Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "version": {
+            "$ref": "#/components/schemas/ShiftVersionCreate"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "version"
+        ],
+        "title": "ShiftCreate"
+      },
+      "ShiftList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShiftView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ShiftList"
+      },
+      "ShiftUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__attendance__schemas__Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ShiftUpdate"
+      },
+      "ShiftVersionCreate": {
+        "properties": {
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "start_time": {
+            "type": "string",
+            "format": "time",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "format": "time",
+            "title": "End Time"
+          },
+          "weekly_offs": {
+            "items": {
+              "$ref": "#/components/schemas/WeeklyOffValue"
+            },
+            "type": "array",
+            "maxItems": 7,
+            "title": "Weekly Offs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "effective_from",
+          "start_time",
+          "end_time",
+          "weekly_offs"
+        ],
+        "title": "ShiftVersionCreate"
+      },
+      "ShiftVersionView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "version_no": {
+            "type": "integer",
+            "title": "Version No"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "start_time": {
+            "type": "string",
+            "format": "time",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "format": "time",
+            "title": "End Time"
+          },
+          "crosses_midnight": {
+            "type": "boolean",
+            "title": "Crosses Midnight"
+          },
+          "weekly_offs": {
+            "items": {
+              "$ref": "#/components/schemas/WeeklyOffView"
+            },
+            "type": "array",
+            "title": "Weekly Offs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "version_no",
+          "effective_from",
+          "effective_to",
+          "start_time",
+          "end_time",
+          "crosses_midnight",
+          "weekly_offs"
+        ],
+        "title": "ShiftVersionView"
+      },
+      "ShiftView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/ShiftVersionView"
+            },
+            "type": "array",
+            "title": "Versions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "description",
+          "status",
+          "version",
+          "versions"
+        ],
+        "title": "ShiftView"
+      },
       "SignedIn": {
         "properties": {
           "session_scope": {
@@ -11613,6 +17957,20 @@
           "created_at"
         ],
         "title": "StatusChangeView"
+      },
+      "StatusFilter": {
+        "type": "string",
+        "enum": [
+          "present",
+          "half_day",
+          "absent",
+          "on_leave",
+          "holiday",
+          "weekly_off",
+          "incomplete",
+          "pending_correction",
+          "not_judged"
+        ]
       },
       "StatusHistory": {
         "properties": {
@@ -11846,6 +18204,32 @@
         "maxLength": 1000,
         "minLength": 1
       },
+      "TimelineEventView": {
+        "properties": {
+          "event_type": {
+            "$ref": "#/components/schemas/EventTypeValue"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type",
+          "occurred_at"
+        ],
+        "title": "TimelineEventView"
+      },
+      "TimingValue": {
+        "type": "string",
+        "enum": [
+          "period_start",
+          "period_end"
+        ]
+      },
       "TodayView": {
         "properties": {
           "state": {
@@ -12003,6 +18387,17 @@
         "type": "object",
         "title": "TotpSetupRequest"
       },
+      "TypeValue": {
+        "type": "string",
+        "enum": [
+          "leave.approval_requested",
+          "leave.request_updated",
+          "attendance.correction_requested",
+          "attendance.correction_updated",
+          "document.added",
+          "export.ready"
+        ]
+      },
       "UnitRef": {
         "properties": {
           "id": {
@@ -12022,6 +18417,20 @@
           "name"
         ],
         "title": "UnitRef"
+      },
+      "UnreadCount": {
+        "properties": {
+          "unread_count": {
+            "type": "integer",
+            "title": "Unread Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "unread_count"
+        ],
+        "title": "UnreadCount"
       },
       "UserPage": {
         "properties": {
@@ -12192,21 +18601,282 @@
         ],
         "title": "ValidationError"
       },
+      "VersionView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "version_no": {
+            "type": "integer",
+            "title": "Version No"
+          },
+          "original_filename": {
+            "type": "string",
+            "title": "Original Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "scan_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "clean",
+              "infected",
+              "failed"
+            ],
+            "title": "Scan Status"
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Uploaded At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "version_no",
+          "original_filename",
+          "content_type",
+          "size_bytes",
+          "scan_status",
+          "uploaded_at"
+        ],
+        "title": "VersionView"
+      },
+      "WeeklyOffValue": {
+        "properties": {
+          "weekday": {
+            "type": "integer",
+            "maximum": 7.0,
+            "minimum": 1.0,
+            "title": "Weekday"
+          },
+          "weeks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer",
+                  "maximum": 5.0,
+                  "minimum": 1.0
+                },
+                "type": "array",
+                "maxItems": 5,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weeks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "weekday"
+        ],
+        "title": "WeeklyOffValue"
+      },
+      "WeeklyOffView": {
+        "properties": {
+          "weekday": {
+            "type": "integer",
+            "title": "Weekday"
+          },
+          "weeks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weeks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "weekday",
+          "weeks"
+        ],
+        "title": "WeeklyOffView"
+      },
       "Year": {
         "type": "integer",
         "maximum": 2100.0,
         "minimum": 2000.0
+      },
+      "YearEndResult": {
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YearEndRowView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "applied",
+          "counts",
+          "items"
+        ],
+        "title": "YearEndResult"
+      },
+      "YearEndRowView": {
+        "properties": {
+          "employee": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "closing": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closing"
+          },
+          "carried": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried"
+          },
+          "lapsed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lapsed"
+          },
+          "kept": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kept"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee",
+          "outcome",
+          "closing",
+          "carried",
+          "lapsed",
+          "kept"
+        ],
+        "title": "YearEndRowView"
+      },
+      "YearEndRun": {
+        "properties": {
+          "leave_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Leave Type Id"
+          },
+          "year_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Year End"
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "leave_type_id",
+          "year_end",
+          "apply"
+        ],
+        "title": "YearEndRun"
+      },
+      "app__modules__access__schemas__Reason": {
+        "type": "string",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "app__modules__attendance__schemas__Name": {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "app__modules__attendance__schemas__Reason": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "app__modules__documents__router__Name": {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1
       },
       "app__modules__leave__router__Name": {
         "type": "string",
         "maxLength": 200,
         "minLength": 1
       },
-      "app__modules__leave__schemas__Days__1": {
+      "app__modules__leave__schemas__Amount__1": {
         "anyOf": [
           {
             "type": "number",
-            "multipleOf": 0.5,
+            "maximum": 366.0,
             "exclusiveMinimum": 0.0
           },
           {
@@ -12215,11 +18885,10 @@
           }
         ]
       },
-      "app__modules__leave__schemas__Days__2": {
+      "app__modules__leave__schemas__Amount__2": {
         "anyOf": [
           {
             "type": "number",
-            "multipleOf": 0.5,
             "minimum": 0.0
           },
           {
@@ -12228,11 +18897,10 @@
           }
         ]
       },
-      "app__modules__leave__schemas__Days__3": {
+      "app__modules__leave__schemas__Amount__3": {
         "anyOf": [
           {
-            "type": "number",
-            "multipleOf": 0.5
+            "type": "number"
           },
           {
             "type": "string",
@@ -12243,6 +18911,11 @@
       "app__modules__leave__schemas__Name": {
         "type": "string",
         "maxLength": 200,
+        "minLength": 1
+      },
+      "app__modules__leave__schemas__Reason": {
+        "type": "string",
+        "maxLength": 500,
         "minLength": 1
       },
       "app__modules__leave__schemas__StatusValue": {

@@ -35,6 +35,17 @@ WORKER: dict[str, object] = {
     "audit_anchor_bucket": "hrms-audit-anchors",
     "audit_anchor_access_key_id": "anchor-writer",
     "audit_anchor_secret_access_key": "anchor-secret",
+    "files_bucket": "hrms-files",
+    "files_access_key_id": "files-writer",
+    "files_secret_access_key": "files-secret",
+    "clamav_host": "clamav.internal",
+}
+# The private bucket for documents and exports.
+FILES: dict[str, object] = {
+    "files_bucket": "hrms-files",
+    "files_access_key_id": "files-writer",
+    "files_secret_access_key": "files-secret",
+    "s3_region": "ap-south-1",
 }
 DEPLOYED_DB = "postgresql://hrms_app:pw@db.internal:5432/hrms?sslmode=verify-full"
 
@@ -49,6 +60,7 @@ def api_settings(**overrides: object) -> ApiSettings:
         "app_base_url": "http://localhost:5173",
         "field_encryption_keys": FIELD_KEYS,
         "field_encryption_active_version": 1,
+        **FILES,
     }
     values.update(overrides)
     return ApiSettings.model_validate(values)
@@ -226,3 +238,30 @@ def test_audit_retention_is_unset_unless_configured() -> None:
     for months in (0, 1201):
         with pytest.raises(ValidationError):
             worker(audit_log_retention_months=months)
+
+
+def test_file_storage_is_optional_locally_and_required_when_deployed() -> None:
+    local = api_settings(files_bucket="", files_access_key_id="", files_secret_access_key="")
+    assert local.file_store() is None
+    assert api_settings().file_store() is not None
+    with pytest.raises(ValidationError, match="FILES_BUCKET is required"):
+        api_settings(
+            app_env=AppEnv.PRODUCTION,
+            database_url_app=DEPLOYED_DB,
+            redis_url="rediss://hrms_ratelimit:pw@cache.internal:6379/0",
+            app_base_url="https://hrms.example.com",
+            files_bucket="",
+            files_access_key_id="",
+            files_secret_access_key="",
+        )
+    with pytest.raises(ValidationError, match="set together"):
+        api_settings(files_secret_access_key="")
+    with pytest.raises(ValidationError, match="S3_REGION"):
+        api_settings(s3_region="")
+
+
+def test_deployed_workers_need_the_virus_scanner() -> None:
+    deployed = {"app_env": AppEnv.PRODUCTION, "database_url_worker": DEPLOYED_DB}
+    WorkerSettings.model_validate(deployed | WORKER)
+    with pytest.raises(ValidationError, match="CLAMAV_HOST"):
+        WorkerSettings.model_validate(deployed | WORKER | {"clamav_host": ""})

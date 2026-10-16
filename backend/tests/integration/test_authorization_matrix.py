@@ -292,6 +292,14 @@ ROUTES = (
         allowed_statuses=frozenset({404}),
     ),
     Route(
+        "PATCH",
+        "/api/v1/holiday-calendars/{calendar}/holidays/{holiday}",
+        "holiday.manage",
+        {"name": "Test holiday"},
+        headers={"If-Match": '"1"'},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
         "DELETE",
         "/api/v1/holiday-calendars/{calendar}/holidays/{holiday}",
         "holiday.manage",
@@ -451,6 +459,326 @@ ROUTES = (
         "leave.read",
         params={"from": "2031-01-01", "to": "2031-01-31"},
     ),
+    Route("GET", "/api/v1/leave/report", "leave.read", params={"from": "2031-01-01", "to": "2031-01-31"}),
+    Route(
+        "POST",
+        "/api/v1/leave-year-end",
+        "leave.balance.adjust",
+        {"leave_type_id": str(uuid.UUID(int=5)), "year_end": "2020-12-31", "apply": False},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/leave-opening-balances",
+        "leave.balance.adjust",
+        {
+            "reason": "Matrix test",
+            "apply": False,
+            "rows": [
+                {
+                    "employee_code": "NO-SUCH",
+                    "leave_type_code": "NONE",
+                    "days": "1",
+                    "effective_date": "2031-01-01",
+                }
+            ],
+        },
+    ),
+    # Attendance rules and corrections. {correction}, {shift} and {lock} do not exist; matrix
+    # employees joined today, so a correction for an earlier date is refused (422).
+    Route("GET", "/api/v1/attendance/register", "attendance.read", params={"date": "2026-01-15"}),
+    Route(
+        "GET",
+        "/api/v1/attendance/report",
+        "attendance.read",
+        params={"from": "2026-01-01", "to": "2026-01-31"},
+    ),
+    Route("GET", "/api/v1/attendance/setup", "attendance.read"),
+    Route(
+        "POST",
+        "/api/v1/me/attendance/corrections",
+        "attendance.correction.request.self",
+        {
+            "work_date": "2026-01-05",
+            "reason": "Matrix test",
+            "items": [{"action": "add", "event_type": "CLOCK_IN", "proposed_at": "2026-01-05T04:00:00Z"}],
+        },
+        headers={"Idempotency-Key": "matrix-correction"},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/me/attendance/corrections", "attendance.correction.request.self"),
+    Route(
+        "POST",
+        "/api/v1/me/attendance/corrections/{correction}/cancel",
+        "attendance.correction.request.self",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employees/{employee}/attendance/corrections",
+        "attendance.correction.create.all",
+        {
+            "work_date": "2026-01-05",
+            "reason": "Matrix test",
+            "items": [{"action": "add", "event_type": "CLOCK_IN", "proposed_at": "2026-01-05T04:00:00Z"}],
+        },
+        headers={"Idempotency-Key": "matrix-hr-correction"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/attendance/corrections", "attendance.read"),
+    Route(
+        "GET",
+        "/api/v1/attendance/corrections/{correction}",
+        "attendance.read",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/attendance/corrections/{correction}/approve",
+        "attendance.correction.approve",
+        {},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/attendance/corrections/{correction}/reject",
+        "attendance.correction.approve",
+        {"note": "Matrix test"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/shifts", "shift.read"),
+    Route(
+        "POST",
+        "/api/v1/shifts",
+        "shift.manage",
+        {
+            "code": "MATRIX-SHIFT",
+            "name": "Matrix shift",
+            "version": {
+                "effective_from": "2031-01-01",
+                "start_time": "09:00",
+                "end_time": "17:00",
+                "weekly_offs": [{"weekday": 7}],
+            },
+        },
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route("PATCH", "/api/v1/shifts/{shift}", "shift.manage", {}, allowed_statuses=frozenset({422})),
+    Route(
+        "POST",
+        "/api/v1/shifts/{shift}/versions",
+        "shift.manage",
+        {"effective_from": "2031-01-01", "start_time": "09:00", "end_time": "17:00", "weekly_offs": []},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/location-default-shifts", "shift.read"),
+    Route(
+        "POST",
+        "/api/v1/location-default-shifts",
+        "shift.manage",
+        {
+            "location_id": str(uuid.UUID(int=3)),
+            "shift_id": str(uuid.UUID(int=6)),
+            "effective_from": "2031-01-01",
+        },
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/shift-assignments",
+        "attendance.read",
+        allowed_statuses=frozenset({200, 404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/shift-assignments",
+        "shift.assign.all",
+        {
+            "employee_ids": [str(uuid.UUID(int=4))],
+            "shift_id": str(uuid.UUID(int=6)),
+            "effective_from": "2031-01-01",
+        },
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/attendance-policies", "shift.read"),
+    Route(
+        "POST",
+        "/api/v1/attendance-policies",
+        "attendance.policy.manage",
+        {
+            "scope_type": "location",
+            "scope_id": str(uuid.UUID(int=3)),
+            "effective_from": "2031-01-01",
+            "grace_minutes": 1,
+            "early_departure_grace_minutes": 1,
+            "duration_basis": "effective",
+            "full_day_min_minutes": 2,
+            "half_day_min_minutes": 1,
+            "breaks_count_as_work": False,
+            "break_excess_action": "flag",
+            "overtime_enabled": False,
+            "overtime_requires_approval": False,
+            "incomplete_after_minutes": 1,
+            "allow_multiple_sessions": True,
+        },
+        # The location does not exist.
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/attendance/locks", "attendance.read"),
+    Route(
+        "POST",
+        "/api/v1/attendance/locks",
+        "attendance.policy.manage",
+        {"period_start": "2026-10-20", "period_end": "2026-10-19", "reason": "Matrix test"},
+        # The range is reversed.
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/attendance/locks/{lock}/release",
+        "attendance.policy.manage",
+        {"reason": "Matrix test"},
+        allowed_statuses=frozenset({404}),
+    ),
+    # Notifications (the account baseline: every role holds them).
+    Route("GET", "/api/v1/me/notifications", "notification.read.self"),
+    Route("GET", "/api/v1/me/notifications/unread-count", "notification.read.self"),
+    Route("POST", "/api/v1/me/notifications/read-all", "notification.read.self"),
+    Route(
+        "POST",
+        "/api/v1/me/notifications/{notification}/read",
+        "notification.read.self",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "DELETE",
+        "/api/v1/me/notifications/{notification}",
+        "notification.read.self",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/me/notification-preferences", "notification.read.self"),
+    Route(
+        "PUT",
+        "/api/v1/me/notification-preferences",
+        "notification.preference.update.self",
+        {"changes": [{"type": "export.ready", "channel": "in_app", "enabled": True}]},
+    ),
+    # Documents. {category}, {document} and {version} do not exist; uploads name an unknown
+    # category (422). Test APIs have no file storage, but every check before storage answers.
+    Route("GET", "/api/v1/document-categories", "document.read"),
+    Route(
+        "POST",
+        "/api/v1/document-categories",
+        "document.category.manage",
+        {
+            "code": "MATRIX-DOC",
+            "name": "Matrix category",
+            "sensitivity": "internal",
+            "employee_visible": True,
+            "employee_can_upload": False,
+            "requires_expiry": False,
+        },
+        allowed_statuses=frozenset({201, 409}),
+    ),
+    Route(
+        "PATCH",
+        "/api/v1/document-categories/{category}",
+        "document.category.manage",
+        {},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route("GET", "/api/v1/me/documents", "document.read.self"),
+    Route(
+        "GET", "/api/v1/employees/{employee}/documents", "document.read", allowed_statuses=frozenset({404})
+    ),
+    Route("GET", "/api/v1/company-documents", "document.company.read"),
+    Route("GET", "/api/v1/documents/{document}", "document.read", allowed_statuses=frozenset({404})),
+    Route(
+        "POST",
+        "/api/v1/documents/{document}/versions/{version}/download",
+        "document.read",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/me/documents",
+        "document.upload.self",
+        params={"category_id": str(uuid.UUID(int=7)), "title": "Matrix document"},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employees/{employee}/documents",
+        "document.manage.all",
+        params={"category_id": str(uuid.UUID(int=7)), "title": "Matrix document"},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/company-documents",
+        "document.company.manage",
+        params={"category_id": str(uuid.UUID(int=7)), "title": "Matrix document"},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST", "/api/v1/documents/{document}/versions", "document.read", allowed_statuses=frozenset({404})
+    ),
+    Route("PATCH", "/api/v1/documents/{document}", "document.read", {}, allowed_statuses=frozenset({422})),
+    # Exports: test APIs have no file storage, so an allowed request ends at 503 after the
+    # permission and step-up checks.
+    Route(
+        "POST",
+        "/api/v1/exports/attendance-summary",
+        "attendance.export",
+        {"from": "2026-01-01", "to": "2026-01-31"},
+        allowed_statuses=frozenset({503}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/exports/attendance-days",
+        "attendance.export",
+        {"from": "2026-01-01", "to": "2026-01-31"},
+        allowed_statuses=frozenset({503}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/exports/leave-requests",
+        "leave.export",
+        {"from": "2026-01-01", "to": "2026-01-31"},
+        allowed_statuses=frozenset({503}),
+    ),
+    Route("POST", "/api/v1/exports/leave-balances", "leave.export", {}, allowed_statuses=frozenset({503})),
+    Route("POST", "/api/v1/exports/employees", "employee.export", {}, allowed_statuses=frozenset({503})),
+    Route(
+        "POST",
+        "/api/v1/exports/audit-log",
+        "audit.export",
+        {"from": "2026-01-01", "to": "2026-01-31"},
+        allowed_statuses=frozenset({503}),
+    ),
+    # People: exit and emergency contacts. {employee} does not exist.
+    Route(
+        "POST",
+        "/api/v1/employees/{employee}/exit",
+        "employee.lifecycle.manage",
+        {"last_working_day": "2026-01-31", "reason": "Matrix test"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "GET",
+        "/api/v1/employees/{employee}/emergency-contacts",
+        "employee.personal.read",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "PUT",
+        "/api/v1/employees/{employee}/emergency-contacts",
+        "employee.personal.update.all",
+        {"contacts": []},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/me/emergency-contacts", "employee.personal.read.self"),
+    Route("PUT", "/api/v1/me/emergency-contacts", "employee.personal.update.self", {"contacts": []}),
     # Last: activating break-glass rotates the caller's tokens (its role changed).
     Route(
         "POST",
@@ -501,7 +829,19 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
         holiday=uuid.uuid4(),
         leave_type=uuid.uuid4(),
         request=uuid.uuid4(),
+        correction=uuid.uuid4(),
+        shift=uuid.uuid4(),
+        lock=uuid.uuid4(),
+        notification=uuid.uuid4(),
+        category=uuid.uuid4(),
+        document=uuid.uuid4(),
+        version=uuid.uuid4(),
     )
+    if route.path.endswith("documents") and route.method == "POST":
+        # Uploads send the file itself as the body.
+        return await client.request(
+            route.method, path, content=b"%PDF-1.4 matrix", params=route.params, headers=route.headers
+        )
     return await client.request(
         route.method, path, json=route.body, params=route.params, headers=route.headers
     )

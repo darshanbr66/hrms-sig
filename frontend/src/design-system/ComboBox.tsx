@@ -70,7 +70,10 @@ export function ComboBox({
         </Button>
       </div>
       <FieldError className="text-sm text-danger-700">{error}</FieldError>
-      <Popover className="max-h-72 w-[var(--trigger-width)] overflow-y-auto rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-[var(--shadow-float)]">
+      <Popover
+        data-scroll-area
+        className="max-h-72 w-[var(--trigger-width)] overflow-y-auto overscroll-contain rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-[var(--shadow-float)]"
+      >
         <ListBox
           className="outline-none"
           renderEmptyState={() => <p className="px-3 py-2 text-sm text-neutral-600">{emptyText}</p>}

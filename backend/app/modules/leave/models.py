@@ -31,6 +31,12 @@ class HolidayCalendar(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class HolidayKind(StrEnum):
+    HOLIDAY = "holiday"
+    # Worked although the shift has the date as a weekly off.
+    WORKING_DAY = "working_day"
+
+
 class Holiday(Base):
     __tablename__ = "holidays"
     __table_args__ = (UniqueConstraint("calendar_id", "date"), {"schema": SCHEMA})
@@ -42,6 +48,8 @@ class Holiday(Base):
     date: Mapped[date]
     name: Mapped[str]
     is_optional: Mapped[bool] = mapped_column(server_default=text("false"))
+    # `holiday`, or `working_day`: worked although the shift has it as a weekly off (revision 0027).
+    kind: Mapped[str] = mapped_column(server_default=text("'holiday'"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -75,6 +83,35 @@ class LeaveTypeStatus(StrEnum):
 class AccrualMethod(StrEnum):
     NONE = "none"
     UPFRONT_PER_LEAVE_YEAR = "upfront_per_leave_year"
+    PERIODIC = "periodic"
+
+
+class AccrualFrequency(StrEnum):
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
+
+
+class AccrualTiming(StrEnum):
+    PERIOD_START = "period_start"
+    PERIOD_END = "period_end"
+
+
+class ProrationRounding(StrEnum):
+    EXACT = "exact"
+    NEAREST_HALF = "nearest_half"
+    DOWN_HALF = "down_half"
+    UP_HALF = "up_half"
+
+
+class CarryForwardMode(StrEnum):
+    NONE = "none"
+    CAPPED = "capped"
+    UNLIMITED = "unlimited"
+
+
+class ExcessAction(StrEnum):
+    LAPSE = "lapse"
+    KEEP = "keep"
 
 
 class RequestStatus(StrEnum):
@@ -107,6 +144,10 @@ class EntryType(StrEnum):
     USAGE = "usage"
     USAGE_REVERSAL = "usage_reversal"
     ADJUSTMENT = "adjustment"
+    CARRY_FORWARD_OUT = "carry_forward_out"
+    CARRY_FORWARD = "carry_forward"
+    CARRY_FORWARD_EXPIRY = "carry_forward_expiry"
+    LAPSE = "lapse"
 
 
 class LeaveType(Base):
@@ -145,6 +186,18 @@ class LeavePolicy(Base):
     accrual_amount: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     allow_negative_balance: Mapped[bool]
     max_negative_days: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    # Revision 0021. Null where the rule does not apply or was not decided (policies written
+    # before 0021); the service requires a decision on new policies where it applies.
+    accrual_frequency: Mapped[str | None]
+    accrual_timing: Mapped[str | None]
+    prorate_on_joining: Mapped[bool | None]
+    prorate_on_exit: Mapped[bool | None]
+    proration_rounding: Mapped[str | None]
+    # Null: the year-end rule is not decided, and the year-end run skips the policy.
+    carry_forward_mode: Mapped[str | None]
+    carry_forward_cap: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    excess_action: Mapped[str | None]
+    carried_expire_after_months: Mapped[int | None] = mapped_column(SmallInteger())
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -211,6 +264,15 @@ class LeaveDecision(Base):
     decided_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+# The predicates of the ledger's unique indexes (revision 0021): one opening balance, upfront
+# allocation and year-end entry of each kind per leave year; one periodic accrual per period.
+YEARLY_WHERE = (
+    "entry_type IN ('opening_balance', 'carry_forward_out', 'carry_forward', 'carry_forward_expiry', "
+    "'lapse') OR (entry_type = 'accrual' AND period_start IS NULL)"
+)
+PERIODIC_WHERE = "entry_type = 'accrual' AND period_start IS NOT NULL"
+
+
 class LeaveLedgerEntry(Base):
     """Append-only (trigger `leave.guard_append_only`). The balance is the sum of the entries."""
 
@@ -229,7 +291,20 @@ class LeaveLedgerEntry(Base):
             "leave_year",
             "entry_type",
             unique=True,
-            postgresql_where=text("entry_type IN ('accrual', 'opening_balance')"),
+            postgresql_where=text(YEARLY_WHERE),
+        ),
+        Index(
+            "uq_leave_ledger_periodic",
+            "employee_id",
+            "leave_type_id",
+            "period_start",
+            unique=True,
+            postgresql_where=text(PERIODIC_WHERE),
+        ),
+        Index(
+            "ix_leave_ledger_import_batch_id",
+            "import_batch_id",
+            postgresql_where=text("import_batch_id IS NOT NULL"),
         ),
         Index(
             "uq_leave_ledger_request",
@@ -263,6 +338,11 @@ class LeaveLedgerEntry(Base):
         ForeignKey("leave.leave_policies.id", ondelete="RESTRICT")
     )
     reason: Mapped[str | None]
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
+    # Null only for entries the worker writes as the system (periodic accrual, expiry).
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
     idempotency_key: Mapped[str | None]
+    # The accrual period a periodic accrual belongs to.
+    period_start: Mapped[date | None]
+    # Opening balances imported together share a batch.
+    import_batch_id: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

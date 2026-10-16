@@ -10,7 +10,7 @@ import { createContext, useCallback, useContext, useRef, useState, type ReactNod
 import { Form } from "react-aria-components";
 
 import { Button } from "../design-system/Button";
-import { Dialog } from "../design-system/Dialog";
+import { Dialog, DialogActions } from "../design-system/Dialog";
 import { TextField } from "../design-system/TextField";
 import { client, unwrap } from "../lib/api";
 import { ApiError } from "../lib/problem";
@@ -123,14 +123,14 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
             maxLength={6}
             error={error}
           />
-          <div className="flex justify-end gap-2">
+          <DialogActions>
             <Button variant="secondary" onPress={cancel}>
               Cancel
             </Button>
             <Button type="submit" isPending={submitting}>
               Confirm
             </Button>
-          </div>
+          </DialogActions>
         </Form>
       </Dialog>
     </StepUpContext.Provider>

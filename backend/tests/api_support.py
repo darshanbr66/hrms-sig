@@ -28,11 +28,12 @@ from sqlalchemy import select, text
 from app.main import create_app
 from app.modules.access.models import Role, UserRole
 from app.modules.identity.models import Credential, FactorType, MfaFactor, User, UserStatus
-from app.modules.notify.dispatcher import DispatchResult, OutboxDispatcher
+from app.modules.notify.dispatcher import BATCH, DispatchResult, OutboxDispatcher
 from app.platform.audit.signing import CheckpointSigner, SignatureVerifier, public_key_bytes
 from app.platform.config import ApiSettings, AppEnv, WorkerSettings
 from app.platform.db import Database, create_engine
 from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
+from app.platform.files import S3FileStore
 from app.platform.security import passwords, totp
 from app.platform.security.crypto import FieldCipher
 from app.worker import email_renderers
@@ -178,6 +179,8 @@ class Api:
         self.worker_database = worker_database
         self.cipher = FieldCipher({1: FIELD_KEY}, 1)
         self.mail = RecordingSender()
+        # The private file bucket, when the API was started with one (conftest `files_api`).
+        self.files: S3FileStore | None = None
 
     def dispatcher(self, sender: EmailSender | None = None) -> OutboxDispatcher:
         """The outbox dispatcher as the worker runs it (worker database role)."""
@@ -189,13 +192,25 @@ class Api:
         )
 
     async def deliver(self) -> list[OutgoingEmail]:
-        """Run the dispatcher until nothing is due; returns the emails sent by this call."""
+        """Run the dispatcher until nothing is due; returns the emails sent by this call.
+
+        The outbox is shared by every test using this database, so emails that earlier tests
+        queued and never delivered go out here too: the bound allows one pass per batch of them.
+        """
         before = len(self.mail.sent)
+        [(waiting,)] = await self.fetch(
+            "SELECT count(*) FROM notify.email_outbox WHERE status IN ('pending', 'sending')"
+        )
+        passes = DELIVER_PASSES + waiting // BATCH
         # Bounded, so a dispatcher that keeps finding work fails the test instead of hanging it.
-        for _ in range(DELIVER_PASSES):
+        for _ in range(passes):
             if await self.dispatcher().run_once() == DispatchResult():
                 return self.mail.sent[before:]
-        raise AssertionError(f"the outbox still had due emails after {DELIVER_PASSES} dispatch passes")
+        left = await self.fetch(
+            "SELECT template, count(*) FROM notify.email_outbox "
+            "WHERE status IN ('pending', 'sending') GROUP BY template ORDER BY template"
+        )
+        raise AssertionError(f"the outbox still had due emails after {passes} dispatch passes: {left}")
 
     def mail_to(self, email: str) -> list[OutgoingEmail]:
         return [message for message in self.mail.sent if message.to == email]

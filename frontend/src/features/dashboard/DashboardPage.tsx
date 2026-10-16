@@ -8,13 +8,17 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
+  BarChart3,
   Building2,
+  CalendarClock,
   CalendarDays,
   CalendarCheck,
   CalendarCog,
   CalendarRange,
+  ClipboardCheck,
   ClipboardList,
   Cake,
+  FileText,
   KeyRound,
   Scale,
   ShieldAlert,
@@ -105,6 +109,12 @@ export function DashboardPage() {
         {canSee(data, { anyOf: ["leave.request.approve.team", "leave.request.approve.all"] }) ? (
           <LeaveWaiting />
         ) : null}
+        {canSee(data, {
+          anyOf: ["attendance.correction.approve.team", "attendance.correction.approve.all"],
+        }) ? (
+          <CorrectionsWaiting />
+        ) : null}
+        {canSee(data, { anyOf: ["shift.manage", "attendance.policy.manage"] }) ? <AttendanceSetup /> : null}
         {readsPeople ? <RecentJoiners /> : null}
         {readsPeople ? <PeopleMoments /> : null}
         {hasPermission(data, "role.elevation.request") && !readsPeople ? <TemporaryAccess /> : null}
@@ -441,6 +451,85 @@ function LeaveWaiting() {
   );
 }
 
+function CorrectionsWaiting() {
+  const waiting = useQuery({
+    queryKey: [...ATTENDANCE_KEY, "corrections", "decide", "dashboard"],
+    queryFn: () =>
+      unwrap(
+        client.GET("/api/v1/attendance/corrections", { params: { query: { for_decision: true, limit: 5 } } }),
+      ),
+  });
+  const items = waiting.data?.items ?? [];
+  return (
+    <Panel
+      title="Attendance corrections waiting for you"
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/attendance/corrections">
+          Attendance corrections
+        </Link>
+      }
+    >
+      <Loading
+        query={waiting}
+        label="Loading corrections to decide"
+        fallback="We couldn't load the corrections."
+      />
+      {waiting.isSuccess && items.length === 0 ? (
+        <EmptyState icon={ClipboardCheck} title="Nothing waiting for your decision" />
+      ) : null}
+      <ul className="flex flex-col gap-3">
+        {items.map((item) => (
+          <li key={item.id} className="text-sm">
+            <Link
+              className="font-semibold text-neutral-900 hover:underline"
+              to={`/attendance/corrections/${item.id}`}
+            >
+              {item.employee_name}: {formatDate(item.work_date)}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+/** Who has no shift or attendance policy today (ATT-12), for the people who set them up. */
+function AttendanceSetup() {
+  const setup = useQuery({
+    queryKey: [...ATTENDANCE_KEY, "setup"],
+    queryFn: () => unwrap(client.GET("/api/v1/attendance/setup")),
+  });
+  const gaps = setup.data ? setup.data.without_shift.length + setup.data.without_policy.length : 0;
+  return (
+    <Panel
+      title="Attendance set-up"
+      action={
+        <Link className="text-sm text-accent-700 hover:underline" to="/setup/attendance">
+          Attendance set-up
+        </Link>
+      }
+    >
+      <Loading
+        query={setup}
+        label="Checking attendance set-up"
+        fallback="We couldn't check the attendance set-up."
+      />
+      {setup.isSuccess && gaps === 0 ? (
+        <p className="text-sm text-neutral-700">
+          Everyone in your scope has a shift and an attendance policy today.
+        </p>
+      ) : null}
+      {setup.isSuccess && gaps > 0 ? (
+        <p className="text-sm text-neutral-700">
+          {plural(setup.data.without_shift.length, "person has", "people have")} no shift and{" "}
+          {plural(setup.data.without_policy.length, "person has", "people have")} no attendance policy today,
+          so their days are not judged.
+        </p>
+      ) : null}
+    </Panel>
+  );
+}
+
 function RecentJoiners() {
   const stats = useStatistics(true);
   const joiners = stats.data?.recent_joiners ?? [];
@@ -687,6 +776,24 @@ function QuickActions({ me }: { me: Me | null | undefined }) {
       label: "Team attendance",
       icon: UsersRound,
       show: canSee(me, { anyOf: READS_TEAM_ATTENDANCE }),
+    },
+    {
+      to: "/setup/attendance",
+      label: "Attendance set-up",
+      icon: CalendarClock,
+      show: canSee(me, { anyOf: ["shift.manage", "attendance.policy.manage", "shift.assign.all"] }),
+    },
+    {
+      to: "/documents",
+      label: "Documents",
+      icon: FileText,
+      show: canSee(me, { anyOf: ["document.read.self", "document.company.read"] }),
+    },
+    {
+      to: "/reports",
+      label: "Reports",
+      icon: BarChart3,
+      show: canSee(me, { anyOf: ["leave.read.all", "attendance.export", "leave.export", "employee.export"] }),
     },
     {
       to: "/admin/users",

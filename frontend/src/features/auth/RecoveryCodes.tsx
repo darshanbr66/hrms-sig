@@ -57,7 +57,7 @@ export function RecoveryCodes({
               <span
                 aria-hidden
                 className={`flex size-4 items-center justify-center rounded border ${
-                  isSelected ? "border-accent-600 bg-accent-600 text-neutral-0" : "border-neutral-400"
+                  isSelected ? "border-accent-600 bg-accent-600 text-neutral-0" : "border-neutral-500"
                 }`}
               >
                 {isSelected ? <Check className="size-3" /> : null}

@@ -17,7 +17,7 @@ import { Badge } from "../../design-system/Badge";
 import { Banner } from "../../design-system/Banner";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { ConfirmDialog, Dialog } from "../../design-system/Dialog";
+import { ConfirmDialog, Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { DescriptionList, TextArea } from "../../design-system/Fields";
 import { PageHeader } from "../../design-system/PageHeader";
@@ -580,14 +580,14 @@ function AssignRoleDialog({
           description="Kept with the assignment and in the audit log."
           error={errors.reason}
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={assign.isPending} isDisabled={!role || reason.trim() === ""}>
             Assign role
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

@@ -56,7 +56,7 @@ As built (2026-10-10), Home is the dashboard at `/`. It opens with a greeting an
 
 ### Typography
 
-- One family for UI: **IBM Plex Sans** (open licence, clear at small sizes, true tabular figures, good Latin and Devanagari companions if Indian-language UI is ever needed). **IBM Plex Mono** for codes and IDs where monospace helps (employee codes in tables). Self-hosted `woff2`, subset, `font-display: swap`.
+- One family for UI: **IBM Plex Sans** (open licence, clear at small sizes, true tabular figures, good Latin and Devanagari companions if Indian-language UI is ever needed). **IBM Plex Mono** for codes and IDs where monospace helps (employee codes in tables). Self-hosted `woff2`, subset, `font-display: swap`. As built: `@fontsource/ibm-plex-sans` (400, 600) and `@fontsource/ibm-plex-mono` (400, added 2026-10-16; until then `font-mono` fell back to the system monospace font); the browser test `e2e/theme.e2e.ts` checks both are loaded.
 - Type scale (rem at 16 px base): 0.75 (caption), 0.875 (secondary/table), 1 (body), 1.125 (section title), 1.375 (page title), 1.75 (rare, large numeric displays such as today's worked time).
 - Weights: 400 and 600 only (500 optional for table headers).
 - Numbers in tables and time displays use `font-variant-numeric: tabular-nums`.
@@ -70,7 +70,7 @@ Sigvitas brand colours are not yet provided (open question). Until then, the dir
 - One accent (proposed: a deep teal or ink blue, final value from Sigvitas brand) for primary buttons, links, focus rings and the current nav item. Nothing else.
 - Semantic colours with meaning only: success (approved, present), warning (pending, late, incomplete), danger (rejected, absent, destructive actions), info (neutral status). Each paired with an icon or text; colour is never the only signal.
 - All text/background pairs meet WCAG 2.2 AA contrast (4.5:1 body, 3:1 large text and UI components).
-- Light theme first; dark theme defined in tokens from day one and shipped when verified.
+- Light theme first; dark theme defined in tokens from day one and shipped when verified. As built (2026-10-16): the dark theme redefines the same colour tokens under `:root[data-theme="dark"]` (inverted warm neutrals, lighter accent and status colours), so components carry no dark-only classes. People choose Light, Dark or Same as system in the account menu; the choice is kept in the browser (`localStorage`), and `public/theme-init.js` applies it before the first paint. Backdrops use the `scrim` token. Both themes pass axe colour-contrast checks on the main screens; input borders (`neutral-300`) are still below 3:1 in both.
 
 ### Spacing, shape, elevation
 
@@ -85,7 +85,18 @@ Sigvitas brand colours are not yet provided (open question). Until then, the dir
 
 ### Tokens
 
-Defined as CSS custom properties consumed by Tailwind v4's `@theme`: `--color-*`, `--space-*`, `--radius-*`, `--font-*`, `--shadow-*`, `--duration-*`, `--ease-*`. Components use tokens only; no raw hex values in components (lint rule).
+Defined as CSS custom properties consumed by Tailwind v4's `@theme`: `--color-*`, `--space-*`, `--radius-*`, `--font-*`, `--shadow-*`, `--duration-*`, `--ease-*`, `--animate-*`. Components use tokens only; no raw hex values in components (lint rule).
+
+React Aria marks component state with data attributes. `src/styles.css` declares the `selected:` and `pressed:` variants (`@custom-variant`) for `data-selected` and `data-pressed`; Tailwind has no variants of those names, and without the declaration such classes compile to nothing (the cause of checkboxes and tabs that never looked selected, fixed 2026-10-16). Other states use `data-[…]:` directly, for example `data-[focus-visible]:`. A new state class is checked in the browser, not only in jsdom, which applies no CSS.
+
+### Scrolling
+
+- The page scrolls; inner areas scroll only where they must stay in place: the sidebar navigation, a dialog's body, and option lists. These carry `data-scroll-area` and `overscroll-behavior: contain`, so scrolling past their end does not move the page behind them.
+- Scrollbars use the standard `scrollbar-width: thin` and `scrollbar-color` (thumb `--color-scrollbar-thumb`, clear track), darker on hover and focus inside a scroll area (`--color-scrollbar-thumb-hover`), with `::-webkit-scrollbar` rules only where the standard properties are unsupported. Never hidden.
+- `scrollbar-gutter: stable` on the page, so moving between short and long pages does not shift the layout.
+- `scroll-padding-top` keeps focused elements and in-page targets below the sticky top bar; `scroll-padding-bottom` keeps them above the phone bottom bar.
+- No layout may overflow by accident: a 1 px overflow in an `overflow-x-auto` strip gives it its own vertical scrollbar (the Notifications tabs defect). Draw underlines inside the element (an inset shadow) rather than with negative margins.
+- Styling a scrollbar does not change how smoothly anything scrolls; scrolling is checked by wheel and keyboard in `e2e/scrolling.e2e.ts`.
 
 ## 5. Components
 
@@ -100,7 +111,10 @@ Rule: if a pattern appears twice, it becomes a component; if it appears once, it
 ### Tables
 
 - Default density "comfortable" (44 px rows); "compact" toggle (36 px) remembered per user.
-- Sticky header, left-aligned text, right-aligned numbers, status as pill + text.
+- Sticky header (below the top bar: the wrapper uses `overflow-clip`, not `overflow-hidden`, which would make it the scroll container sticky attaches to), left-aligned text, right-aligned numbers, status as pill + text.
+- Expandable details (`DataTable` `details`): a disclosure button per row (`aria-expanded`, `aria-controls`, named "Show details for …") opens a full-width row with the records behind the summary, such as a day's clock events or an audit record's request context. Details render only while open. The row's own summary never depends on them.
+- Views of the same records (table or month, list or hierarchy) switch with `ViewSwitch` (React Aria ToggleButtonGroup); the accessible list or table stays one choice away.
+- Hierarchies (departments) use a table tree: expand buttons named with the item and its child count, children rendered only when expanded, connectors for nesting, a selected-item panel, Expand all and Collapse all.
 - Row click opens detail; row actions in a trailing menu; bulk actions only where the backend supports them.
 - On mobile, tables become stacked lists: primary field as title, two or three secondary fields, status pill. Not horizontal scrolling for primary tables.
 - Filters shown above the table as a compact bar; active filters are visible chips with clear-all. Filter state is kept in the URL so views can be bookmarked and shared (without leaking data, since the receiver's permissions apply).
@@ -123,6 +137,7 @@ Rule: if a pattern appears twice, it becomes a component; if it appears once, it
 ### Confirmations
 
 - Reversible actions: no confirmation; show a toast with "Undo" only where the backend supports undo (e.g. cancel a pending request).
+- Dialogs fit the visible viewport (`design-system/Dialog.tsx`): the title stays at the top, the body scrolls, and the buttons go in `DialogActions`, which stays pinned at the bottom of the body. Never put a dialog's buttons in a plain row, and never add page-level CSS to make one dialog fit. `frontend/e2e/dialogs.e2e.ts` checks the add dialogs on small laptop, desktop, 200 % zoom and phone sizes in a real browser.
 - Consequential actions (reject, deactivate user, revoke sessions): AlertDialog naming the object and consequence ("Deactivate {employee name}'s account? They will be signed out on all devices.").
 - High-impact administrative actions (exit employee with immediate revocation, assign super admin, finalize payroll): AlertDialog + step-up. No typed-name confirmation unless the action is irreversible and bulk.
 
@@ -174,6 +189,9 @@ A small dialog: "Confirm it's you — Enter the 6-digit code from your authentic
 - Durations 120–200 ms; standard easing `cubic-bezier(0.2, 0, 0, 1)`. Nothing over 300 ms except page-level skeleton fades.
 - `prefers-reduced-motion: reduce` → transitions become instant opacity changes; no transforms.
 - **Motion** (the library formerly Framer Motion) only for layout/presence animations that CSS transitions cannot handle (list reorder, exit animations). CSS transitions first.
+- Theme change: colours fade for 200 ms (`theme-changing` class on `<html>`), instant with reduced motion.
+- `animate-reveal` (fade with a 4 px drop, `--duration-normal`): expanding details, a selected item's panel, and a new month or date range. Nothing waits for it; with reduced motion it is instant. Checkbox fills and chevrons use `--duration-fast`.
+- Following Atlassian's motion guidance (researched 2026-10-16): under 150 ms for things done many times a day, 150 to 400 ms for content that appears, exits no slower than entrances, one moving thing at a time, never motion as the only sign of a change.
 - 3D: none in MVP. If introduced, limited to a static, lightweight brand element on the sign-in page, never in working screens.
 
 ## 8. Accessibility (WCAG 2.2 AA)

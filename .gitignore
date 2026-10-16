@@ -16,6 +16,8 @@ htmlcov/
 # Node
 node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 *.tsbuildinfo
 
 # Editors and OS
@@ -27,3 +29,6 @@ Thumbs.db
 # Local login notes with invite links (secrets)
 local-logins.md
 local-test-credentials.md
+
+# Local-only secrets (passwords for local test accounts); never commit
+.local-secrets/

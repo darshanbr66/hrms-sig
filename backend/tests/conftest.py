@@ -24,6 +24,7 @@ from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.platform.config import AppEnv, MigrationSettings
 from app.platform.db import Database, create_engine
+from app.platform.files import S3FileStore
 from app.platform.storage import S3AnchorStore
 
 if TYPE_CHECKING:
@@ -298,4 +299,33 @@ async def isolated_api(migrated_postgres: PostgresServer, redis: RedisServer) ->
     async with running_api(
         migrated_postgres, redis, database_name=fresh_migrated_database(migrated_postgres)
     ) as running:
+        yield running
+
+
+@pytest.fixture
+async def files_api(
+    migrated_postgres: PostgresServer, redis: RedisServer, s3: S3Server
+) -> AsyncIterator["Api"]:
+    """A running API with a private file bucket of its own on the S3 emulator (documents and
+    exports). `api.files` is the same bucket as the worker uses it."""
+    from tests.api_support import running_api  # noqa: PLC0415 (api_support imports this module)
+
+    bucket = f"files-{secrets.token_hex(6)}"
+    s3.client().create_bucket(Bucket=bucket)
+    async with running_api(
+        migrated_postgres,
+        redis,
+        files_bucket=bucket,
+        files_access_key_id=SecretStr(s3.access_key_id),
+        files_secret_access_key=SecretStr(s3.secret_access_key),
+        s3_endpoint_url=s3.endpoint_url,
+        s3_region=s3.region,
+    ) as running:
+        running.files = S3FileStore(
+            bucket=bucket,
+            region=s3.region,
+            access_key_id=SecretStr(s3.access_key_id),
+            secret_access_key=SecretStr(s3.secret_access_key),
+            endpoint_url=s3.endpoint_url,
+        )
         yield running

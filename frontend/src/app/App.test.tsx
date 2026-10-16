@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ import { FakeApi, ME, json, problem } from "../test/fakeApi";
 import { createQueryClient, routes } from "./App";
 import { visibleNavItems } from "./AppShell";
 import { RequirePermission } from "./guards";
+import { THEME_KEY, applyTheme, readThemePreference } from "./theme";
 
 let api: FakeApi;
 
@@ -234,6 +235,70 @@ describe("session lifecycle", () => {
       expect(router.state.location.pathname).toBe("/sign-in");
     });
     expect(api.called("POST /api/v1/auth/logout")).toHaveLength(1);
+  });
+});
+
+describe("colour theme", () => {
+  function systemPrefersDark(dark: boolean) {
+    const listeners = new Set<() => void>();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query.includes("dark") ? dark : false,
+        media: query,
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      })),
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.removeItem(THEME_KEY);
+    delete document.documentElement.dataset.theme;
+    return () => {
+      vi.unstubAllGlobals();
+      window.localStorage.removeItem(THEME_KEY);
+    };
+  });
+
+  it("is chosen in the account menu, applied at once and remembered in this browser", async () => {
+    systemPrefersDark(false);
+    signedIn();
+    const user = userEvent.setup();
+    renderAt("/account/security");
+    await screen.findByRole("heading", { name: "Account security" });
+    await user.click(screen.getByRole("button", { name: "Account menu" }));
+    const themes = await screen.findByRole("group", { name: "Theme" });
+    const system = within(themes).getByRole("menuitemradio", { name: "Same as system" });
+    expect(system).toHaveAttribute("aria-checked", "true");
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    await user.click(within(themes).getByRole("menuitemradio", { name: "Dark" }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("dark");
+    // The menu stays open, showing the choice, and is operable from the keyboard.
+    const dark = within(themes).getByRole("menuitemradio", { name: "Dark" });
+    expect(dark).toHaveAttribute("aria-checked", "true");
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("light");
+    expect(await axe(document.body)).toHaveNoViolations();
+
+    await user.click(within(themes).getByRole("menuitemradio", { name: "Same as system" }));
+    expect(window.localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("follows the system setting until a theme is chosen", () => {
+    systemPrefersDark(true);
+    expect(readThemePreference()).toBe("system");
+    applyTheme(readThemePreference());
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    window.localStorage.setItem(THEME_KEY, "light");
+    applyTheme(readThemePreference());
+    expect(document.documentElement.dataset.theme).toBe("light");
+    window.localStorage.setItem(THEME_KEY, "sepia");
+    expect(readThemePreference()).toBe("system");
   });
 });
 

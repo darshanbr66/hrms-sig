@@ -7,7 +7,7 @@ export interface TextFieldProps {
   value: string;
   onChange: (value: string) => void;
   onBlur?: () => void;
-  type?: "text" | "email" | "password" | "date" | "tel";
+  type?: "text" | "email" | "password" | "date" | "time" | "tel";
   autoComplete?: string;
   description?: string;
   error?: string | undefined;

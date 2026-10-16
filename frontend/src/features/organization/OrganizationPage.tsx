@@ -9,7 +9,7 @@
  * employees each unit has today (counted by the API within the viewer's scope).
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Building2, CheckCircle2, Circle, MapPin, Plus, Shapes } from "lucide-react";
+import { Building2, CheckCircle2, Circle, List, ListTree, MapPin, Plus, Shapes } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Form } from "react-aria-components";
 import { Link, useSearchParams } from "react-router";
@@ -20,7 +20,7 @@ import { Badge } from "../../design-system/Badge";
 import { Banner } from "../../design-system/Banner";
 import { Button, ButtonLink } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { ComboBox } from "../../design-system/ComboBox";
 import { Checkbox, SearchField, TextArea } from "../../design-system/Fields";
@@ -33,11 +33,13 @@ import { Stat, StatGrid } from "../../design-system/Stat";
 import { Tabs } from "../../design-system/Tabs";
 import { TextField } from "../../design-system/TextField";
 import { useToast } from "../../design-system/Toast";
+import { ViewSwitch } from "../../design-system/ViewSwitch";
 import { client, unwrap } from "../../lib/api";
 import type { components } from "../../lib/api-schema";
 import { plural } from "../../lib/format";
 import { fieldMessages, ifMatch } from "../../lib/problem";
 import { Headcounts } from "../employees/Headcounts";
+import { DepartmentTree } from "./DepartmentTree";
 import { PEOPLE_KEY, useEmployeeSearch, useStatistics } from "../employees/queries";
 import {
   ORG_KEY,
@@ -353,6 +355,7 @@ function ListShell({
   showArchived,
   onShowArchived,
   empty,
+  dialog,
   children,
 }: {
   title: string;
@@ -363,6 +366,8 @@ function ListShell({
   showArchived: boolean;
   onShowArchived: (value: boolean) => void;
   empty: ReactNode | null;
+  /** The add or edit dialog. Kept apart from the list so it opens while the list is empty. */
+  dialog: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -393,6 +398,7 @@ function ListShell({
         />
       ) : null}
       {empty ?? children}
+      {dialog}
     </div>
   );
 }
@@ -433,14 +439,14 @@ function FormActions({
   danger?: boolean;
 }) {
   return (
-    <div className="flex justify-end gap-2 pt-2">
+    <DialogActions>
       <Button variant="secondary" onPress={onCancel}>
         Cancel
       </Button>
       <Button type="submit" variant={danger ? "danger" : "primary"} isPending={pending}>
         {label}
       </Button>
-    </div>
+    </DialogActions>
   );
 }
 
@@ -467,6 +473,8 @@ function ArchiveWarning({ kind, archiving }: { kind: string; archiving: boolean 
 // --- departments --------------------------------------------------------------------------------
 
 function Departments({ canManage, headcounts }: { canManage: boolean; headcounts: Statistics | undefined }) {
+  const me = useMe();
+  const [view, setView] = useState<"list" | "tree">("list");
   const [showArchived, setShowArchived] = useState(false);
   const [text, setText] = useState("");
   const departments = useDepartments(showArchived);
@@ -536,20 +544,46 @@ function Departments({ canManage, headcounts }: { canManage: boolean; headcounts
           <NoMatches title="departments" />
         ) : null
       }
+      dialog={
+        editing ? (
+          <DepartmentDialog
+            department={editing === "new" ? null : editing}
+            parents={(all.data?.items ?? []).filter(
+              (item) => item.status === "active" && (editing === "new" || item.id !== editing.id),
+            )}
+            onClose={() => {
+              setEditing(null);
+            }}
+          />
+        ) : null
+      }
     >
       {items.length > 0 ? (
-        <DataTable label="Departments" columns={columns} rows={items} rowKey={(row) => row.id} />
-      ) : null}
-      {editing ? (
-        <DepartmentDialog
-          department={editing === "new" ? null : editing}
-          parents={(all.data?.items ?? []).filter(
-            (item) => item.status === "active" && (editing === "new" || item.id !== editing.id),
+        <div className="flex flex-col gap-3">
+          <ViewSwitch
+            label="Show departments as"
+            options={[
+              { id: "list", label: "List", icon: List },
+              { id: "tree", label: "Hierarchy", icon: ListTree },
+            ]}
+            value={view}
+            onChange={setView}
+          />
+          {view === "list" ? (
+            <DataTable label="Departments" columns={columns} rows={items} rowKey={(row) => row.id} />
+          ) : (
+            <DepartmentTree
+              departments={items}
+              headcounts={
+                headcounts ? new Map(headcounts.by_department.map((item) => [item.id, item.employed])) : null
+              }
+              onEdit={canManage ? setEditing : null}
+              canListPeople={canSee(me.data, {
+                anyOf: ["employee.profile.read.team", "employee.profile.read.all"],
+              })}
+            />
           )}
-          onClose={() => {
-            setEditing(null);
-          }}
-        />
+        </div>
       ) : null}
     </ListShell>
   );
@@ -735,17 +769,19 @@ function Designations({ canManage, headcounts }: { canManage: boolean; headcount
           <NoMatches title="designations" />
         ) : null
       }
+      dialog={
+        editing ? (
+          <DesignationDialog
+            designation={editing === "new" ? null : editing}
+            onClose={() => {
+              setEditing(null);
+            }}
+          />
+        ) : null
+      }
     >
       {items.length > 0 ? (
         <DataTable label="Designations" columns={columns} rows={items} rowKey={(row) => row.id} />
-      ) : null}
-      {editing ? (
-        <DesignationDialog
-          designation={editing === "new" ? null : editing}
-          onClose={() => {
-            setEditing(null);
-          }}
-        />
       ) : null}
     </ListShell>
   );
@@ -896,17 +932,19 @@ function Locations({ canManage, headcounts }: { canManage: boolean; headcounts: 
           <NoMatches title="locations" />
         ) : null
       }
+      dialog={
+        editing ? (
+          <LocationDialog
+            location={editing === "new" ? null : editing}
+            onClose={() => {
+              setEditing(null);
+            }}
+          />
+        ) : null
+      }
     >
       {items.length > 0 ? (
         <DataTable label="Locations" columns={columns} rows={items} rowKey={(row) => row.id} />
-      ) : null}
-      {editing ? (
-        <LocationDialog
-          location={editing === "new" ? null : editing}
-          onClose={() => {
-            setEditing(null);
-          }}
-        />
       ) : null}
     </ListShell>
   );

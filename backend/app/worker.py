@@ -1,6 +1,7 @@
 """Worker process entry point: `python -m app.worker`."""
 
 import asyncio
+import logging
 import sys
 
 import procrastinate
@@ -8,11 +9,14 @@ import procrastinate
 # Registers every table, so foreign keys into other modules (such as org.locations) resolve.
 import app.metadata  # noqa: F401
 from app.modules.access.public import AccessEmails, register_grant_expiry
+from app.modules.attendance.public import AttendanceEmails
 from app.modules.audit.public import AuditEmails, alert_chain_mismatch
+from app.modules.documents.public import register_document_scan
 from app.modules.identity.emails import IdentityEmails
-from app.modules.leave.public import LeaveEmails
+from app.modules.leave.public import LeaveEmails, register_leave_jobs
 from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
 from app.modules.notify.public import EmailTemplate, Renderer
+from app.modules.reports.public import register_exports
 from app.platform.audit.canonical import Stream
 from app.platform.audit.integrity import AuditIntegrity, register_audit_integrity
 from app.platform.audit.partitions import register_partition_maintenance
@@ -23,6 +27,9 @@ from app.platform.db import Database, create_engine
 from app.platform.email import EmailSender, SmtpSender
 from app.platform.jobs import create_job_app
 from app.platform.logging import configure_logging
+from app.platform.scanning import ClamdScanner
+
+logger = logging.getLogger(__name__)
 
 APPLICATION_NAME = "hrms-worker"
 # Jobs run side by side, so a long audit verification or a slow anchor upload never holds up
@@ -48,6 +55,7 @@ def email_renderers(app_base_url: str, clock: Clock) -> dict[EmailTemplate, Rend
         **AccessEmails(app_base_url=app_base_url).renderers(),
         **AuditEmails().renderers(),
         **LeaveEmails(app_base_url=app_base_url).renderers(),
+        **AttendanceEmails(app_base_url=app_base_url).renderers(),
     }
 
 
@@ -82,6 +90,7 @@ def build_job_app(
     register_partition_maintenance(job_app, database)
     clock = SystemClock()
     register_grant_expiry(job_app, database, clock, AuditWriter(clock))
+    register_leave_jobs(job_app, database, clock, AuditWriter(clock))
     register_audit_integrity(job_app, audit_integrity(settings, database, retention_database, clock))
     dispatcher = OutboxDispatcher(
         database=database,
@@ -90,6 +99,23 @@ def build_job_app(
         clock=clock,
     )
     register_email_dispatch(job_app, dispatcher)
+    store = settings.file_store()
+    if store is not None:
+        register_exports(job_app, database, store, clock)
+    else:
+        logger.warning("reports.exports_disabled", extra={"reason": "FILES_BUCKET is not set"})
+    if store is not None and settings.clamav_host is not None:
+        register_document_scan(
+            job_app,
+            database,
+            store=store,
+            scanner=ClamdScanner(settings.clamav_host, settings.clamav_port),
+            clock=clock,
+            audit=AuditWriter(clock),
+        )
+    else:
+        # Uploaded documents stay waiting for a scan and cannot be downloaded (fail closed).
+        logger.warning("documents.scan_disabled", extra={"reason": "FILES_BUCKET or CLAMAV_HOST is not set"})
     return job_app
 
 

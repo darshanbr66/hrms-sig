@@ -52,6 +52,7 @@ def policy_body(leave_type_id: str, **overrides: Any) -> dict[str, Any]:
         "leave_year_start_day": 1,
         "accrual_method": "upfront_per_leave_year",
         "accrual_amount": "5",
+        "prorate_on_joining": False,
         "allow_negative_balance": False,
         **overrides,
     }
@@ -273,7 +274,8 @@ async def test_hr_adjusts_with_a_reason_never_their_own_balance(api: Api) -> Non
         twice = await client.post(path, json=body, headers=key())
         assert twice.status_code == 409
         assert twice.json()["code"] == "leave.opening_balance_exists"
-        assert (await client.post(path, json={**body, "amount": "0.3"}, headers=key())).status_code == 422
+        # Hundredths of a day are allowed (fractional accruals need correcting); more is refused.
+        assert (await client.post(path, json={**body, "amount": "0.333"}, headers=key())).status_code == 422
         minus = await client.post(
             path, json={**body, "entry_type": "adjustment", "amount": "-1"}, headers=key()
         )

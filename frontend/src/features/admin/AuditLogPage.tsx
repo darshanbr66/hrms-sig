@@ -2,6 +2,10 @@
  * The audit log (`audit.read`): who did what, under which permission and, for elevated
  * sessions, which access request. Values of personal or sensitive fields are never in it; the
  * row says only that they changed. Reading the log is itself recorded.
+ *
+ * Each row shows the action, outcome, actor, permission and target; it opens to the field
+ * changes and the full request context (request, session, address, reason). Refused and
+ * failed actions carry a danger badge in words, not colour alone.
  */
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { FileClock } from "lucide-react";
@@ -21,6 +25,8 @@ import { RecordFilters, rangeQuery, type RecordFilterValues } from "./RecordFilt
 
 type AuditRecord = components["schemas"]["AuditRecord"];
 
+const OUTCOME_LABELS: Record<string, string> = { denied: "Refused", failed: "Failed" };
+
 function changeText(value: unknown): string {
   if (typeof value !== "object" || value === null) return String(value);
   const change = value as { old?: unknown; new?: unknown; redacted?: boolean };
@@ -29,20 +35,51 @@ function changeText(value: unknown): string {
   return `${show(change.old)} to ${show(change.new)}`;
 }
 
-function Changes({ record }: { record: AuditRecord }) {
+function RecordDetails({ record }: { record: AuditRecord }) {
   const entries = Object.entries(record.changes ?? {});
-  if (entries.length === 0) return <span className="text-neutral-500">None</span>;
+  const context = [
+    { label: "Occurred", value: formatDateTime(record.occurred_at) },
+    { label: "Recorded", value: formatDateTime(record.recorded_at) },
+    { label: "Actor", value: record.actor_user_id ?? record.actor_type },
+    { label: "Target", value: record.target_id ? `${record.target_type ?? ""} ${record.target_id}` : "None" },
+    { label: "Employee concerned", value: record.subject_employee_id ?? "None" },
+    { label: "Access request", value: record.grant_request_id ?? "None" },
+    { label: "Request", value: record.request_id ?? "None" },
+    { label: "Session", value: record.session_id ?? "None" },
+    { label: "Address", value: record.ip ?? "None" },
+    { label: "Browser", value: record.user_agent ?? "None" },
+  ];
   return (
-    <details>
-      <summary className="cursor-pointer text-accent-700">{entries.length} fields</summary>
-      <ul className="mt-1 flex flex-col gap-0.5 text-xs">
-        {entries.map(([field, value]) => (
-          <li key={field}>
-            <span className="font-semibold">{field.replace(/_/g, " ")}</span>: {changeText(value)}
-          </li>
+    <div className="grid gap-4 pt-1 text-sm lg:grid-cols-2">
+      <div>
+        <h3 className="mb-1 text-xs font-semibold text-neutral-600">Changes</h3>
+        {entries.length === 0 ? (
+          <p className="text-neutral-600">No field changes recorded.</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {entries.map(([field, value]) => (
+              <li key={field} className="break-words">
+                <span className="font-semibold text-neutral-900">{field.replace(/_/g, " ")}</span>:{" "}
+                <span className="text-neutral-700">{changeText(value)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {record.reason ? (
+          <p className="mt-2 text-neutral-700">
+            <span className="font-semibold text-neutral-900">Reason:</span> {record.reason}
+          </p>
+        ) : null}
+      </div>
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-[auto_minmax(0,1fr)]">
+        {context.map((item) => (
+          <div key={item.label} className="contents">
+            <dt className="text-xs font-semibold text-neutral-600 sm:pt-0.5">{item.label}</dt>
+            <dd className="break-all font-mono text-xs text-neutral-800">{item.value}</dd>
+          </div>
         ))}
-      </ul>
-    </details>
+      </dl>
+    </div>
   );
 }
 
@@ -75,7 +112,9 @@ export function AuditLogPage() {
       cell: (row) => (
         <span className="flex flex-col gap-1">
           <code className="font-mono text-xs">{row.action}</code>
-          {row.outcome !== "success" ? <Badge tone="danger">{row.outcome}</Badge> : null}
+          {row.outcome !== "success" ? (
+            <Badge tone="danger">{OUTCOME_LABELS[row.outcome] ?? row.outcome}</Badge>
+          ) : null}
           {row.grant_request_id ? <Badge tone="warning">Elevated session</Badge> : null}
         </span>
       ),
@@ -101,7 +140,12 @@ export function AuditLogPage() {
       cell: (row) =>
         row.target_type ? `${row.target_type.replace(/_/g, " ")} ${row.target_id?.slice(-12) ?? ""}` : "None",
     },
-    { key: "changes", header: "Changes", cell: (row) => <Changes record={row} /> },
+    {
+      key: "changes",
+      header: "Changes",
+      align: "end",
+      cell: (row) => Object.keys(row.changes ?? {}).length,
+    },
   ];
   return (
     <div className="flex flex-col gap-6">
@@ -127,7 +171,14 @@ export function AuditLogPage() {
       ) : null}
       {rows.length > 0 ? (
         <div>
-          <DataTable label="Audit log" columns={columns} rows={rows} rowKey={(row) => row.id} />
+          <DataTable
+            label="Audit log"
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.id}
+            detailsLabel={(row) => `${row.action}, ${formatDateTime(row.occurred_at)}`}
+            details={(row) => <RecordDetails record={row} />}
+          />
           <LoadMore
             shown={rows.length}
             hasMore={log.hasNextPage}

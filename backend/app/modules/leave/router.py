@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.modules.leave import schemas as ls
 from app.modules.leave.holidays import CalendarDetail, HolidayService
-from app.modules.leave.models import LeaveLedgerEntry, LeaveType
+from app.modules.leave.models import HolidayKind, LeaveLedgerEntry, LeaveType
 from app.modules.leave.service import (
     Balance,
     Draft,
@@ -22,6 +22,7 @@ from app.modules.leave.service import (
     RequestRecord,
     vars_of,
 )
+from app.modules.leave.year import ImportRow, LeaveYearService
 from app.platform.audit.records import RequestContext
 from app.platform.authz.context import Actor
 from app.platform.authz.route import requires
@@ -52,11 +53,28 @@ class CalendarUpdate(_Request):
     status: Literal["active", "archived"] | None = None
 
 
+type HolidayKindValue = Literal["holiday", "working_day"]
+
+
 class HolidayCreate(_Request):
     date: date
     name: Name
     # An optional (restricted) holiday employees may choose to take.
     is_optional: bool = False
+    # `working_day`: worked although the shift has the date as a weekly off, for example a
+    # Saturday announced as a working day. Never optional.
+    kind: HolidayKindValue = "holiday"
+
+
+class HolidayUpdate(_Request):
+    """The name, or whether a holiday is optional. The date and the kind do not change."""
+
+    name: Name | None = None
+    is_optional: bool | None = None
+
+
+def _kind(value: str) -> HolidayKindValue:
+    return "working_day" if value == HolidayKind.WORKING_DAY else "holiday"
 
 
 class HolidayView(_Response):
@@ -64,6 +82,7 @@ class HolidayView(_Response):
     date: date
     name: str
     is_optional: bool
+    kind: HolidayKindValue
 
 
 class LocationRef(_Response):
@@ -88,6 +107,7 @@ class CalendarSummaryView(_Response):
     year: int
     status: Literal["active", "archived"]
     holiday_count: int
+    working_day_count: int
     location_count: int
 
 
@@ -99,6 +119,7 @@ class EmployeeHolidayView(_Response):
     date: date
     name: str
     is_optional: bool
+    kind: HolidayKindValue
     calendar: str
 
 
@@ -124,7 +145,8 @@ def _view(detail: CalendarDetail, response: Response) -> CalendarView:
         status=calendar.status,
         version=calendar.version,
         holidays=[
-            HolidayView(id=h.id, date=h.date, name=h.name, is_optional=h.is_optional) for h in detail.holidays
+            HolidayView(id=h.id, date=h.date, name=h.name, is_optional=h.is_optional, kind=_kind(h.kind))
+            for h in detail.holidays
         ],
         locations=sorted(
             (LocationRef(id=i, name=n) for i, n in detail.locations.items()), key=lambda ref: ref.name.lower()
@@ -151,6 +173,7 @@ async def list_calendars(
                 year=item.calendar.year,
                 status=item.calendar.status,
                 holiday_count=item.holiday_count,
+                working_day_count=item.working_day_count,
                 location_count=len(item.location_ids),
             )
             for item in await holidays.calendars(year)
@@ -220,6 +243,30 @@ async def add_holiday(
         holiday_date=body.date,
         name=body.name,
         is_optional=body.is_optional,
+        kind=HolidayKind(body.kind),
+    )
+    return _view(detail, response)
+
+
+@router.patch("/holiday-calendars/{calendar_id}/holidays/{holiday_id}", response_model=CalendarView)
+async def update_holiday(
+    *,
+    calendar_id: uuid.UUID,
+    holiday_id: uuid.UUID,
+    body: HolidayUpdate,
+    request: Request,
+    response: Response,
+    holidays: Service,
+    actor: Annotated[Actor, requires("holiday.manage")],
+    if_match: IfMatch = None,
+) -> CalendarView:
+    detail = await holidays.update_holiday(
+        actor,
+        RequestContext.from_request(request),
+        calendar_id,
+        holiday_id,
+        expected_version=expected_version(if_match),
+        values=_sent(body),
     )
     return _view(detail, response)
 
@@ -303,6 +350,7 @@ async def my_holidays(
                 date=item.holiday.date,
                 name=item.holiday.name,
                 is_optional=item.holiday.is_optional,
+                kind=_kind(item.holiday.kind),
                 calendar=item.calendar_name,
             )
             for item in items
@@ -331,6 +379,14 @@ def leave_service(request: Request) -> LeaveService:
 Leave = Annotated[LeaveService, Depends(leave_service)]
 
 
+def year_service(request: Request) -> LeaveYearService:
+    value: LeaveYearService = request.app.state.leave_year_service
+    return value
+
+
+Years = Annotated[LeaveYearService, Depends(year_service)]
+
+
 def _type_view(leave_type: LeaveType, response: Response | None = None) -> ls.LeaveTypeView:
     if response is not None:
         response.headers["ETag"] = etag(leave_type.version)
@@ -350,8 +406,17 @@ def _policy_view(record: PolicyRecord) -> ls.LeavePolicyView:
         leave_year_start_day=p.leave_year_start_day,
         accrual_method=p.accrual_method,
         accrual_amount=p.accrual_amount,
+        accrual_frequency=p.accrual_frequency,
+        accrual_timing=p.accrual_timing,
+        prorate_on_joining=p.prorate_on_joining,
+        prorate_on_exit=p.prorate_on_exit,
+        proration_rounding=p.proration_rounding,
         allow_negative_balance=p.allow_negative_balance,
         max_negative_days=p.max_negative_days,
+        carry_forward_mode=p.carry_forward_mode,
+        carry_forward_cap=p.carry_forward_cap,
+        excess_action=p.excess_action,
+        carried_expire_after_months=p.carried_expire_after_months,
         created_at=p.created_at,
     )
 
@@ -381,6 +446,7 @@ def _ledger_view(entry: LeaveLedgerEntry, type_name: str) -> ls.LedgerEntryView:
         amount=entry.amount,
         effective_date=entry.effective_date,
         leave_request_id=entry.leave_request_id,
+        period_start=entry.period_start,
         reason=entry.reason,
         created_at=entry.created_at,
     )
@@ -576,6 +642,110 @@ async def run_allocation(
     again allocates only to those not yet allocated for that year."""
     result = await leave.allocate(actor, RequestContext.from_request(request), body.leave_type_id, body.as_of)
     return ls.AllocationResult(**vars_of(result))
+
+
+@leave_router.get("/leave/report", response_model=ls.LeaveReportView)
+async def leave_report(
+    *,
+    leave: Leave,
+    actor: Annotated[Actor, requires("leave.read")],
+    start: Annotated[date, Query(alias="from")],
+    end: Annotated[date, Query(alias="to")],
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=400)] = None,
+) -> ls.LeaveReportView:
+    """Days taken and pending per person and leave type in the period, for the people the
+    reader may see (RPT-1). Reasons are never included."""
+    rows, next_after = await leave.report(
+        actor,
+        start=start,
+        end=end,
+        department_id=department_id,
+        location_id=location_id,
+        after=decode_key_cursor(cursor),
+        limit=limit,
+    )
+    return ls.LeaveReportView(
+        start=start,
+        end=end,
+        items=[
+            ls.LeaveReportRow(
+                employee=ls.Ref(id=row.colleague.id, name=row.colleague.name),
+                employee_code=row.colleague.employee_code,
+                department=row.colleague.department_name,
+                location=row.colleague.location_name,
+                leave_type=ls.Ref(id=row.leave_type_id, name=row.leave_type_name),
+                taken=row.taken,
+                pending=row.pending,
+            )
+            for row in rows
+        ],
+        next_cursor=encode_key_cursor(next_after),
+    )
+
+
+@leave_router.post("/leave-year-end", response_model=ls.YearEndResult)
+async def close_leave_year(
+    body: ls.YearEndRun,
+    request: Request,
+    years: Years,
+    actor: Annotated[Actor, requires("leave.balance.adjust")],
+) -> ls.YearEndResult:
+    """Close a leave year for one leave type: carry each balance forward up to the policy's
+    cap and lapse or keep the rest. With `apply: false` nothing is recorded; each employee is
+    closed at most once."""
+    report = await years.close_year(
+        actor, RequestContext.from_request(request), body.leave_type_id, body.year_end, apply=body.apply
+    )
+    return ls.YearEndResult(
+        applied=report.applied,
+        counts=report.counts,
+        items=[
+            ls.YearEndRowView(
+                employee=ls.Ref(id=row.employee_id, name=row.employee_name),
+                outcome=row.outcome,
+                closing=row.closing,
+                carried=row.carried,
+                lapsed=row.lapsed,
+                kept=row.kept,
+            )
+            for row in report.rows
+        ],
+    )
+
+
+@leave_router.post("/leave-opening-balances", response_model=ls.ImportResult)
+async def import_opening_balances(
+    body: ls.OpeningBalanceImport,
+    request: Request,
+    years: Years,
+    actor: Annotated[Actor, requires("leave.balance.adjust")],
+) -> ls.ImportResult:
+    """Check opening balances row by row; with `apply: true` and every row fine, record them
+    as one import batch. A file with any refused row records nothing."""
+    rows = [
+        ImportRow(line, row.employee_code, row.leave_type_code, row.days, row.effective_date)
+        for line, row in enumerate(body.rows, start=1)
+    ]
+    report = await years.import_opening_balances(
+        actor, RequestContext.from_request(request), rows, body.reason, apply=body.apply
+    )
+    return ls.ImportResult(
+        applied=report.applied,
+        batch_id=report.batch_id,
+        counts=report.counts,
+        items=[
+            ls.ImportRowView(
+                line=row.line,
+                employee_code=row.employee_code,
+                leave_type_code=row.leave_type_code,
+                outcome=row.outcome,
+            )
+            for row in report.rows
+        ],
+    )
 
 
 # requests

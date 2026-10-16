@@ -150,7 +150,7 @@ Cross-Origin-Resource-Policy: same-origin
 Cache-Control: no-store   (all authenticated API responses)
 ```
 
-Fonts are self-hosted so no third-party origins are needed in the CSP. Tailwind output is a static stylesheet, so `style-src 'self'` works without `unsafe-inline`. Styles set from JavaScript through the CSSOM (as React, React Aria and Motion do) are not affected by CSP; libraries that inject `<style>` elements at runtime (most CSS-in-JS) are not used.
+Fonts are self-hosted so no third-party origins are needed in the CSP. The only script outside the bundle is `/theme-init.js`, a same-origin file that sets the colour theme before the first paint; it is a file rather than an inline script so `script-src 'self'` needs no `unsafe-inline` or hash, and it reads only the theme preference from `localStorage`. Tailwind output is a static stylesheet, so `style-src 'self'` works without `unsafe-inline`. Styles set from JavaScript through the CSSOM (as React, React Aria and Motion do) are not affected by CSP; libraries that inject `<style>` elements at runtime (most CSS-in-JS) are not used.
 
 ## 6. Data protection
 
@@ -175,6 +175,15 @@ Fonts are self-hosted so no third-party origins are needed in the CSP. Tailwind 
 - Uploads go through the API (not presigned PUT) so the API can enforce size, type sniffing and quarantine. Files land in a `quarantine/` prefix; the worker scans with ClamAV and moves clean files to `clean/`. Infected files are deleted and a security event raised.
 - Allowed types (MVP): PDF, PNG, JPEG, WebP, DOCX. Detected by magic bytes. Images re-encoded to strip metadata (EXIF location). Office files with macros rejected.
 - Export files and payslips expire by lifecycle rules.
+
+Built state (revisions 0022 and 0023, 2026-10-15), differing from the list above where noted:
+
+- One private files bucket (`FILES_BUCKET`), separate from the anchor bucket, with keys `documents/<uuid>` and `exports/<uuid>`. Locally `scripts/create_local_files_bucket.py` creates it and refuses a bucket that has a policy or answers anonymous requests.
+- Scan state is a column (`docs.document_versions.scan_status`), not a `quarantine/` and `clean/` prefix: a version is stored once and becomes downloadable only when the worker records `clean`. While ClamAV is unreachable the version stays `pending` and is retried; after five attempts it is `failed`. `pending`, `infected` and `failed` versions are never downloadable (tested, including with a live ClamAV).
+- Infected versions are kept, never served, and recorded in the audit log with the signature name (`document.scan.infected`), not as a security event; removing them waits for the document retention decision.
+- Allowed types are PDF, PNG and JPEG only (by magic bytes, at most 10 MB). WebP and DOCX are not accepted. **Images are not re-encoded, so EXIF metadata (for example a photo's location) is kept**; stripping it remains to be built before employees upload photos.
+- Downloads are limited to 60 per user per hour for documents and for exports, and export requests to 5 per hour with one in preparation at a time; these limits fail closed (`architecture.md` §3.1).
+- Export files are deleted by the worker 24 hours after they are produced, not by bucket lifecycle rules.
 
 ### 6.4 Secrets
 

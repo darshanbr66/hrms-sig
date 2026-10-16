@@ -30,12 +30,17 @@ export function Tabs({
           }
         : {})}
     >
-      <TabList aria-label={label} className="flex gap-1 overflow-x-auto border-b border-neutral-200">
+      {/* The baseline is an inset shadow, not a border the tabs overlap with a negative margin:
+          that overlap overflowed by 1 px and gave the strip its own vertical scrollbar. */}
+      <TabList
+        aria-label={label}
+        className="flex gap-1 overflow-x-auto shadow-[inset_0_-1px_0_var(--color-neutral-200)]"
+      >
         {items.map((item) => (
           <Tab
             key={item.id}
             id={item.id}
-            className="-mb-px cursor-default whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-sm font-semibold text-neutral-600 outline-none hover:text-neutral-900 focus-visible:outline-2 focus-visible:outline-accent-600 selected:border-accent-600 selected:text-accent-700"
+            className="cursor-default whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-sm font-semibold text-neutral-600 outline-none hover:text-neutral-900 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-600 selected:border-accent-600 selected:text-accent-700"
           >
             {item.label}
           </Tab>

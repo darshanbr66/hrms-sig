@@ -148,17 +148,35 @@ export function today(overrides: Partial<Schemas["TodayView"]> = {}): Schemas["T
     server_time: "2026-10-05T03:30:00Z",
     allowed_events: ["CLOCK_IN"],
     open_since: null,
-    day: {
-      work_date: "2026-10-05",
-      first_in: null,
-      last_out: null,
-      session_seconds: 0,
-      break_seconds: 0,
-      open_session: false,
-      on_break: false,
-      missing_break_end: false,
-      events: [],
-    },
+    day: attendanceDay(),
+    ...overrides,
+  };
+}
+
+/** A day with nothing recorded and no shift or policy applying. */
+export function attendanceDay(overrides: Partial<Schemas["DayView"]> = {}): Schemas["DayView"] {
+  return {
+    work_date: "2026-10-05",
+    first_in: null,
+    last_out: null,
+    session_seconds: 0,
+    break_seconds: 0,
+    open_session: false,
+    on_break: false,
+    missing_break_end: false,
+    status: null,
+    judged: false,
+    shift_name: null,
+    shift_start_at: null,
+    shift_end_at: null,
+    effective_minutes: 0,
+    late_minutes: 0,
+    early_leave_minutes: 0,
+    overtime_minutes: 0,
+    anomalies: [],
+    holiday: false,
+    leave_portion: "0",
+    events: [],
     ...overrides,
   };
 }

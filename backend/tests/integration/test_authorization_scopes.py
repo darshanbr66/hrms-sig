@@ -108,7 +108,14 @@ async def test_employee_and_manager_roles_come_from_employment_and_reporting_lin
         assert {"employee", "manager"} <= lead_actor.role_keys
         assert "manager" not in dev_actor.role_keys
         assert nobody.role_keys == frozenset()
-        assert nobody.permission_keys == {"auth.session.read.self", "auth.session.revoke.self"}
+        # An account with no employee record holds only the account baseline (own sessions and
+        # notifications).
+        assert nobody.permission_keys == {
+            "auth.session.read.self",
+            "auth.session.revoke.self",
+            "notification.read.self",
+            "notification.preference.update.self",
+        }
 
         assert await visible(session, engine, lead_actor, "employee.profile.read", among) == {
             ids["lead"],

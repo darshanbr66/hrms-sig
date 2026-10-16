@@ -2,6 +2,10 @@
  * Short confirmations after an action ("Department added"). They are announced to screen
  * readers through a polite live region and disappear on their own; errors stay on the page
  * next to what failed instead of in a toast.
+ *
+ * A message that is already showing is not stacked again: the visible one is replaced and its
+ * time restarts (so five quick "Preference saved" confirmations show as one). At most three
+ * different messages show at once.
  */
 import { CircleCheck, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -33,7 +37,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
   const notify = useCallback<Notify>((message) => {
     const id = next.current++;
-    setItems((current) => [...current.slice(-2), { id, message }]);
+    setItems((current) => [...current.filter((item) => item.message !== message).slice(-2), { id, message }]);
   }, []);
   return (
     <ToastContext.Provider value={notify}>

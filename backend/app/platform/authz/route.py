@@ -59,6 +59,9 @@ ACCOUNT_ROUTES: Final = frozenset(
         "/api/v1/me/mfa/totp/confirm",
         "/api/v1/me/mfa/recovery-codes",
         "/api/v1/me/elevation",
+        # Exports the account asked for; the service answers only for the requester's own.
+        "/api/v1/me/exports",
+        "/api/v1/me/exports/{export_id}/download",
     }
 )
 

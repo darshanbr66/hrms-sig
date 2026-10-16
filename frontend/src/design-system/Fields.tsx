@@ -98,21 +98,25 @@ export function SearchField({
   );
 }
 
+/** A controlled checkbox. Its native input is visually hidden, so the drawn box carries the
+ * checked state, the keyboard focus ring and the disabled look. */
 export function Checkbox({
   children,
   isSelected,
   onChange,
+  isDisabled = false,
 }: {
   children: ReactNode;
   isSelected: boolean;
   onChange: (selected: boolean) => void;
+  isDisabled?: boolean;
 }) {
   return (
-    <CheckboxField isSelected={isSelected} onChange={onChange}>
-      <CheckboxButton className="group flex items-start gap-2 text-sm text-neutral-800">
+    <CheckboxField isSelected={isSelected} onChange={onChange} isDisabled={isDisabled}>
+      <CheckboxButton className="group flex items-start gap-2 text-sm text-neutral-800 data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50">
         <span
           aria-hidden
-          className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border border-neutral-400 bg-neutral-0 group-selected:border-accent-600 group-selected:bg-accent-600"
+          className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border border-neutral-500 bg-neutral-0 transition-colors duration-[var(--duration-fast)] group-selected:border-accent-600 group-selected:bg-accent-600 group-data-[focus-visible]:outline-2 group-data-[focus-visible]:outline-offset-2 group-data-[focus-visible]:outline-accent-600"
         >
           <Check className="hidden size-3 text-neutral-0 group-selected:block" />
         </span>

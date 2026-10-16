@@ -18,34 +18,21 @@ from app.platform.authz.engine import Authorizer
 from app.platform.authz.route import ACCESS_ATTRIBUTE, ACCOUNT_ROUTES, PUBLIC_ROUTES
 from tests.integration.test_authorization_matrix import ROUTES as MATRIX_ROUTES
 
-# Permissions whose routes or service methods arrive later (m1-implementation-plan.md §10).
-POLICIES = "M3 (shifts, attendance policies and corrections: waiting for Sigvitas's attendance policy values)"
+# Permissions whose routes or service methods arrive later (m1-implementation-plan.md §12).
 IDENTIFIERS = "M2 (identifiers and bank accounts: Sigvitas has not yet chosen the identifier types)"
 NOT_YET_USED = {
-    "audit.export": "M5 (exports)",
-    "employee.emergency_contact.read.team": "M2 (emergency contacts)",
     "employee.sensitive.read.self": IDENTIFIERS,
     "employee.sensitive.read.all": IDENTIFIERS,
     "employee.sensitive.update.all": IDENTIFIERS,
-    "employee.export": "M5 (exports)",
-    "leave.export": "M5 (exports)",
-    "attendance.correction.request.self": POLICIES,
-    "attendance.correction.approve.team": POLICIES,
-    "attendance.correction.approve.all": POLICIES,
-    "attendance.correction.create.all": POLICIES,
-    "attendance.policy.manage": POLICIES,
-    "attendance.export": "M5 (exports)",
 }
 # Permissions a service checks beyond the route's own (the route-level rule is broader).
 SERVICE_CHECKED = {
     "security.settings.manage": "PUT /settings/{key} for security.* keys (modules/settings/service.py)",
+    "document.sensitive.read.all": "document reads in sensitive categories (modules/documents/service.py)",
+    "employee.emergency_contact.read.team": "GET /employees/{id}/emergency-contacts (people/service.py)",
 }
-# Domains whose modules do not exist yet (M2 onwards): their permissions are all unused.
-LATER_DOMAINS = (
-    "shift.",
-    "document.",
-    "notification.",
-)
+# Domains whose modules do not exist yet: their permissions are all unused.
+LATER_DOMAINS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,6 +132,13 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{holiday}": "{holiday_id}",
         "{leave_type}": "{leave_type_id}",
         "{request}": "{request_id}",
+        "{correction}": "{correction_id}",
+        "{shift}": "{shift_id}",
+        "{lock}": "{lock_id}",
+        "{notification}": "{notification_id}",
+        "{category}": "{category_id}",
+        "{document}": "{document_id}",
+        "{version}": "{version_id}",
         # The matrix changes one concrete setting.
         "email.delivery.max_attempts": "{key}",
     }

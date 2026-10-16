@@ -11,6 +11,9 @@
   (work email is `public_internal`) without reading anything else.
 - `create_invited_account` and `issue_invite` start the account lifecycle: an `invited`
   account and its 72-hour, single-use invite token (docs/security-architecture.md §3.1).
+- `linked_account` and `disable_linked_account` end it when the employee leaves: the account
+  linked to the record is disabled and every session revoked in the caller's transaction
+  (product-requirements MVP item 11). The caller decides whether it may, and audits it.
 """
 
 import uuid
@@ -22,6 +25,7 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.identity import accounts
 from app.modules.identity import repository as repo
 from app.modules.identity.defaults import ACTIVITY_WRITE_INTERVAL
 from app.modules.identity.models import OneTimePurpose, OneTimeToken, User, UserStatus
@@ -139,3 +143,24 @@ async def issue_invite(session: AsyncSession, user_id: uuid.UUID, now: datetime)
         )
     )
     return raw
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedAccount:
+    user_id: uuid.UUID
+    status: UserStatus
+
+
+async def linked_account(session: AsyncSession, employee_id: uuid.UUID) -> LinkedAccount | None:
+    """The account linked to an employee record, whatever its status."""
+    user = await repo.user_for_employee(session, employee_id)
+    return LinkedAccount(user.id, UserStatus(user.status)) if user is not None else None
+
+
+async def disable_linked_account(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> int | None:
+    """Disable the account and revoke every session; the number of sessions revoked, or None
+    when it was already disabled."""
+    user = await repo.lock_user(session, user_id)
+    if user is None or user.status == UserStatus.DISABLED:
+        return None
+    return len(await accounts.disable(session, user, now))

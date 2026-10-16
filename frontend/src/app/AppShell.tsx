@@ -9,13 +9,17 @@
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   ChevronsLeft,
   ChevronsRight,
   Ellipsis,
   LayoutDashboard,
   LogOut,
   Menu as MenuIcon,
+  Monitor,
+  Moon,
   ShieldCheck,
+  Sun,
   UserRound,
   X,
 } from "lucide-react";
@@ -39,10 +43,12 @@ import { Link, NavLink, Outlet, useHref, useLocation, useNavigate } from "react-
 import { Avatar } from "../design-system/Avatar";
 import { Banner } from "../design-system/Banner";
 import { SearchField } from "../design-system/Fields";
+import { NotificationBell } from "../features/notifications/NotificationBell";
 import { client, unwrap } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 import { canSee, titleFor, visibleNavGroups, type NavGroup } from "./navigation";
 import { ELEVATION_KEY, hasPermission, useMe, type Me } from "./session";
+import { useTheme, type ThemePreference } from "./theme";
 
 export { visibleNavItems } from "./navigation";
 
@@ -157,6 +163,9 @@ function Shell() {
             {showNavigation ? title : null}
           </p>
           {showNavigation ? <HeaderSearch me={me.data} /> : null}
+          {showNavigation ? (
+            <NotificationBell enabled={hasPermission(me.data, "notification.read.self")} />
+          ) : null}
           {me.data ? <AccountMenu me={me.data} /> : null}
         </header>
 
@@ -178,7 +187,7 @@ function Shell() {
             isOpen={drawerOpen}
             onOpenChange={setDrawerOpen}
             isDismissable
-            className="fixed inset-0 z-40 bg-neutral-900/40 lg:hidden"
+            className="fixed inset-0 z-40 bg-scrim/40 lg:hidden"
           >
             <Modal className="fixed inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-neutral-0 shadow-[var(--shadow-float)]">
               <AriaDialog aria-label="Navigation" className="flex h-full flex-col outline-none">
@@ -238,7 +247,7 @@ function Navigation({
   onNavigate?: () => void;
 }) {
   return (
-    <nav aria-label={label} className="flex-1 overflow-y-auto px-2 py-3">
+    <nav aria-label={label} data-scroll-area className="flex-1 overflow-y-auto overscroll-contain px-2 py-3">
       {groups.map((group) => (
         <div key={group.label} className="mb-4">
           {collapsed ? (
@@ -303,8 +312,18 @@ function HeaderSearch({ me }: { me: Me | undefined | null }) {
   );
 }
 
+const THEMES: { id: ThemePreference; label: string; Icon: typeof Sun }[] = [
+  { id: "light", label: "Light", Icon: Sun },
+  { id: "dark", label: "Dark", Icon: Moon },
+  { id: "system", label: "Same as system", Icon: Monitor },
+];
+
+const MENU_ITEM =
+  "flex cursor-default items-center gap-2 rounded-[var(--radius-control)] px-3 py-2 text-sm text-neutral-800 outline-none focus:bg-neutral-100";
+
 function AccountMenu({ me }: { me: Me }) {
   const queryClient = useQueryClient();
+  const [theme, setTheme] = useTheme();
   const navigate = useNavigate();
   const signOut = async () => {
     try {
@@ -366,10 +385,34 @@ function AccountMenu({ me }: { me: Me }) {
               Account security
             </MenuItem>
           ) : null}
-          <MenuItem
-            id="sign-out"
-            className="flex cursor-default items-center gap-2 rounded-[var(--radius-control)] px-3 py-2 text-sm text-neutral-800 outline-none focus:bg-neutral-100"
+          <Separator className="my-1 border-t border-neutral-200" />
+          {/* The theme stays chosen in this browser; the menu stays open to show the change. */}
+          <MenuSection
+            selectionMode="single"
+            disallowEmptySelection
+            shouldCloseOnSelect={false}
+            selectedKeys={[theme]}
+            onSelectionChange={(keys) => {
+              const [key] = keys === "all" ? [] : [...keys];
+              const chosen = THEMES.find((item) => item.id === key);
+              if (chosen) setTheme(chosen.id);
+            }}
           >
+            <Header className="px-3 pt-1 pb-1 text-xs font-semibold text-neutral-600">Theme</Header>
+            {THEMES.map(({ id, label, Icon }) => (
+              <MenuItem key={id} id={id} textValue={label} className={MENU_ITEM}>
+                {({ isSelected }) => (
+                  <>
+                    <Icon aria-hidden className="size-4" />
+                    {label}
+                    <Check aria-hidden className={`ml-auto size-4 ${isSelected ? "" : "invisible"}`} />
+                  </>
+                )}
+              </MenuItem>
+            ))}
+          </MenuSection>
+          <Separator className="my-1 border-t border-neutral-200" />
+          <MenuItem id="sign-out" className={MENU_ITEM}>
             <LogOut aria-hidden className="size-4" />
             Sign out
           </MenuItem>

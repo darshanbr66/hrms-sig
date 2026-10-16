@@ -169,7 +169,8 @@ export function LeaveCalendarPage() {
         />
       ) : null}
       {calendar.isSuccess ? (
-        <div className="flex flex-col gap-4">
+        // A new month fades in, so the change of range is noticed (instant with reduced motion).
+        <div key={range.from} className="flex animate-reveal flex-col gap-4">
           <p className="text-sm text-neutral-700">
             {awayToday.length === 0
               ? "Nobody in this view is on approved leave today."

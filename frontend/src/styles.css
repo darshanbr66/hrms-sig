@@ -1,11 +1,26 @@
 /* Design tokens (docs/ui-ux-guidelines.md §4). Components use these tokens only, never raw
-   colour values. The accent is a placeholder ink blue until Sigvitas brand colours arrive. */
+   colour values. The accent is a placeholder ink blue until Sigvitas brand colours arrive.
+
+   Themes: the values below are the light theme. The dark theme redefines the same tokens under
+   `:root[data-theme="dark"]`, so every component follows without dark-only classes. The
+   neutral scale is inverted (neutral-0 is the darkest surface, neutral-900 the lightest text),
+   and the accent and status colours are lightened, so each class keeps its role and contrast.
+   `public/theme-init.js` sets `data-theme` before the first paint; `src/app/theme.ts` changes it. */
 @import "tailwindcss";
 @import "@fontsource/ibm-plex-sans/400.css";
 @import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+
+/* React Aria state variants. Its components mark their state with data attributes
+   (`data-selected`, `data-pressed`); Tailwind has no variants of these names, so without these
+   lines classes such as `selected:` and `group-selected:` produce no CSS at all (the cause of
+   checkboxes and tabs that never looked selected, fixed 2026-10-16). */
+@custom-variant selected (&[data-selected]);
+@custom-variant pressed (&[data-pressed]);
 
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Warm neutral scale, 11 steps. */
   --color-neutral-0: #ffffff;
@@ -37,6 +52,13 @@
   --color-info-50: #eef3fb;
   --color-info-700: #1d3f75;
 
+  /* Behind dialogs and the navigation drawer, always dark. */
+  --color-scrim: #1c1a18;
+
+  /* Scrollbars: a slim thumb on a clear track, darker while the pointer is over the area. */
+  --color-scrollbar-thumb: #a8a29a;
+  --color-scrollbar-thumb-hover: #7a746c;
+
   --radius-control: 6px;
   --radius-surface: 8px;
 
@@ -49,6 +71,76 @@
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --duration-fast: 120ms;
   --duration-normal: 200ms;
+
+  /* Details, panels and changed ranges appear with a short fade and a 4 px drop. Nothing
+     waits for it, and reduced motion removes it (the rule in the base layer). */
+  --animate-reveal: reveal var(--duration-normal) var(--ease-standard);
+
+  @keyframes reveal {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* Dark theme: the same tokens, redefined. Text and background pairs meet WCAG 2.2 AA
+   (checked in e2e/theme.e2e.ts). */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-neutral-0: #1f1d1b;
+  --color-neutral-50: #161514;
+  --color-neutral-100: #2a2725;
+  --color-neutral-200: #3a3633;
+  --color-neutral-300: #4f4a45;
+  --color-neutral-400: #6e6862;
+  --color-neutral-500: #918a82;
+  --color-neutral-600: #b6b0a8;
+  --color-neutral-700: #cfcac3;
+  --color-neutral-800: #e3dfd9;
+  --color-neutral-900: #f4f2ef;
+
+  --color-accent-50: #1c283b;
+  --color-accent-100: #243653;
+  --color-accent-600: #8eb1ea;
+  --color-accent-700: #a9c4f0;
+  --color-accent-800: #c4d7f5;
+
+  --color-success-50: #15291c;
+  --color-success-700: #82d29c;
+  --color-warning-50: #2e2410;
+  --color-warning-700: #e8bb62;
+  --color-danger-50: #341917;
+  --color-danger-700: #f29088;
+  --color-info-50: #1c283b;
+  --color-info-700: #a9c4f0;
+
+  --color-scrim: #000000;
+  --color-scrollbar-thumb: #625c56;
+  --color-scrollbar-thumb-hover: #918a82;
+  --shadow-float: 0 8px 24px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* A theme change fades colours for a moment instead of flashing. Only while the class is set
+   (src/app/theme.ts), and never with reduced motion: the rule below makes it instant. */
+html.theme-changing,
+html.theme-changing *,
+html.theme-changing *::before,
+html.theme-changing *::after {
+  transition:
+    background-color var(--duration-normal) var(--ease-standard),
+    border-color var(--duration-normal) var(--ease-standard),
+    color var(--duration-normal) var(--ease-standard),
+    fill var(--duration-normal) var(--ease-standard) !important;
 }
 
 @layer base {
@@ -56,6 +148,54 @@
     font-family: var(--font-sans);
     color: var(--color-neutral-900);
     background: var(--color-neutral-50);
+    /* The page keeps the scrollbar's space whether or not it scrolls, so moving between short
+       and long pages does not shift the layout sideways. */
+    scrollbar-gutter: stable;
+    /* Focus and in-page links stop below the sticky top bar (3.5 rem), not under it, and above
+       the phone bottom bar. */
+    scroll-padding-top: 4.5rem;
+    scroll-padding-bottom: 5rem;
+  }
+
+  @media (min-width: 64rem) {
+    html {
+      scroll-padding-bottom: 1rem;
+    }
+  }
+
+  /* Scrollbars (docs/ui-ux-guidelines.md §4, Scrolling). The standard properties first; the
+     WebKit pseudo-elements only where they are not supported (Safari before 26), since
+     Chromium ignores them once the standard ones are set. Never hidden: the bar is how many
+     people see that an area scrolls. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+  }
+
+  [data-scroll-area]:hover,
+  [data-scroll-area]:focus-within {
+    scrollbar-color: var(--color-scrollbar-thumb-hover) transparent;
+  }
+
+  @supports not (scrollbar-color: auto) {
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      border: 2px solid transparent;
+      border-radius: 9999px;
+      background: var(--color-scrollbar-thumb) padding-box;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--color-scrollbar-thumb-hover) padding-box;
+    }
   }
 
   body {

@@ -81,6 +81,9 @@ documents, tickets or chat.
    | Write-once audit anchors (RustFS) | `S3_ENDPOINT_URL` / `S3_REGION` / `AUDIT_ANCHOR_BUCKET` | `http://127.0.0.1:9000` / `us-east-1` / `hrms-audit-anchors-local` |
    | | `AUDIT_ANCHOR_ACCESS_KEY_ID`, `AUDIT_ANCHOR_SECRET_ACCESS_KEY` | an access key name and a `<generated password>`; they become the emulator's root credentials |
    | Audit retention | `AUDIT_LOG_RETENTION_MONTHS`, `SECURITY_EVENTS_RETENTION_MONTHS` | empty (nothing is removed locally) |
+   | Private files bucket for documents and exports (RustFS) | `FILES_BUCKET` | `hrms-files-local` (a bucket per database, never the anchor bucket); leave all three empty to run without documents and exports |
+   | | `FILES_ACCESS_KEY_ID`, `FILES_SECRET_ACCESS_KEY` | locally the same values as `AUDIT_ANCHOR_ACCESS_KEY_ID` and `AUDIT_ANCHOR_SECRET_ACCESS_KEY` (the emulator's root credentials) |
+   | Virus scanning (ClamAV, worker) | `CLAMAV_HOST` / `CLAMAV_PORT` | `127.0.0.1` / `3310`; empty host means uploads stay "being checked" and are never downloadable |
 
    The PostgreSQL and Redis passwords are read only when their containers are first created.
    If you change them later, reset the local database (section 4.4).
@@ -98,6 +101,15 @@ docker compose --env-file .env -f infra/compose.yaml up -d --wait
 This starts PostgreSQL 18, Redis, Mailpit and RustFS and waits until they are healthy. The first start
 creates the database login roles from `infra/db/bootstrap-roles.sql`. To stop the services
 and keep the data, run `docker compose --env-file .env -f infra/compose.yaml stop`.
+
+ClamAV, which scans uploaded documents, runs only with the `scan` profile because it needs
+about 1.5 GB of memory and downloads its virus signatures on first start (several minutes):
+
+```powershell
+docker compose --env-file .env -f infra/compose.yaml --profile scan up -d --wait
+```
+
+Without it, uploads stay "being checked" and cannot be downloaded (fail closed).
 
 ### 3.2 Install dependencies and apply migrations (`backend/`)
 
@@ -128,6 +140,18 @@ drop and recreate a database any other way, or point a second database (for exam
 `hrms_acceptance`) at the anchors, set a new `AUDIT_ANCHOR_BUCKET` for it and run the script
 again.
 
+For documents and exports, create the private files bucket the same way (once per database;
+running it again changes nothing):
+
+```powershell
+uv run --env-file ../.env python -m scripts.create_local_files_bucket
+```
+
+It creates `FILES_BUCKET` with no bucket policy and stops with an error if the bucket has a
+policy or answers an anonymous request, so files are reachable only through the API's
+60-second signed links. Like anchors, each database needs its own files bucket: give a second
+database a new `FILES_BUCKET` before running it.
+
 ### 3.3 Start the API (`backend/`)
 
 ```powershell
@@ -156,25 +180,26 @@ pnpm dev
 `run-backend.cmd` in the repository root runs 3.1 to 3.4 in one go (the steps are in
 `run-backend.ps1`; the `.cmd` file lets you double-click it). It checks that Docker is running
 and that no API (port 8000) or worker is already running, starts the services, runs `uv sync`,
-checks the target database, runs the migrations, creates the anchor bucket if it is missing,
-opens the worker in a new window and then runs the API in the current one. Run it from the
+checks the target database, runs the migrations, creates the anchor bucket and the files bucket
+if they are missing, opens the worker in a new window and then runs the API in the current one.
+When `CLAMAV_HOST` is set it also starts ClamAV (the `scan` profile). Run it from the
 repository root with `.\run-backend.cmd`, or double-click it. Press `Ctrl+C` to stop the API.
 Close the worker window to stop the worker. Start the web app separately (3.5).
 
 With no arguments it uses the database named in the `DATABASE_URL_*` settings in `.env`
-(normally `hrms`) and `AUDIT_ANCHOR_BUCKET`. To run against another existing local database,
-name it and its own anchor bucket (3.2):
+(normally `hrms`), `AUDIT_ANCHOR_BUCKET` and `FILES_BUCKET`. To run against another existing
+local database, name it and its own buckets (3.2):
 
 ```powershell
-.\run-backend.cmd -Database <database name> -AnchorBucket <bucket name for that database>
+.\run-backend.cmd -Database <database name> -AnchorBucket <anchor bucket> -FilesBucket <files bucket>
 ```
 
 The script sets the database and bucket explicitly for the migrations, the worker and the API,
 so variables left in the window from an earlier session cannot redirect them. Before migrating
 it runs `python -m scripts.check_local_target`, which stops unless all four `DATABASE_URL_*`
-settings name that database on this machine, the migrator really connects to it, and the bucket
-matches. It never creates or resets a database, and it refuses another database without a
-bucket of its own. Each window title shows the database (`HRMS API (hrms)`), and an account
+settings name that database on this machine, the migrator really connects to it, and the anchor
+and files buckets match. It never creates or resets a database, and it refuses another database
+without buckets of its own. Each window title shows the database (`HRMS API (hrms)`), and an account
 exists only in the database where it was created: signing in to the wrong one fails as an
 unknown account.
 
@@ -543,6 +568,7 @@ Frontend (`frontend/`):
 | Types | `pnpm typecheck` |
 | Banned words in UI copy | `pnpm copy:check` |
 | Tests | `pnpm test` |
+| Browser layout tests (Playwright, Chromium; starts its own Vite on port 5180 and answers every API call with fake data, so no database or account is used; first run on a new machine: `pnpm exec playwright install chromium`) | `pnpm test:e2e` |
 | Build | `pnpm build` |
 | Dependency audit | `pnpm audit` |
 | Regenerate API types after the contract changes | `pnpm api:types` |
@@ -565,8 +591,10 @@ Current state: **M1 Checkpoints A–F** complete; **Checkpoint G** (frontend) de
 with the first slices of M2 (organization and employee records, then organization management,
 account linking and department heads on 2026-10-11), M3 (attendance clock events, without
 shifts or policies) and M4 (holiday calendars, then leave management on 2026-10-11),
-migrations up to `0018`. See
-`docs/m1-implementation-plan.md` §12.
+then on 2026-10-15 notifications, shifts, attendance policies and corrections, leave accrual
+and year end, documents with ClamAV scanning, and exports, migrations up to `0026`. See
+`docs/m1-implementation-plan.md` §12, and `docs/roles-and-permissions.md` for what each role
+can open after signing in.
 
 Update this document in the same change whenever any of these change: local setup, commands,
 ports, environment variables, the bootstrap process or the test sign-in flow.

@@ -9,8 +9,7 @@
   entry; cancelling approved leave writes one `usage_reversal`. HR records adjustments and
   opening balances with a reason (`leave.balance.adjust`, never on their own balance,
   SOD-6), and runs the upfront allocation of a leave year, which writes at most one entry per
-  employee, leave type and leave year. Nothing accrues on its own: periodic accrual,
-  proration, carry-forward and lapse wait for Sigvitas's decisions (roadmap §6).
+  employee, leave type and leave year.
 - Every change to one employee's leave runs under a per-employee lock, so two requests or
   decisions cannot both pass the balance check, and the database refuses overlapping active
   requests (LV-4). Submissions and decisions carry an `Idempotency-Key`: a retry returns the
@@ -36,15 +35,19 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.attendance import public as attendance
 from app.modules.identity import public as identity
-from app.modules.leave import notifications
+from app.modules.leave import notifications, reports
 from app.modules.leave.models import (
     ACTIVE_STATUSES,
+    YEARLY_WHERE,
     AccrualMethod,
+    CarryForwardMode,
     Decision,
     EntryType,
     Holiday,
     HolidayCalendar,
+    HolidayKind,
     LeaveDecision,
     LeaveLedgerEntry,
     LeavePolicy,
@@ -57,11 +60,14 @@ from app.modules.leave.models import (
 )
 from app.modules.leave.rules import (
     CountedDay,
+    Period,
     RuleError,
     allows_balance,
     count_days,
     leave_year_start,
     most_specific,
+    next_leave_year_start,
+    prorated,
     total,
     valid_year_start,
 )
@@ -90,6 +96,7 @@ SUBMISSIONS_PER_USER: Final = RateLimitRule(RateLimitScope.API, "leave.requests"
 MAX_CALENDAR_DAYS: Final = 93
 ZERO: Final = Decimal("0.00")
 MAX_CALENDAR_ENTRIES: Final = 500
+MAX_REPORT_DAYS: Final = 366
 TYPE_FIELDS: Final = (
     "name",
     "description",
@@ -100,8 +107,6 @@ TYPE_FIELDS: Final = (
     "counts_holidays",
     "status",
 )
-# Weekly offs come from shifts (M3), not configured yet: no date is a weekly off.
-NO_WEEKLY_OFFS: Final[frozenset[date]] = frozenset()
 
 
 def field_error(field: str, code: str, message: str) -> ProblemError:
@@ -113,6 +118,80 @@ def field_error(field: str, code: str, message: str) -> ProblemError:
 
 def conflict(code: str, detail: str) -> ProblemError:
     return ProblemError(ProblemType.CONFLICT, detail=detail, extensions={"code": code})
+
+
+def check_policy_rules(values: Mapping[str, Any]) -> None:
+    """Every rule a new policy needs, tied to its accrual method and year-end choice. Nothing
+    is filled in: a missing decision is refused, except the year end, which may stay undecided
+    (the year-end run then skips the policy and lists it)."""
+    method = values["accrual_method"]
+    periodic = method == AccrualMethod.PERIODIC.value
+    accrues = method != AccrualMethod.NONE.value
+    if accrues != (values.get("accrual_amount") is not None):
+        raise field_error(
+            "accrual_amount",
+            "leave.accrual_amount",
+            "Enter the days given each leave year or period, or choose no accrual.",
+        )
+    if periodic != (values.get("accrual_frequency") is not None and values.get("accrual_timing") is not None):
+        raise field_error(
+            "accrual_frequency",
+            "leave.accrual_period",
+            "Periodic accrual needs how often days are given and when in the period.",
+        )
+    if accrues and values.get("prorate_on_joining") is None:
+        raise field_error(
+            "prorate_on_joining",
+            "leave.proration_undecided",
+            "Choose whether people joining part way get a share.",
+        )
+    if not accrues and values.get("prorate_on_joining") is not None:
+        raise field_error(
+            "prorate_on_joining", "leave.proration_unused", "Proration applies only with accrual."
+        )
+    if periodic == (values.get("prorate_on_exit") is None):
+        raise field_error(
+            "prorate_on_exit",
+            "leave.proration_on_exit",
+            "Choose whether people leaving part way through a period get a share (periodic accrual only).",
+        )
+    prorates = bool(values.get("prorate_on_joining")) or bool(values.get("prorate_on_exit"))
+    if prorates != (values.get("proration_rounding") is not None):
+        raise field_error(
+            "proration_rounding",
+            "leave.proration_rounding",
+            "Choose how a prorated share is rounded, or turn proration off.",
+        )
+    if values["allow_negative_balance"] != (values.get("max_negative_days") is not None):
+        raise field_error(
+            "max_negative_days",
+            "leave.max_negative_days",
+            "Enter how far below zero the balance may go, or do not allow a negative balance.",
+        )
+    mode = values.get("carry_forward_mode")
+    cap, excess, expiry = (
+        values.get("carry_forward_cap"),
+        values.get("excess_action"),
+        values.get("carried_expire_after_months"),
+    )
+    if (mode == CarryForwardMode.CAPPED.value) != (cap is not None):
+        raise field_error(
+            "carry_forward_cap",
+            "leave.carry_forward_cap",
+            "Enter the most days carried, only with a capped carry-forward.",
+        )
+    if (mode in (CarryForwardMode.NONE.value, CarryForwardMode.CAPPED.value)) != (excess is not None):
+        raise field_error(
+            "excess_action",
+            "leave.excess_action",
+            "Choose whether days not carried lapse or stay, only when not everything is carried.",
+        )
+    if expiry is not None and mode not in (CarryForwardMode.CAPPED.value, CarryForwardMode.UNLIMITED.value):
+        raise field_error(
+            "carried_expire_after_months",
+            "leave.carried_expiry_unused",
+            "Carried days can expire only when days are carried forward.",
+        )
 
 
 def _rule(error: RuleError) -> ProblemError:
@@ -203,6 +282,28 @@ class AllocationCounts:
     no_policy: int = 0
     no_allocation_in_policy: int = 0
     skipped_own: int = 0
+    nothing_due: int = 0
+
+
+async def _refuse_archive_with_open_requests(session: AsyncSession, leave_type_id: uuid.UUID) -> None:
+    """A leave type is archived only once no request of it waits for a decision, so approvers
+    are never left deciding requests of a type nobody can request any more."""
+    waiting = (
+        await session.execute(
+            select(func.count()).where(
+                LeaveRequest.leave_type_id == leave_type_id,
+                LeaveRequest.status.in_(
+                    (RequestStatus.PENDING.value, RequestStatus.CANCELLATION_REQUESTED.value)
+                ),
+            )
+        )
+    ).scalar_one()
+    if waiting:
+        raise conflict(
+            "leave.type_in_use",
+            f"{waiting} request{'s' if waiting != 1 else ''} of this leave type "
+            f"{'wait' if waiting != 1 else 'waits'} for a decision. Decide them first, then archive it.",
+        )
 
 
 async def _lock_employee(session: AsyncSession, employee_id: uuid.UUID) -> None:
@@ -269,6 +370,7 @@ async def _holidays(
         .where(
             LocationHolidayCalendar.location_id == location_id,
             HolidayCalendar.status == "active",
+            Holiday.kind == HolidayKind.HOLIDAY.value,
             Holiday.is_optional.is_(False),
             Holiday.date >= start,
             Holiday.date <= end,
@@ -284,7 +386,7 @@ def _own_employee(actor: Actor) -> uuid.UUID:
 
 
 def _audit_name(field: str) -> str:
-    return "accrual_days" if field == "accrual_amount" else field
+    return {"accrual_amount": "accrual_days", "carry_forward_cap": "carry_forward_cap_days"}.get(field, field)
 
 
 def _changes(values: Mapping[str, Any], before: Any = None) -> dict[str, FieldChange]:
@@ -369,6 +471,11 @@ class LeaveService:
             for name, value in values.items():
                 if value is None and name != "description":
                     raise field_error(name, "leave.required", "Choose a value.")
+            if (
+                values.get("status") == LeaveTypeStatus.ARCHIVED
+                and leave_type.status != LeaveTypeStatus.ARCHIVED
+            ):
+                await _refuse_archive_with_open_requests(session, leave_type.id)
             changes = _changes(values, leave_type)
             if changes:
                 for name, value in values.items():
@@ -424,19 +531,7 @@ class LeaveService:
                 "leave.year_start_invalid",
                 "Choose a day that exists in every year (29 February does not).",
             )
-        upfront = values["accrual_method"] == AccrualMethod.UPFRONT_PER_LEAVE_YEAR.value
-        if upfront != (values.get("accrual_amount") is not None):
-            raise field_error(
-                "accrual_amount",
-                "leave.accrual_amount",
-                "Enter the days given each leave year, or choose no allocation.",
-            )
-        if values["allow_negative_balance"] != (values.get("max_negative_days") is not None):
-            raise field_error(
-                "max_negative_days",
-                "leave.max_negative_days",
-                "Enter how far below zero the balance may go, or do not allow a negative balance.",
-            )
+        check_policy_rules(values)
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "leave.policy.manage")
             leave_type = await session.get(LeaveType, values["leave_type_id"])
@@ -697,6 +792,20 @@ class LeaveService:
                     counts["no_allocation_in_policy"] += 1
                     continue
                 year = leave_year_start(as_of, policy.leave_year_start_month, policy.leave_year_start_day)
+                amount = policy.accrual_amount
+                if policy.prorate_on_joining and facts is not None:
+                    amount = prorated(
+                        amount,
+                        Period(year, next_leave_year_start(year) - timedelta(days=1)),
+                        facts.date_of_joining,
+                        None,
+                        on_joining=True,
+                        on_exit=False,
+                        rounding=policy.proration_rounding,
+                    )
+                if amount <= 0:
+                    counts["nothing_due"] += 1
+                    continue
                 inserted = (
                     await session.execute(
                         insert(LeaveLedgerEntry)
@@ -705,8 +814,8 @@ class LeaveService:
                             leave_type_id=leave_type.id,
                             leave_year=year,
                             entry_type=EntryType.ACCRUAL.value,
-                            amount=policy.accrual_amount,
-                            effective_date=year,
+                            amount=amount,
+                            effective_date=max(year, facts.date_of_joining) if facts else year,
                             policy_id=policy.id,
                             created_by=actor.user_id,
                         )
@@ -717,7 +826,7 @@ class LeaveService:
                                 LeaveLedgerEntry.leave_year,
                                 LeaveLedgerEntry.entry_type,
                             ],
-                            index_where=text("entry_type IN ('accrual', 'opening_balance')"),
+                            index_where=text(YEARLY_WHERE),
                         )
                         .returning(LeaveLedgerEntry.id)
                     )
@@ -775,7 +884,11 @@ class LeaveService:
                 allows_half_day=leave_type.allows_half_day,
                 holidays=await _holidays(session, facts.location_id, draft.start_date, draft.end_date),
                 counts_holidays=leave_type.counts_holidays,
-                weekly_offs=NO_WEEKLY_OFFS,
+                # Weekly offs of the shift that applies on each date, less declared working
+                # days; none without a shift.
+                weekly_offs=await attendance.weekly_off_dates(
+                    session, employee_id, draft.start_date, draft.end_date
+                ),
                 counts_weekly_offs=leave_type.counts_weekly_offs,
             )
         except RuleError as error:
@@ -1328,6 +1441,37 @@ class LeaveService:
             records = await self._records(session, rows[:MAX_CALENDAR_ENTRIES])
         return records, len(rows) > MAX_CALENDAR_ENTRIES
 
+    async def report(
+        self,
+        actor: Actor,
+        *,
+        start: date,
+        end: date,
+        department_id: uuid.UUID | None,
+        location_id: uuid.UUID | None,
+        after: tuple[str, uuid.UUID] | None,
+        limit: int,
+    ) -> tuple[list[reports.TakenRow], tuple[str, uuid.UUID] | None]:
+        """Days taken and pending per person and leave type in a period, for the people in the
+        reader's scope employed at some point in it (RPT-1). No reasons."""
+        if end < start:
+            raise field_error("to", "range.reversed", "The end date must be on or after the start date.")
+        if (end - start).days >= MAX_REPORT_DAYS:
+            raise field_error("to", "range.too_long", f"Choose a period of at most {MAX_REPORT_DAYS} days.")
+        scope = self._authz.scope_filter(actor, "leave.read", people.employee_id_column(), on=end)
+        async with self._db.unit_of_work() as session:
+            page, next_after = await people.employed_colleagues(
+                session,
+                scope,
+                on=end,
+                since=start,
+                department_id=department_id,
+                location_id=location_id,
+                after=after,
+                limit=limit,
+            )
+            return await reports.taken(session, page, start, end), next_after
+
 
 def vars_of(counts: AllocationCounts) -> dict[str, int]:
     return {
@@ -1336,4 +1480,5 @@ def vars_of(counts: AllocationCounts) -> dict[str, int]:
         "no_policy": counts.no_policy,
         "no_allocation_in_policy": counts.no_allocation_in_policy,
         "skipped_own": counts.skipped_own,
+        "nothing_due": counts.nothing_due,
     }

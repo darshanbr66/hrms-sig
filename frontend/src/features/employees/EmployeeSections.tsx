@@ -14,9 +14,9 @@ import { Badge } from "../../design-system/Badge";
 import { Banner } from "../../design-system/Banner";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { ConfirmDialog, Dialog } from "../../design-system/Dialog";
+import { ConfirmDialog, Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
-import { Checkbox, DescriptionList, TextArea } from "../../design-system/Fields";
+import { DescriptionList, TextArea } from "../../design-system/Fields";
 import { Panel } from "../../design-system/Panel";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
 import { Select } from "../../design-system/Select";
@@ -170,14 +170,14 @@ function EditDetailsDialog({ employee, onClose }: { employee: Employee; onClose:
         <p className="text-xs text-neutral-600">
           Job, reporting line and status change through their own sections, so their history is kept.
         </p>
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending}>
             Save changes
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );
@@ -400,14 +400,14 @@ function JobChangeDialog({ employee, onClose }: { employee: Employee; onClose: (
             />
           )}
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={form.formState.isSubmitting}>
             Record change
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );
@@ -510,7 +510,6 @@ export function StatusSection({ employee }: { employee: Employee }) {
 }
 
 function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () => void }) {
-  const me = useMe();
   const refresh = useRefreshPeople();
   const toast = useToast();
   const withStepUp = useStepUp();
@@ -518,32 +517,34 @@ function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () =
   const [status, setStatus] = useState<string>(choices[0]?.id ?? "");
   const [date, setDate] = useState(localIsoDate());
   const [reason, setReason] = useState("");
-  const [disableAccount, setDisableAccount] = useState(true);
-  const canDisable = hasPermission(me.data, "user.disable") && hasPermission(me.data, "user.read.all");
-  const account = useQuery({
-    queryKey: [...PEOPLE_KEY, "account", employee.id],
-    queryFn: () =>
-      unwrap(client.GET("/api/v1/users", { params: { query: { employee_id: employee.id, limit: 1 } } })),
-    enabled: canDisable,
-  });
-  const linked = account.data?.items[0];
-  const offerDisable = status === "exited" && canDisable && linked?.status === "active";
   const save = useMutation({
     mutationFn: async () => {
+      if (status === "exited") {
+        // One step: the record leaves and the linked account is disabled with every session
+        // revoked, in the same transaction (product-requirements MVP item 11).
+        const result = await withStepUp(() =>
+          unwrap(
+            client.POST("/api/v1/employees/{employee_id}/exit", {
+              params: { path: { employee_id: employee.id } },
+              body: { last_working_day: date, reason: reason.trim() },
+            }),
+          ),
+        );
+        const accountText = {
+          none: "No HRMS account was linked.",
+          disabled: `Their HRMS account is disabled and ${result.sessions_revoked} sessions were ended.`,
+          already_disabled: "Their HRMS account was already disabled.",
+          administrator_left_active:
+            "Their account holds an administrator role, so a system admin must disable it.",
+        }[result.account];
+        return `Exit recorded. ${accountText}`;
+      }
       await unwrap(
         client.POST("/api/v1/employees/{employee_id}/status-changes", {
           params: { path: { employee_id: employee.id } },
-          body: { to_status: status as "exited", effective_date: date, reason: reason.trim() },
+          body: { to_status: status as "on_notice", effective_date: date, reason: reason.trim() },
         }),
       );
-      if (offerDisable && disableAccount) {
-        await withStepUp(() =>
-          unwrap(
-            client.POST("/api/v1/users/{user_id}/disable", { params: { path: { user_id: linked.id } } }),
-          ),
-        );
-        return "Status changed and HRMS account disabled";
-      }
       return "Status changed";
     },
     onSuccess: async (message) => {
@@ -583,25 +584,20 @@ function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () =
           description="Recorded in the status history and the audit log."
           error={errors.reason}
         />
-        {offerDisable ? (
-          <Checkbox isSelected={disableAccount} onChange={setDisableAccount}>
-            Also disable their HRMS account now and sign them out everywhere. You will be asked to confirm
-            it&apos;s you.
-          </Checkbox>
-        ) : null}
-        {status === "exited" && linked?.status === "active" && !canDisable ? (
-          <Banner tone="warning">
-            Their HRMS account stays active until someone with account access disables it.
+        {status === "exited" ? (
+          <Banner tone="info">
+            Recording the exit also disables their HRMS account and signs them out everywhere, in the same
+            step. You will be asked to confirm it&apos;s you.
           </Banner>
         ) : null}
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending} isDisabled={reason.trim() === ""}>
-            Change status
+            {status === "exited" ? "Record exit" : "Change status"}
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );
@@ -835,7 +831,7 @@ function LinkAccountDialog({
             ) : null}
           </>
         ) : null}
-        <div className="flex justify-end gap-2 pt-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
@@ -854,7 +850,7 @@ function LinkAccountDialog({
               Link account
             </Button>
           ) : null}
-        </div>
+        </DialogActions>
       </div>
     </Dialog>
   );

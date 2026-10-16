@@ -15,7 +15,7 @@ import { useStepUp } from "../../app/StepUp";
 import { ELEVATION_KEY, hasPermission, meQueryKey, useMe } from "../../app/session";
 import { Banner } from "../../design-system/Banner";
 import { Button } from "../../design-system/Button";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { PageHeader } from "../../design-system/PageHeader";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
 import { Section } from "../../design-system/Section";
@@ -369,7 +369,7 @@ function ActionButton({ action, request }: { action: Action; request: GrantReque
           {run.isError ? (
             <Banner tone="danger">{problemText(run.error, "That didn't work. Try again.")}</Banner>
           ) : null}
-          <div className="flex justify-end gap-2">
+          <DialogActions>
             <Button
               variant="secondary"
               onPress={() => {
@@ -385,7 +385,7 @@ function ActionButton({ action, request }: { action: Action; request: GrantReque
             >
               {text.done}
             </Button>
-          </div>
+          </DialogActions>
         </Form>
       </Dialog>
     </>
@@ -459,7 +459,7 @@ function BreakGlass() {
           {use.isError ? (
             <Banner tone="danger">{problemText(use.error, "That didn't work. Try again.")}</Banner>
           ) : null}
-          <div className="flex justify-end gap-2">
+          <DialogActions>
             <Button
               variant="secondary"
               onPress={() => {
@@ -471,7 +471,7 @@ function BreakGlass() {
             <Button type="submit" variant="danger" isPending={use.isPending}>
               Use break-glass
             </Button>
-          </div>
+          </DialogActions>
         </Form>
       </Dialog>
     </>

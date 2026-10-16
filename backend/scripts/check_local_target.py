@@ -1,11 +1,13 @@
 """Check that every process will use the intended local database and anchor bucket (local only).
 
     uv run --env-file ../.env python -m scripts.check_local_target --database NAME --bucket NAME
+        [--files-bucket NAME]
 
 `run-backend.ps1` runs this before applying migrations. It stops (exit code 1) unless all four
 `DATABASE_URL_*` settings name the same local database `NAME` on this machine, the migrator's
-connection really lands in that database, and `AUDIT_ANCHOR_BUCKET` is `--bucket`. Each local
-database needs its own anchor bucket (docs/local-development.md §3.2). It prints only the
+connection really lands in that database, `AUDIT_ANCHOR_BUCKET` is `--bucket` and, when given,
+`FILES_BUCKET` is `--files-bucket`. Each local database needs its own anchor and files buckets
+(docs/local-development.md §3.2). It prints only the
 database name, the applied Alembic revision and the bucket name, never a URL or credential.
 """
 
@@ -26,7 +28,7 @@ URL_SETTINGS = (
 )
 
 
-def _problems(database: str, bucket: str) -> list[str]:
+def _problems(database: str, bucket: str, files_bucket: str | None) -> list[str]:
     problems = []
     for name in URL_SETTINGS:
         value = os.environ.get(name)
@@ -43,6 +45,12 @@ def _problems(database: str, bucket: str) -> list[str]:
     actual_bucket = os.environ.get("AUDIT_ANCHOR_BUCKET", "")
     if actual_bucket != bucket:
         problems.append(f"AUDIT_ANCHOR_BUCKET is {actual_bucket or '(not set)'}, expected {bucket}.")
+    if files_bucket is not None:
+        actual_files = os.environ.get("FILES_BUCKET", "")
+        if actual_files != files_bucket:
+            problems.append(f"FILES_BUCKET is {actual_files or '(not set)'}, expected {files_bucket}.")
+        if files_bucket == bucket:
+            problems.append("The files bucket must differ from the anchor bucket.")
     return problems
 
 
@@ -50,11 +58,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m scripts.check_local_target")
     parser.add_argument("--database", required=True)
     parser.add_argument("--bucket", required=True)
+    parser.add_argument("--files-bucket")
     args = parser.parse_args()
     if os.environ.get("APP_ENV") not in LOCAL_ENVIRONMENTS:
         sys.stderr.write("Refused: this script is for local development only (APP_ENV local or test).\n")
         return 1
-    problems = _problems(args.database, args.bucket)
+    problems = _problems(args.database, args.bucket, args.files_bucket)
     if problems:
         sys.stderr.write("Stopped: the settings do not match the intended target.\n")
         sys.stderr.writelines(f"  - {problem}\n" for problem in problems)
@@ -79,7 +88,9 @@ def main() -> int:
         sys.stderr.write(f"Stopped: the migrator connected to {current}, expected {args.database}.\n")
         return 1
     sys.stdout.write(
-        f"Target database {current} (Alembic revision {revision or 'none'}), anchor bucket {args.bucket}.\n"
+        f"Target database {current} (Alembic revision {revision or 'none'}), anchor bucket {args.bucket}"
+        + (f", files bucket {args.files_bucket}" if args.files_bucket else "")
+        + ".\n"
     )
     return 0
 

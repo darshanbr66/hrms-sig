@@ -9,7 +9,7 @@ import { useState } from "react";
 import { Form } from "react-aria-components";
 
 import { Button } from "../../design-system/Button";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { DescriptionList } from "../../design-system/Fields";
 import { Panel } from "../../design-system/Panel";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
@@ -254,14 +254,14 @@ function PersonalDialog({
           errors={errors}
           prefix="permanent_address"
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending}>
             Save details
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

@@ -20,12 +20,16 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Final
 
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.access import public as access
+from app.modules.identity import public as identity
 from app.modules.org import public as org
 from app.modules.people import repository as repo
 from app.modules.people.models import (
+    EmergencyContact,
     Employee,
     EmployeeJob,
     EmployeePersonal,
@@ -38,12 +42,17 @@ from app.platform.audit.records import (
     FieldChange,
     RedactedChange,
     RequestContext,
+    SecurityEvent,
+    SecurityEventType,
+    Severity,
     ValueChange,
     change_of,
 )
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer, Granted
+from app.platform.authz.roles import ADMIN_ACCOUNT_ROLES
+from app.platform.authz.sod import SodRule
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
 from app.platform.db import Database
@@ -136,6 +145,14 @@ class NewEmployee:
     location_id: uuid.UUID
     manager_employee_id: uuid.UUID | None
     employment_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExitResult:
+    status_change: EmployeeStatusChange
+    # none | disabled | already_disabled | administrator_left_active
+    account: str
+    sessions_revoked: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,7 +565,6 @@ class PeopleService:
         effective_date: date,
         reason: str,
     ) -> EmployeeStatusChange:
-        today = self._authz.today()
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(
                 session,
@@ -557,67 +573,254 @@ class PeopleService:
                 subject_employee_id=employee_id,
                 hide_existence=True,
             )
-            employee = await session.get(Employee, employee_id, with_for_update=True, populate_existing=True)
-            if employee is None:
-                raise ProblemError(ProblemType.NOT_FOUND)
-            from_status = employee.status
-            if to_status not in TRANSITIONS[EmployeeStatus(from_status)]:
-                raise conflict(
-                    "employee.status_transition",
-                    f"A record that is {_words(from_status)} cannot change to {_words(to_status)}.",
-                )
-            changes: dict[str, FieldChange] = {"status": ValueChange(from_status, to_status)}
-            if to_status == EmployeeStatus.EXITED:
-                if effective_date > today:
-                    raise field_error(
-                        "effective_date",
-                        "employee.exit_in_future",
-                        "Record the exit on or after the last working day. "
-                        "Until then, mark the person as on notice.",
-                    )
-                if effective_date < employee.date_of_joining:
-                    raise field_error(
-                        "effective_date",
-                        "employee.exit_before_joining",
-                        "The last working day cannot be before joining.",
-                    )
-                changes["date_of_exit"] = ValueChange(employee.date_of_exit, effective_date)
-                employee.date_of_exit = effective_date
-            elif to_status == EmployeeStatus.ACTIVE and employee.date_of_joining > today:
-                raise field_error(
-                    "to_status",
-                    "employee.not_joined",
-                    "This person joins on a later date. Mark them active from then.",
-                )
-            employee.status = to_status
-            employee.version += 1
-            employee.updated_at = self._clock.now()
-            record = EmployeeStatusChange(
-                employee_id=employee_id,
-                from_status=from_status,
+            return await self._change_status(
+                session,
+                actor,
+                context,
+                employee_id,
                 to_status=to_status,
                 effective_date=effective_date,
                 reason=reason,
-                changed_by=actor.user_id,
+                permission=granted.key,
             )
-            session.add(record)
+
+    async def _change_status(
+        self,
+        session: AsyncSession,
+        actor: Actor,
+        context: RequestContext,
+        employee_id: uuid.UUID,
+        *,
+        to_status: str,
+        effective_date: date,
+        reason: str,
+        permission: str,
+    ) -> EmployeeStatusChange:
+        today = self._authz.today()
+        employee = await session.get(Employee, employee_id, with_for_update=True, populate_existing=True)
+        if employee is None:
+            raise ProblemError(ProblemType.NOT_FOUND)
+        from_status = employee.status
+        if to_status not in TRANSITIONS[EmployeeStatus(from_status)]:
+            raise conflict(
+                "employee.status_transition",
+                f"A record that is {_words(from_status)} cannot change to {_words(to_status)}.",
+            )
+        changes: dict[str, FieldChange] = {"status": ValueChange(from_status, to_status)}
+        if to_status == EmployeeStatus.EXITED:
+            if effective_date > today:
+                raise field_error(
+                    "effective_date",
+                    "employee.exit_in_future",
+                    "Record the exit on or after the last working day. "
+                    "Until then, mark the person as on notice.",
+                )
+            if effective_date < employee.date_of_joining:
+                raise field_error(
+                    "effective_date",
+                    "employee.exit_before_joining",
+                    "The last working day cannot be before joining.",
+                )
+            changes["date_of_exit"] = ValueChange(employee.date_of_exit, effective_date)
+            employee.date_of_exit = effective_date
+        elif to_status == EmployeeStatus.ACTIVE and employee.date_of_joining > today:
+            raise field_error(
+                "to_status",
+                "employee.not_joined",
+                "This person joins on a later date. Mark them active from then.",
+            )
+        employee.status = to_status
+        employee.version += 1
+        employee.updated_at = self._clock.now()
+        record = EmployeeStatusChange(
+            employee_id=employee_id,
+            from_status=from_status,
+            to_status=to_status,
+            effective_date=effective_date,
+            reason=reason,
+            changed_by=actor.user_id,
+        )
+        session.add(record)
+        await session.flush()
+        await self._audit.record(
+            session,
+            AuditEvent(
+                action="employee.status.changed",
+                actor=actor.audit_actor(),
+                context=context,
+                permission_used=permission,
+                target_type="employee",
+                target_id=employee_id,
+                subject_employee_id=employee_id,
+                changes=changes,
+                reason=reason,
+            ),
+        )
+        await session.refresh(record)
+        return record
+
+    async def exit_employee(
+        self,
+        actor: Actor,
+        context: RequestContext,
+        employee_id: uuid.UUID,
+        *,
+        last_working_day: date,
+        reason: str,
+    ) -> ExitResult:
+        """The employee leaves in one action (product-requirements MVP item 11): the record is
+        marked exited from the last working day and, in the same transaction, the linked
+        account is disabled and every session revoked. Disabling needs `user.disable` with a
+        recent step-up; an administrator account (`system_admin`, `super_admin`) is left for a
+        system admin to disable, and the result says so."""
+        now = self._clock.now()
+        async with self._db.unit_of_work() as session:
+            granted = await self._authz.require(
+                session,
+                actor,
+                "employee.lifecycle.manage",
+                subject_employee_id=employee_id,
+                hide_existence=True,
+            )
+            linked = await identity.linked_account(session, employee_id)
+            if linked is not None:
+                if linked.user_id == actor.user_id:
+                    raise AccessDenied(code=SodRule.OWN_ACCOUNT.value)
+                await self._authz.require(session, actor, "user.disable")
+            change = await self._change_status(
+                session,
+                actor,
+                context,
+                employee_id,
+                to_status=EmployeeStatus.EXITED.value,
+                effective_date=last_working_day,
+                reason=reason,
+                permission=granted.key,
+            )
+            if linked is None:
+                return ExitResult(change, account="none", sessions_revoked=0)
+            if await access.AccountRoles().role_keys(session, linked.user_id, now) & ADMIN_ACCOUNT_ROLES:
+                return ExitResult(change, account="administrator_left_active", sessions_revoked=0)
+            revoked = await identity.disable_linked_account(session, linked.user_id, now)
+            if revoked is None:
+                return ExitResult(change, account="already_disabled", sessions_revoked=0)
+            await self._audit.record_security_event(
+                session,
+                SecurityEvent(
+                    SecurityEventType.ACCOUNT_DISABLED,
+                    Severity.WARNING,
+                    context=context,
+                    user_id=linked.user_id,
+                    details={
+                        "by_user_id": actor.user_id,
+                        "sessions_revoked": revoked,
+                        "cause": "employee_exit",
+                    },
+                ),
+            )
+            await self._audit.record(
+                session,
+                AuditEvent(
+                    action="identity.user.disabled",
+                    actor=actor.audit_actor(),
+                    context=context,
+                    permission_used="user.disable",
+                    target_type="user",
+                    target_id=linked.user_id,
+                    subject_employee_id=employee_id,
+                    changes={"status": ValueChange(linked.status.value, "disabled")},
+                    reason=reason,
+                ),
+            )
+            return ExitResult(change, account="disabled", sessions_revoked=revoked)
+
+    # --- emergency contacts --------------------------------------------------------------------
+
+    async def emergency_contacts(
+        self, actor: Actor, context: RequestContext, employee_id: uuid.UUID | None
+    ) -> list[EmergencyContact]:
+        """Another employee's emergency contacts (`employee_id` given), or the actor's own."""
+        subject = employee_id or _own_employee(actor)
+        async with self._db.unit_of_work() as session:
+            if employee_id is None:
+                granted = await self._authz.require(
+                    session, actor, "employee.personal.read.self", subject_employee_id=subject
+                )
+            else:
+                granted = await self._contacts_reader(session, actor, subject)
+            if not await repo.employee_exists(session, subject):
+                raise ProblemError(ProblemType.NOT_FOUND)
+            contacts = list(
+                await session.scalars(
+                    select(EmergencyContact)
+                    .where(EmergencyContact.employee_id == subject)
+                    .order_by(EmergencyContact.priority)
+                )
+            )
+            if granted.audit_reads:
+                await self._audit.record(
+                    session,
+                    AuditEvent(
+                        action="employee.emergency_contacts.read",
+                        actor=actor.audit_actor(),
+                        context=context,
+                        permission_used=granted.key,
+                        target_type="employee",
+                        target_id=subject,
+                        subject_employee_id=subject,
+                    ),
+                )
+            return contacts
+
+    async def _contacts_reader(self, session: AsyncSession, actor: Actor, subject: uuid.UUID) -> Granted:
+        for base in ("employee.personal.read", "employee.emergency_contact.read.team"):
+            if not self._authz.holds_any(actor, base):
+                continue
+            try:
+                return await self._authz.require(session, actor, base, subject_employee_id=subject)
+            except AccessDenied:
+                continue
+        raise AccessDenied(hide_existence=True)
+
+    async def replace_emergency_contacts(
+        self,
+        actor: Actor,
+        context: RequestContext,
+        employee_id: uuid.UUID | None,
+        contacts: Sequence[Mapping[str, str]],
+    ) -> list[EmergencyContact]:
+        """Replace the whole list (at most five, in priority order)."""
+        subject = employee_id or _own_employee(actor)
+        permission = "employee.personal.update.all" if employee_id else "employee.personal.update.self"
+        async with self._db.unit_of_work() as session:
+            granted = await self._authz.require(
+                session, actor, permission, subject_employee_id=subject, hide_existence=True
+            )
+            employee = await session.get(Employee, subject, with_for_update=True, populate_existing=True)
+            if employee is None:
+                raise ProblemError(ProblemType.NOT_FOUND)
+            await session.execute(delete(EmergencyContact).where(EmergencyContact.employee_id == subject))
+            rows = [
+                EmergencyContact(employee_id=subject, priority=index, **values)
+                for index, values in enumerate(contacts, start=1)
+            ]
+            session.add_all(rows)
             await session.flush()
             await self._audit.record(
                 session,
                 AuditEvent(
-                    action="employee.status.changed",
+                    action="employee.emergency_contacts.updated",
                     actor=actor.audit_actor(),
                     context=context,
                     permission_used=granted.key,
                     target_type="employee",
-                    target_id=employee_id,
-                    subject_employee_id=employee_id,
-                    changes=changes,
-                    reason=reason,
+                    target_id=subject,
+                    subject_employee_id=subject,
+                    # Personal values never reach the audit log (CLAUDE.md rule 6).
+                    changes={"emergency_contacts": RedactedChange()},
                 ),
             )
-            await session.refresh(record)
-            return record
+            return rows
 
     # --- personal tier -------------------------------------------------------------------------
 

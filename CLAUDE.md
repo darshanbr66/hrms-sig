@@ -4,7 +4,7 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 
 ## Current phase
 
-**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries), Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell), Checkpoint D (email outbox, admin invites, password reset, security emails, trusted devices, keyed attempted-email hash, settings registry), Checkpoint E (admin MFA reset and re-enrolment, grant requests with elevation, super admin assignment and break-glass, administrator-account disable rules) and Checkpoint F (audit sealer, signed checkpoints, write-once anchors, verification, retention with tombstones, tamper suite) are complete. Checkpoint G (the application UI: shell, dashboard, administration screens) was delivered on 2026-10-10 at the project owner's request together with the first slices of M2 (organization, employee records, personal tier, directory, self-service profile), M3 (attendance clock events only; no shifts or policies) and M4 (holiday calendars only), migrations `0014`–`0016`, followed on 2026-10-11 by M2 organization management (overview, archive guards, department descriptions, list filters and sorting, headcounts; migration `0017`) and by account linking, department heads and M4 leave management (configurable types and policies, ledger, requests, approvals, calendar; migration `0018`); see `docs/m1-implementation-plan.md` §12 for what remains and why. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
+**Phase 1 (M1, foundation) in progress.** Work follows the checkpoints in `docs/m1-implementation-plan.md` §10. Checkpoint A (repository, CI, local services, migrations, roles and grants, Procrastinate, rate limiter), Checkpoint B (audit streams and writer, org and people core tables, team resolution, import boundaries), Checkpoint C (identity, sign-in, sessions, MFA, step-up, authorization engine, role assignment, frontend sign-in shell), Checkpoint D (email outbox, admin invites, password reset, security emails, trusted devices, keyed attempted-email hash, settings registry), Checkpoint E (admin MFA reset and re-enrolment, grant requests with elevation, super admin assignment and break-glass, administrator-account disable rules) and Checkpoint F (audit sealer, signed checkpoints, write-once anchors, verification, retention with tombstones, tamper suite) are complete. Checkpoint G (the application UI: shell, dashboard, administration screens) was delivered on 2026-10-10 at the project owner's request together with the first slices of M2 (organization, employee records, personal tier, directory, self-service profile), M3 (attendance clock events only; no shifts or policies) and M4 (holiday calendars only), migrations `0014`–`0016`, followed on 2026-10-11 by M2 organization management (overview, archive guards, department descriptions, list filters and sorting, headcounts; migration `0017`) and by account linking, department heads and M4 leave management (configurable types and policies, ledger, requests, approvals, calendar; migration `0018`). On 2026-10-15 the project owner asked for the remaining HRMS work in one pass: notifications, shifts, attendance policies, day status, corrections and locks, leave accrual, year end and opening-balance import, documents with ClamAV scanning, exports, emergency contacts and the one-step exit (migrations `0019`–`0026`); see `docs/m1-implementation-plan.md` §12 for what is verified, what remains and why. On 2026-10-16: the organization add-dialog fix, viewport-safe dialogs with Playwright layout tests, declared working days in holiday calendars (migration `0027`), the onboarding and staff-provisioning journey tests, holiday calendar and record actions (`module-acceptance.md` §9), light/dark themes, the checkbox and scrolling fixes and the attendance, audit and department data views (§11, §12); module status and acceptance scripts are in `docs/module-acceptance.md`. Sigvitas HRMS is an HRMS, not a recruitment platform: no candidate, application or hiring-pipeline features. Do not start work beyond the current checkpoint without the user's approval. ADR statuses are in `docs/architecture-decisions.md`; open items are Sigvitas inputs listed in roadmap §6.
 
 ## Read before working
 
@@ -15,12 +15,14 @@ Internal Human Resource Management System for Sigvitas. Holds salary, personal, 
 | `docs/security-architecture.md` | Auth, sessions, step-up, encryption, headers, audit |
 | `docs/threat-model.md` | Threat scenarios T1–T26 and required controls |
 | `docs/authorization-model.md` | Permission catalog, roles, scopes, SoD rules |
+| `docs/roles-and-permissions.md` | Per-role pages, limits and workflows; the generated role matrix |
 | `docs/database-design.md` | Schemas, tables, constraints, retention |
 | `docs/api-architecture.md` | REST conventions, errors, endpoint map, jobs |
 | `docs/ui-ux-guidelines.md` | Design system direction, patterns, writing rules |
 | `docs/engineering-principles.md` | Code rules, testing, definition of done |
 | `docs/architecture-decisions.md` | ADRs and industry research |
 | `docs/development-roadmap.md` | Milestones, M1 scope, Sigvitas inputs still needed (§6) |
+| `docs/module-acceptance.md` | When a module counts as complete, each module's status, browser acceptance scripts, attendance location and payroll status |
 | `docs/local-development.md` | Running the system locally, test sign-in, verification commands (the only local setup guide) |
 
 When a change alters behaviour, permissions, schema or API, update the relevant document in the same change.
@@ -87,9 +89,11 @@ Backend (from `backend/`):
 | Regenerate `api/openapi.json` | `uv run python -m scripts.export_openapi` |
 | Create the first two super admins (once) | `uv run --env-file ../.env python -m app.cli bootstrap-super-admins --email A --email B` |
 | Create the local audit anchor bucket (once per RustFS volume) | `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket` |
+| Create the local private files bucket (documents, exports) | `uv run --env-file ../.env python -m scripts.create_local_files_bucket` |
+| Regenerate the role matrix doc and web-app role fixture | `uv run python -m scripts.role_matrix` |
 | Verify the audit chain and anchors (read-only) | `uv run --env-file ../.env python -m app.cli audit-verify` |
 
-Local email goes to Mailpit (`http://127.0.0.1:8025`); the worker sends it from the outbox. Audit checkpoint anchors go to the RustFS bucket (`127.0.0.1:9000`).
+Local email goes to Mailpit (`http://127.0.0.1:8025`); the worker sends it from the outbox. Audit checkpoint anchors and the private documents and exports bucket are on RustFS (`127.0.0.1:9000`). ClamAV runs with the Compose `scan` profile (`127.0.0.1:3310`); without it uploads stay unscanned and cannot be downloaded.
 
 Frontend (from `frontend/`, pnpm through corepack):
 
@@ -100,6 +104,7 @@ Frontend (from `frontend/`, pnpm through corepack):
 | Format / lint / types | `pnpm format:check` · `pnpm lint` · `pnpm typecheck` |
 | UI copy (banned words) | `pnpm copy:check` |
 | Tests / build | `pnpm test` · `pnpm build` |
+| Browser layout tests (Playwright, fake API, own Vite on 5180) | `pnpm test:e2e` |
 | Regenerate API types after the contract changes | `pnpm api:types` |
 
 The selector event loop is required because psycopg's async driver does not support the Windows Proactor loop.

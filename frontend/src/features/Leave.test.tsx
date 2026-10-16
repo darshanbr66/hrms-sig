@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { axe } from "vitest-axe";
 
 import { visibleNavItems } from "../app/navigation";
-import { FakeApi, json } from "../test/fakeApi";
+import { FakeApi, json, problem } from "../test/fakeApi";
 import {
   EMPLOYEE_ME,
   HR_ADMIN_ME,
@@ -198,6 +198,47 @@ describe("leave calendar and setup", () => {
     await waitFor(() => {
       expect(api.called("GET /api/v1/leave/calendar").at(-1)?.query.get("from")).toBe("2026-12-01");
     });
+  });
+
+  it("says what archiving a leave type does and shows why it was refused", async () => {
+    const leaveType = {
+      id: "t-1",
+      code: "TL",
+      name: "Test leave",
+      description: null,
+      is_paid: true,
+      requires_approval: true,
+      allows_half_day: false,
+      counts_weekly_offs: false,
+      counts_holidays: false,
+      status: "active",
+      version: 3,
+      created_at: "2026-10-11T00:00:00Z",
+      updated_at: "2026-10-11T00:00:00Z",
+    };
+    api
+      .on("GET /api/v1/leave-types", json({ items: [leaveType] }))
+      .on("GET /api/v1/leave-policies", json({ items: [] }))
+      .on(
+        "PATCH /api/v1/leave-types/t-1",
+        problem("conflict", 409, {
+          code: "leave.type_in_use",
+          detail: "1 request of this leave type waits for a decision. Decide them first, then archive it.",
+        }),
+      );
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/setup/leave-types");
+    await user.click(await screen.findByRole("button", { name: "Edit Test leave" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /Status/ }));
+    await user.click(await screen.findByRole("option", { name: "Archived (no new requests)" }));
+    expect(within(dialog).getByText(/Archiving stops new requests of this type/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Archive leave type" }));
+    expect(await within(dialog).findByText(/1 request of this leave type waits/)).toBeInTheDocument();
+    const [call] = api.called("PATCH /api/v1/leave-types/t-1");
+    expect(call?.headers.get("If-Match")).toBe('"3"');
+    expect(call?.body).toMatchObject({ status: "archived" });
   });
 
   it("asks HR for every rule of a new leave type instead of assuming one", async () => {

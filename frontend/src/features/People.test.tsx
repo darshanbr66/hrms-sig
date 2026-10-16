@@ -277,6 +277,55 @@ describe("organization", () => {
     });
   });
 
+  it.each([
+    ["departments", "Add department", "No departments yet"],
+    ["designations", "Add designation", "No designations yet"],
+    ["locations", "Add location", "No locations yet"],
+  ])("opens the add dialog when there are no %s yet", async (kind, button, empty) => {
+    api
+      .on("GET /api/v1/departments", json({ items: [] }))
+      .on("GET /api/v1/designations", json({ items: [] }))
+      .on("GET /api/v1/locations", json({ items: [] }));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, `/organization?tab=${kind}`);
+    expect(await screen.findByText(empty)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: button }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: button })).toBeInTheDocument();
+  });
+
+  it("adds the first location and shows the API's field errors", async () => {
+    api
+      .on("GET /api/v1/departments", json({ items: [] }))
+      .on("GET /api/v1/designations", json({ items: [] }))
+      .on("GET /api/v1/locations", json({ items: [] }))
+      .on(
+        "POST /api/v1/locations",
+        problem("validation-error", 422, {
+          errors: [
+            { field: "time_zone", code: "org.time_zone_unknown", message: "Enter a known time zone." },
+          ],
+        }),
+      );
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, "/organization?tab=locations");
+    await user.click(await screen.findByRole("button", { name: "Add location" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Code"), "TST");
+    await user.type(within(dialog).getByLabelText("Name"), "Test office");
+    await user.type(within(dialog).getByLabelText("Time zone"), "Nowhere/Test");
+    await user.type(within(dialog).getByLabelText("Country code"), "in");
+    await user.click(within(dialog).getByRole("button", { name: "Add location" }));
+    expect(await within(dialog).findByText("Enter a known time zone.")).toBeInTheDocument();
+    expect(api.called("POST /api/v1/locations")[0]?.body).toEqual({
+      code: "TST",
+      name: "Test office",
+      time_zone: "Nowhere/Test",
+      country_code: "IN",
+      address: null,
+    });
+  });
+
   it("is read-only without org.manage", async () => {
     orgLists();
     renderSignedIn(api, EMPLOYEE_ME, "/organization?tab=departments");

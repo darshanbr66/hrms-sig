@@ -10,6 +10,9 @@ dispatcher sends it (`dispatcher.py`).
 - `idempotency_key` is unique: enqueueing the same event twice keeps one email (for example
   one lockout email per lock, however many failed attempts follow).
 - `template_data` holds small, non-sensitive display values only, and is checked.
+
+`notify` creates an in-app notification in the caller's transaction, and `email_wanted` says
+whether the recipient wants a notification type by email (`inbox.py`).
 """
 
 import json
@@ -24,6 +27,7 @@ from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.notify.inbox import NotificationType, email_wanted, notify
 from app.modules.notify.models import EmailOutbox, EmailTemplate, OutboxStatus
 from app.platform.email import OutgoingEmail
 from app.platform.logging import is_sensitive_key
@@ -37,7 +41,16 @@ _CONTACT_PARTS: Final = frozenset({"email", "phone", "mobile", "address"})
 
 type DataValue = str | int | bool | None
 
-__all__ = ["EmailTemplate", "OutboxItem", "Renderer", "cancel_pending", "enqueue"]
+__all__ = [
+    "EmailTemplate",
+    "NotificationType",
+    "OutboxItem",
+    "Renderer",
+    "cancel_pending",
+    "email_wanted",
+    "enqueue",
+    "notify",
+]
 
 
 @dataclass(frozen=True, slots=True)

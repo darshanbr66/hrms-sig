@@ -8,7 +8,7 @@ is a data migration. Least-privilege boundaries that are fixed architecture, and
 `employee` and `manager` are derived, never assigned: `employee` while the account is linked
 to an employee record who is employed on the day, `manager` while that employee has at least
 one direct report on the day. Every active account also holds the account baseline (its own
-sessions and login history), whether or not it is linked to an employee record, because
+sessions, login history and notifications), whether or not it is linked to an employee record, because
 accounts such as the bootstrapped super admins have no employee record.
 """
 
@@ -44,7 +44,16 @@ class RoleDefinition:
             raise ValueError(f"role {self.key} names unknown permissions: {sorted(unknown)}")
 
 
-ACCOUNT_BASELINE: Final = frozenset({"auth.session.read.self", "auth.session.revoke.self"})
+# Own notifications (revision 0019) are account-level too: HR and administrator accounts are
+# not always linked to an employee record, and still receive approval and export notifications.
+ACCOUNT_BASELINE: Final = frozenset(
+    {
+        "auth.session.read.self",
+        "auth.session.revoke.self",
+        "notification.read.self",
+        "notification.preference.update.self",
+    }
+)
 
 _EMPLOYEE: Final = frozenset(
     {
@@ -83,10 +92,12 @@ _MANAGER: Final = frozenset(
 
 # `org.read` and `holiday.read` (revision 0014): HR maintains employee records against the
 # organization and holiday calendars whether or not their account is linked to an employee.
+# `shift.read` (revision 0025): HR assigns shifts and HR admins define them and the policies.
 _HR: Final = frozenset(
     {
         "org.read",
         "holiday.read",
+        "shift.read",
         "user.read.all",
         "user.invite",
         "user.disable",

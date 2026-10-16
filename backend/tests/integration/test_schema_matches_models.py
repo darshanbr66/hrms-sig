@@ -16,7 +16,18 @@ from app.metadata import metadata
 from app.platform.config import sqlalchemy_url
 from tests.conftest import PostgresServer
 
-APPLICATION_SCHEMAS = {"identity", "access", "org", "people", "notify", "app", "audit", "attendance", "leave"}
+APPLICATION_SCHEMAS = {
+    "identity",
+    "access",
+    "org",
+    "people",
+    "notify",
+    "app",
+    "audit",
+    "attendance",
+    "leave",
+    "docs",
+}
 # Month partitions are created at runtime (audit.ensure_partitions), and the chain links'
 # per-stream partitions hold only those month partitions; neither is modelled.
 PARTITION = re.compile(r".+_p\d{4}_\d{2}|chain_links_(audit_log|security_events)")

@@ -1096,10 +1096,72 @@ export interface paths {
         put?: never;
         /**
          * Change Employee Status
-         * @description Exiting someone does not disable their account by itself; the account is disabled
-         *     through `POST /users/{id}/disable`, which the same screen offers.
+         * @description Records a status change. To record someone leaving, use `POST /employees/{id}/exit`,
+         *     which also disables their account and revokes their sessions in the same step.
          */
         post: operations["change_employee_status_api_v1_employees__employee_id__status_changes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/exit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exit Employee
+         * @description The employee leaves: the record is marked exited from the last working day and their
+         *     account is disabled with every session revoked, in one step (needs `user.disable` and a
+         *     recent step-up when an account is linked).
+         */
+        post: operations["exit_employee_api_v1_employees__employee_id__exit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/emergency-contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Employee Emergency Contacts
+         * @description Personal tier: HR (`employee.personal.read.all`), audited. A manager reaches their team's
+         *     contacts only if Sigvitas grants `employee.emergency_contact.read.team`.
+         */
+        get: operations["employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_get"];
+        /** Replace Employee Emergency Contacts */
+        put: operations["replace_employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/emergency-contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Emergency Contacts */
+        get: operations["my_emergency_contacts_api_v1_me_emergency_contacts_get"];
+        /** Replace My Emergency Contacts */
+        put: operations["replace_my_emergency_contacts_api_v1_me_emergency_contacts_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1269,6 +1331,376 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/attendance/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Attendance Register
+         * @description Everyone in the viewer's scope employed on the date, with that day judged.
+         */
+        get: operations["attendance_register_api_v1_attendance_register_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Attendance Report
+         * @description Per person in scope: days per status and the period's totals (RPT-1: only what the
+         *     viewer may already read).
+         */
+        get: operations["attendance_report_api_v1_attendance_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/attendance/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Corrections */
+        get: operations["my_corrections_api_v1_me_attendance_corrections_get"];
+        put?: never;
+        /**
+         * Request Correction
+         * @description Ask to add or remove events on one of your work dates, with a reason.
+         */
+        post: operations["request_correction_api_v1_me_attendance_corrections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/attendance/corrections/{correction_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Correction */
+        post: operations["cancel_correction_api_v1_me_attendance_corrections__correction_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/attendance/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Correction
+         * @description HR records a correction on the employee's behalf (ATT-8). It applies at once and the
+         *     employee and their manager are told (SOD-7). Never on one's own attendance.
+         */
+        post: operations["record_correction_api_v1_employees__employee_id__attendance_corrections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Corrections
+         * @description Corrections in the viewer's scope, or with `for_decision` those waiting for a decision
+         *     the viewer may make. Reasons are never listed.
+         */
+        get: operations["list_corrections_api_v1_attendance_corrections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/corrections/{correction_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Correction Detail
+         * @description The correction with the day before and after it, side by side (ATT-7).
+         */
+        get: operations["correction_detail_api_v1_attendance_corrections__correction_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/corrections/{correction_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Correction */
+        post: operations["approve_correction_api_v1_attendance_corrections__correction_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/corrections/{correction_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Correction */
+        post: operations["reject_correction_api_v1_attendance_corrections__correction_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Shifts */
+        get: operations["list_shifts_api_v1_shifts_get"];
+        put?: never;
+        /** Create Shift */
+        post: operations["create_shift_api_v1_shifts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shifts/{shift_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Shift */
+        patch: operations["update_shift_api_v1_shifts__shift_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/shifts/{shift_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Shift Version
+         * @description New times or weekly offs from a date. The current version ends that day; past days keep
+         *     the version they were judged with.
+         */
+        post: operations["add_shift_version_api_v1_shifts__shift_id__versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/location-default-shifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Default Shifts */
+        get: operations["list_default_shifts_api_v1_location_default_shifts_get"];
+        put?: never;
+        /**
+         * Set Default Shift
+         * @description The shift everyone at a location works unless they have their own assignment.
+         */
+        post: operations["set_default_shift_api_v1_location_default_shifts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/shift-assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Employee Shift Assignments */
+        get: operations["employee_shift_assignments_api_v1_employees__employee_id__shift_assignments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shift-assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assign Shift
+         * @description Assign a shift from a date to one or more people; each one's current assignment ends
+         *     that day.
+         */
+        post: operations["assign_shift_api_v1_shift_assignments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Attendance Policies */
+        get: operations["list_attendance_policies_api_v1_attendance_policies_get"];
+        put?: never;
+        /**
+         * Create Attendance Policy
+         * @description A new policy version for a scope from a date; the current one of that scope ends then.
+         *     Every value is entered here: none is assumed.
+         */
+        post: operations["create_attendance_policy_api_v1_attendance_policies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/locks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Attendance Locks */
+        get: operations["list_attendance_locks_api_v1_attendance_locks_get"];
+        put?: never;
+        /**
+         * Create Attendance Lock
+         * @description Close past dates to corrections, except by HR holding `attendance.correction.approve.all`.
+         */
+        post: operations["create_attendance_lock_api_v1_attendance_locks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/locks/{lock_id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release Attendance Lock */
+        post: operations["release_attendance_lock_api_v1_attendance_locks__lock_id__release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Attendance Setup
+         * @description Who in the viewer's scope has no shift, or no attendance policy, today (ATT-12).
+         */
+        get: operations["attendance_setup_api_v1_attendance_setup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/holiday-calendars": {
         parameters: {
             query?: never;
@@ -1336,7 +1768,8 @@ export interface paths {
         delete: operations["remove_holiday_api_v1_holiday_calendars__calendar_id__holidays__holiday_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Holiday */
+        patch: operations["update_holiday_api_v1_holiday_calendars__calendar_id__holidays__holiday_id__patch"];
         trace?: never;
     };
     "/api/v1/holiday-calendars/{calendar_id}/locations/{location_id}": {
@@ -1545,6 +1978,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/leave/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Leave Report
+         * @description Days taken and pending per person and leave type in the period, for the people the
+         *     reader may see (RPT-1). Reasons are never included.
+         */
+        get: operations["leave_report_api_v1_leave_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-year-end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close Leave Year
+         * @description Close a leave year for one leave type: carry each balance forward up to the policy's
+         *     cap and lapse or keep the rest. With `apply: false` nothing is recorded; each employee is
+         *     closed at most once.
+         */
+        post: operations["close_leave_year_api_v1_leave_year_end_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/leave-opening-balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Opening Balances
+         * @description Check opening balances row by row; with `apply: true` and every row fine, record them
+         *     as one import batch. A file with any refused row records nothing.
+         */
+        post: operations["import_opening_balances_api_v1_leave_opening_balances_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/leave-requests/preview": {
         parameters: {
             query?: never;
@@ -1709,10 +2206,440 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Notifications */
+        get: operations["my_notifications_api_v1_me_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/unread-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Unread Count
+         * @description For the header badge. Send `X-SV-Background: 1` when polling, so polling does not keep
+         *     an idle session alive.
+         */
+        get: operations["my_unread_count_api_v1_me_notifications_unread_count_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read All Notifications */
+        post: operations["read_all_notifications_api_v1_me_notifications_read_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/{notification_id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Notification */
+        post: operations["read_notification_api_v1_me_notifications__notification_id__read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications/{notification_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Notification */
+        delete: operations["remove_notification_api_v1_me_notifications__notification_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notification-preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Notification Preferences */
+        get: operations["my_notification_preferences_api_v1_me_notification_preferences_get"];
+        /**
+         * Update Notification Preferences
+         * @description Turn notification types on or off per channel. Security emails are not listed and are
+         *     always sent.
+         */
+        put: operations["update_notification_preferences_api_v1_me_notification_preferences_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/document-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Document Categories */
+        get: operations["list_document_categories_api_v1_document_categories_get"];
+        put?: never;
+        /** Create Document Category */
+        post: operations["create_document_category_api_v1_document_categories_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/document-categories/{category_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Document Category */
+        patch: operations["update_document_category_api_v1_document_categories__category_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/me/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** My Documents */
+        get: operations["my_documents_api_v1_me_documents_get"];
+        put?: never;
+        /**
+         * Upload My Document
+         * @description Add a document to your own record, in a category that allows it.
+         */
+        post: operations["upload_my_document_api_v1_me_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employees/{employee_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Employee Documents
+         * @description The employee's documents in the categories the reader may see (DOC-2).
+         */
+        get: operations["employee_documents_api_v1_employees__employee_id__documents_get"];
+        put?: never;
+        /** Upload Employee Document */
+        post: operations["upload_employee_document_api_v1_employees__employee_id__documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/company-documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Company Documents */
+        get: operations["company_documents_api_v1_company_documents_get"];
+        put?: never;
+        /** Upload Company Document */
+        post: operations["upload_company_document_api_v1_company_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Document Detail */
+        get: operations["document_detail_api_v1_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Document
+         * @description Change the title or expiry date, or archive or restore the document (HR).
+         */
+        patch: operations["update_document_api_v1_documents__document_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/versions/{version_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Download Document
+         * @description A link to the file valid for 60 seconds, once it passed the virus check. Every
+         *     download is audited (DOC-3, DOC-4).
+         */
+        post: operations["download_document_api_v1_documents__document_id__versions__version_id__download_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Document Version
+         * @description A new version of a document (DOC-6); earlier versions stay available.
+         */
+        post: operations["upload_document_version_api_v1_documents__document_id__versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/attendance-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Attendance Summary
+         * @description Per person: days per status and the period's totals. Needs a recent step-up.
+         */
+        post: operations["export_attendance_summary_api_v1_exports_attendance_summary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/attendance-days": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Attendance Days
+         * @description One row per person and day, as judged. Needs a recent step-up.
+         */
+        post: operations["export_attendance_days_api_v1_exports_attendance_days_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/leave-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Leave Requests
+         * @description Leave requests overlapping the period, without reasons. Needs a recent step-up.
+         */
+        post: operations["export_leave_requests_api_v1_exports_leave_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/leave-balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Leave Balances
+         * @description Each person's balance per leave type on the day the file is produced.
+         */
+        post: operations["export_leave_balances_api_v1_exports_leave_balances_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/employees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Employees
+         * @description Employee records (job details and dates; no personal details).
+         */
+        post: operations["export_employees_api_v1_exports_employees_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/audit-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Audit Log
+         * @description The audit log recorded in the period. Needs a recent step-up.
+         */
+        post: operations["export_audit_log_api_v1_exports_audit_log_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Exports
+         * @description Exports you asked for, newest first.
+         */
+        get: operations["my_exports_api_v1_me_exports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/exports/{export_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Download Export
+         * @description A 60-second link to an export you asked for, until it expires. Audited.
+         */
+        post: operations["download_export_api_v1_me_exports__export_id__download_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        AccrualMethodValue: "none" | "upfront_per_leave_year" | "periodic";
         /** Address */
         Address: {
             /** Line1 */
@@ -1740,13 +2667,13 @@ export interface components {
              * @enum {string}
              */
             entry_type: "adjustment" | "opening_balance";
-            amount: components["schemas"]["app__modules__leave__schemas__Days__3"];
+            amount: components["schemas"]["app__modules__leave__schemas__Amount__3"];
             /**
              * Effective Date
              * Format: date
              */
             effective_date: string;
-            reason: components["schemas"]["Reason"];
+            reason: components["schemas"]["app__modules__leave__schemas__Reason"];
         };
         /** AdminSessionList */
         AdminSessionList: {
@@ -1792,6 +2719,8 @@ export interface components {
             no_allocation_in_policy: number;
             /** Skipped Own */
             skipped_own: number;
+            /** Nothing Due */
+            nothing_due: number;
         };
         /** AllocationRun */
         AllocationRun: {
@@ -1866,6 +2795,56 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** AttendanceReportRow */
+        AttendanceReportRow: {
+            employee: components["schemas"]["TeamMemberRef"];
+            /** Days */
+            days: {
+                [key: string]: number;
+            };
+            /** Not Judged Days */
+            not_judged_days: number;
+            /** Effective Minutes */
+            effective_minutes: number;
+            /** Late Days */
+            late_days: number;
+            /** Late Minutes */
+            late_minutes: number;
+            /** Early Leave Days */
+            early_leave_days: number;
+            /** Overtime Minutes */
+            overtime_minutes: number;
+        };
+        /** AttendanceReportView */
+        AttendanceReportView: {
+            /**
+             * Start
+             * Format: date
+             */
+            start: string;
+            /**
+             * End
+             * Format: date
+             */
+            end: string;
+            /** Items */
+            items: components["schemas"]["AttendanceReportRow"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** AuditBody */
+        AuditBody: {
+            /**
+             * From
+             * Format: date
+             */
+            from: string;
+            /**
+             * To
+             * Format: date
+             */
+            to: string;
         };
         /** AuditPage */
         AuditPage: {
@@ -1953,7 +2932,7 @@ export interface components {
         };
         /** BreakGlassCreate */
         BreakGlassCreate: {
-            reason: components["schemas"]["Reason"];
+            reason: components["schemas"]["app__modules__access__schemas__Reason"];
             /**
              * Duration Minutes
              * @default 60
@@ -1988,6 +2967,8 @@ export interface components {
             status: "active" | "archived";
             /** Holiday Count */
             holiday_count: number;
+            /** Working Day Count */
+            working_day_count: number;
             /** Location Count */
             location_count: number;
         };
@@ -2025,8 +3006,185 @@ export interface components {
              */
             updated_at: string;
         };
+        /** @enum {string} */
+        CarryModeValue: "none" | "capped" | "unlimited";
+        /** CategoryCreate */
+        CategoryCreate: {
+            code: components["schemas"]["Code"];
+            name: components["schemas"]["app__modules__documents__router__Name"];
+            description?: components["schemas"]["Description"] | null;
+            sensitivity: components["schemas"]["SensitivityValue"];
+            /** Employee Visible */
+            employee_visible: boolean;
+            /** Employee Can Upload */
+            employee_can_upload: boolean;
+            /** Requires Expiry */
+            requires_expiry: boolean;
+        };
+        /** CategoryList */
+        CategoryList: {
+            /** Items */
+            items: components["schemas"]["CategoryView"][];
+        };
+        /** CategoryUpdate */
+        CategoryUpdate: {
+            name?: components["schemas"]["app__modules__documents__router__Name"] | null;
+            description?: components["schemas"]["Description"] | null;
+            sensitivity?: components["schemas"]["SensitivityValue"] | null;
+            /** Employee Visible */
+            employee_visible?: boolean | null;
+            /** Employee Can Upload */
+            employee_can_upload?: boolean | null;
+            /** Requires Expiry */
+            requires_expiry?: boolean | null;
+            /** Status */
+            status?: ("active" | "archived") | null;
+        };
+        /** CategoryView */
+        CategoryView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Code */
+            code: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            sensitivity: components["schemas"]["SensitivityValue"];
+            /** Employee Visible */
+            employee_visible: boolean;
+            /** Employee Can Upload */
+            employee_can_upload: boolean;
+            /** Requires Expiry */
+            requires_expiry: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "archived";
+            /** Version */
+            version: number;
+        };
+        /** @enum {string} */
+        ChannelValue: "in_app" | "email";
         Code: string;
         CodeInput: string;
+        /** CorrectionCreate */
+        CorrectionCreate: {
+            /**
+             * Work Date
+             * Format: date
+             */
+            work_date: string;
+            reason: components["schemas"]["app__modules__attendance__schemas__Reason"];
+            /** Items */
+            items: components["schemas"]["CorrectionItemCreate"][];
+        };
+        /** CorrectionDecision */
+        CorrectionDecision: {
+            note?: components["schemas"]["app__modules__attendance__schemas__Reason"] | null;
+        };
+        /** CorrectionDetailView */
+        CorrectionDetailView: {
+            correction: components["schemas"]["CorrectionSummary"];
+            /** Reason */
+            reason: string | null;
+            /** Decision Note */
+            decision_note: string | null;
+            /** Requested By */
+            requested_by: string;
+            /** Decided By */
+            decided_by: string | null;
+            /** Items */
+            items: components["schemas"]["CorrectionItemView"][];
+            /** Time Zone */
+            time_zone: string;
+            /** Before */
+            before: components["schemas"]["TimelineEventView"][];
+            /** After */
+            after: components["schemas"]["TimelineEventView"][];
+            /** Still Valid */
+            still_valid: boolean;
+            /** Can Decide */
+            can_decide: boolean;
+            /** Can Cancel */
+            can_cancel: boolean;
+            /** Version */
+            version: number;
+        };
+        /** CorrectionItemCreate */
+        CorrectionItemCreate: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "add" | "void";
+            event_type?: components["schemas"]["EventTypeValue"] | null;
+            /** Proposed At */
+            proposed_at?: string | null;
+            /** Target Event Id */
+            target_event_id?: string | null;
+        };
+        /** CorrectionItemView */
+        CorrectionItemView: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "add" | "void";
+            event_type: components["schemas"]["EventTypeValue"] | null;
+            /** Proposed At */
+            proposed_at: string | null;
+            /** Target Event Id */
+            target_event_id: string | null;
+        };
+        /** CorrectionList */
+        CorrectionList: {
+            /** Items */
+            items: components["schemas"]["CorrectionSummary"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** @enum {string} */
+        CorrectionStatusValue: "pending" | "approved" | "rejected" | "cancelled";
+        /** CorrectionSummary */
+        CorrectionSummary: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Employee Id
+             * Format: uuid
+             */
+            employee_id: string;
+            /** Employee Name */
+            employee_name: string;
+            /**
+             * Work Date
+             * Format: date
+             */
+            work_date: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "request" | "hr_recorded";
+            status: components["schemas"]["CorrectionStatusValue"];
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Decided At */
+            decided_at: string | null;
+            /** Locked Period */
+            locked_period: boolean;
+        };
         /**
          * CurrentElevation
          * @description The elevation or break-glass that applies to the signed-in account now, if any.
@@ -2054,6 +3212,8 @@ export interface components {
             /** Items */
             items: components["schemas"]["DayView"][];
         };
+        /** @enum {string} */
+        DayStatusValue: "present" | "half_day" | "absent" | "on_leave" | "holiday" | "weekly_off" | "incomplete" | "pending_correction";
         /** DayView */
         DayView: {
             /**
@@ -2075,9 +3235,33 @@ export interface components {
             on_break: boolean;
             /** Missing Break End */
             missing_break_end: boolean;
+            status: components["schemas"]["DayStatusValue"] | null;
+            /** Judged */
+            judged: boolean;
+            /** Shift Name */
+            shift_name: string | null;
+            /** Shift Start At */
+            shift_start_at: string | null;
+            /** Shift End At */
+            shift_end_at: string | null;
+            /** Effective Minutes */
+            effective_minutes: number;
+            /** Late Minutes */
+            late_minutes: number;
+            /** Early Leave Minutes */
+            early_leave_minutes: number;
+            /** Overtime Minutes */
+            overtime_minutes: number;
+            /** Anomalies */
+            anomalies: string[];
+            /** Holiday */
+            holiday: boolean;
+            /** Leave Portion */
+            leave_portion: string;
             /** Events */
             events: components["schemas"]["EventView"][];
         };
+        Days: number | string;
         /** Decide */
         Decide: {
             note?: components["schemas"]["Text1000"] | null;
@@ -2098,6 +3282,58 @@ export interface components {
              * Format: date-time
              */
             decided_at: string;
+        };
+        /** DefaultShiftCreate */
+        DefaultShiftCreate: {
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /**
+             * Shift Id
+             * Format: uuid
+             */
+            shift_id: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+        };
+        /** DefaultShiftList */
+        DefaultShiftList: {
+            /** Items */
+            items: components["schemas"]["DefaultShiftView"][];
+        };
+        /** DefaultShiftView */
+        DefaultShiftView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /** Location Name */
+            location_name: string;
+            /**
+             * Shift Id
+             * Format: uuid
+             */
+            shift_id: string;
+            /** Shift Name */
+            shift_name: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
         };
         /** DepartmentCreate */
         DepartmentCreate: {
@@ -2263,11 +3499,70 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** DocumentDownloadLink */
+        DocumentDownloadLink: {
+            /** Url */
+            url: string;
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+        };
+        /** DocumentList */
+        DocumentList: {
+            /** Items */
+            items: components["schemas"]["DocumentView"][];
+            /** Sensitive Hidden */
+            sensitive_hidden: number;
+            /** Storage Ready */
+            storage_ready: boolean;
+        };
+        /** DocumentUpdate */
+        DocumentUpdate: {
+            title?: components["schemas"]["app__modules__documents__router__Name"] | null;
+            /** Expires On */
+            expires_on?: string | null;
+            /** Status */
+            status?: ("active" | "archived") | null;
+        };
+        /** DocumentView */
+        DocumentView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Owner Employee Id */
+            owner_employee_id: string | null;
+            /** Owner Name */
+            owner_name: string | null;
+            category: components["schemas"]["CategoryView"];
+            /** Title */
+            title: string;
+            /** Expires On */
+            expires_on: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "archived";
+            /** Version */
+            version: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Versions */
+            versions: components["schemas"]["VersionView"][];
+            /** Can Manage */
+            can_manage: boolean;
+            /** Can Add Version */
+            can_add_version: boolean;
+        };
         /** ElevationCreate */
         ElevationCreate: {
             /** Role Key */
             role_key: string;
-            reason: components["schemas"]["Reason"];
+            reason: components["schemas"]["app__modules__access__schemas__Reason"];
             /**
              * Duration Minutes
              * @default 120
@@ -2280,6 +3575,36 @@ export interface components {
         };
         /** Format: email */
         Email: string;
+        /** EmergencyContactList */
+        EmergencyContactList: {
+            /** Items */
+            items: components["schemas"]["EmergencyContactView"][];
+        };
+        /** EmergencyContactValue */
+        EmergencyContactValue: {
+            /** Name */
+            name: string;
+            /** Relationship */
+            relationship: string;
+            /** Phone */
+            phone: string;
+        };
+        /** EmergencyContactView */
+        EmergencyContactView: {
+            /** Priority */
+            priority: number;
+            /** Name */
+            name: string;
+            /** Relationship */
+            relationship: string;
+            /** Phone */
+            phone: string;
+        };
+        /** EmergencyContactsUpdate */
+        EmergencyContactsUpdate: {
+            /** Contacts */
+            contacts: components["schemas"]["EmergencyContactValue"][];
+        };
         /** EmployeeCreate */
         EmployeeCreate: {
             /** Employee Code */
@@ -2312,6 +3637,7 @@ export interface components {
             name: string;
             /** Is Optional */
             is_optional: boolean;
+            kind: components["schemas"]["HolidayKindValue"];
             /** Calendar */
             calendar: string;
         };
@@ -2457,7 +3783,7 @@ export interface components {
         /** @enum {string} */
         EmploymentTypeValue: "full_time" | "part_time" | "contract" | "intern";
         /** @enum {string} */
-        EntryTypeValue: "opening_balance" | "accrual" | "usage" | "usage_reversal" | "adjustment";
+        EntryTypeValue: "opening_balance" | "accrual" | "usage" | "usage_reversal" | "adjustment" | "carry_forward_out" | "carry_forward" | "carry_forward_expiry" | "lapse";
         /** EventCreate */
         EventCreate: {
             event_type: components["schemas"]["EventTypeValue"];
@@ -2484,6 +3810,82 @@ export interface components {
              * @enum {string}
              */
             source: "web" | "mobile" | "correction" | "import";
+            /** Voided */
+            voided: boolean;
+            /** Correction Id */
+            correction_id: string | null;
+        };
+        /** @enum {string} */
+        ExcessValue: "lapse" | "keep";
+        /** ExitCreate */
+        ExitCreate: {
+            /**
+             * Last Working Day
+             * Format: date
+             */
+            last_working_day: string;
+            /** Reason */
+            reason: string;
+        };
+        /** ExitView */
+        ExitView: {
+            status_change: components["schemas"]["StatusChangeView"];
+            /**
+             * Account
+             * @enum {string}
+             */
+            account: "none" | "disabled" | "already_disabled" | "administrator_left_active";
+            /** Sessions Revoked */
+            sessions_revoked: number;
+        };
+        /** ExportDownloadLink */
+        ExportDownloadLink: {
+            /** Url */
+            url: string;
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+        };
+        /** ExportList */
+        ExportList: {
+            /** Items */
+            items: components["schemas"]["ExportView"][];
+            /** Storage Ready */
+            storage_ready: boolean;
+        };
+        /** @enum {string} */
+        ExportTypeValue: "attendance_summary" | "attendance_days" | "leave_requests" | "leave_balances" | "employees" | "audit_log";
+        /** ExportView */
+        ExportView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            export_type: components["schemas"]["ExportTypeValue"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "done" | "failed" | "expired";
+            /** Start */
+            start: string | null;
+            /** End */
+            end: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Completed At */
+            completed_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Downloaded At */
+            downloaded_at: string | null;
+            /** Row Count */
+            row_count: number | null;
+            /** File Name */
+            file_name: string | null;
         };
         /** Factor */
         Factor: {
@@ -2512,9 +3914,11 @@ export interface components {
             /** Items */
             items: components["schemas"]["Factor"][];
         };
+        /** @enum {string} */
+        FrequencyValue: "monthly" | "quarterly";
         /** GrantDecision */
         GrantDecision: {
-            note?: components["schemas"]["Reason"] | null;
+            note?: components["schemas"]["app__modules__access__schemas__Reason"] | null;
         };
         /** GrantRequestPage */
         GrantRequestPage: {
@@ -2618,6 +4022,19 @@ export interface components {
              * @default false
              */
             is_optional: boolean;
+            /** @default holiday */
+            kind: components["schemas"]["HolidayKindValue"];
+        };
+        /** @enum {string} */
+        HolidayKindValue: "holiday" | "working_day";
+        /**
+         * HolidayUpdate
+         * @description The name, or whether a holiday is optional. The date and the kind do not change.
+         */
+        HolidayUpdate: {
+            name?: components["schemas"]["app__modules__leave__router__Name"] | null;
+            /** Is Optional */
+            is_optional?: boolean | null;
         };
         /** HolidayView */
         HolidayView: {
@@ -2635,6 +4052,31 @@ export interface components {
             name: string;
             /** Is Optional */
             is_optional: boolean;
+            kind: components["schemas"]["HolidayKindValue"];
+        };
+        /** ImportResult */
+        ImportResult: {
+            /** Applied */
+            applied: boolean;
+            /** Batch Id */
+            batch_id: string | null;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: components["schemas"]["ImportRowView"][];
+        };
+        /** ImportRowView */
+        ImportRowView: {
+            /** Line */
+            line: number;
+            /** Employee Code */
+            employee_code: string;
+            /** Leave Type Code */
+            leave_type_code: string;
+            /** Outcome */
+            outcome: string;
         };
         /**
          * InviteActivated
@@ -2845,15 +4287,23 @@ export interface components {
             leave_year_start_month: number;
             /** Leave Year Start Day */
             leave_year_start_day: number;
-            /**
-             * Accrual Method
-             * @enum {string}
-             */
-            accrual_method: "none" | "upfront_per_leave_year";
-            accrual_amount?: components["schemas"]["app__modules__leave__schemas__Days__1"] | null;
+            accrual_method: components["schemas"]["AccrualMethodValue"];
+            accrual_amount?: components["schemas"]["app__modules__leave__schemas__Amount__1"] | null;
+            accrual_frequency?: components["schemas"]["FrequencyValue"] | null;
+            accrual_timing?: components["schemas"]["TimingValue"] | null;
+            /** Prorate On Joining */
+            prorate_on_joining?: boolean | null;
+            /** Prorate On Exit */
+            prorate_on_exit?: boolean | null;
+            proration_rounding?: components["schemas"]["RoundingValue"] | null;
             /** Allow Negative Balance */
             allow_negative_balance: boolean;
-            max_negative_days?: components["schemas"]["app__modules__leave__schemas__Days__2"] | null;
+            max_negative_days?: components["schemas"]["Days"] | null;
+            carry_forward_mode?: components["schemas"]["CarryModeValue"] | null;
+            carry_forward_cap?: components["schemas"]["app__modules__leave__schemas__Amount__2"] | null;
+            excess_action?: components["schemas"]["ExcessValue"] | null;
+            /** Carried Expire After Months */
+            carried_expire_after_months?: number | null;
         };
         /** LeavePolicyList */
         LeavePolicyList: {
@@ -2881,22 +4331,63 @@ export interface components {
             leave_year_start_month: number;
             /** Leave Year Start Day */
             leave_year_start_day: number;
-            /**
-             * Accrual Method
-             * @enum {string}
-             */
-            accrual_method: "none" | "upfront_per_leave_year";
+            accrual_method: components["schemas"]["AccrualMethodValue"];
             /** Accrual Amount */
             accrual_amount: string | null;
+            accrual_frequency: components["schemas"]["FrequencyValue"] | null;
+            accrual_timing: components["schemas"]["TimingValue"] | null;
+            /** Prorate On Joining */
+            prorate_on_joining: boolean | null;
+            /** Prorate On Exit */
+            prorate_on_exit: boolean | null;
+            proration_rounding: components["schemas"]["RoundingValue"] | null;
             /** Allow Negative Balance */
             allow_negative_balance: boolean;
             /** Max Negative Days */
             max_negative_days: string | null;
+            carry_forward_mode: components["schemas"]["CarryModeValue"] | null;
+            /** Carry Forward Cap */
+            carry_forward_cap: string | null;
+            excess_action: components["schemas"]["ExcessValue"] | null;
+            /** Carried Expire After Months */
+            carried_expire_after_months: number | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+        };
+        /** LeaveReportRow */
+        LeaveReportRow: {
+            employee: components["schemas"]["Ref"];
+            /** Employee Code */
+            employee_code: string;
+            /** Department */
+            department: string | null;
+            /** Location */
+            location: string | null;
+            leave_type: components["schemas"]["Ref"];
+            /** Taken */
+            taken: string;
+            /** Pending */
+            pending: string;
+        };
+        /** LeaveReportView */
+        LeaveReportView: {
+            /**
+             * Start
+             * Format: date
+             */
+            start: string;
+            /**
+             * End
+             * Format: date
+             */
+            end: string;
+            /** Items */
+            items: components["schemas"]["LeaveReportRow"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /**
          * LeaveTypeCreate
@@ -3003,6 +4494,8 @@ export interface components {
             effective_date: string;
             /** Leave Request Id */
             leave_request_id: string | null;
+            /** Period Start */
+            period_start: string | null;
             /** Reason */
             reason: string | null;
             /**
@@ -3083,6 +4576,60 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** LockCreate */
+        LockCreate: {
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
+            /**
+             * Period End
+             * Format: date
+             */
+            period_end: string;
+            /** Reason */
+            reason: string;
+        };
+        /** LockList */
+        LockList: {
+            /** Items */
+            items: components["schemas"]["LockView"][];
+        };
+        /** LockRelease */
+        LockRelease: {
+            /** Reason */
+            reason: string;
+        };
+        /** LockView */
+        LockView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
+            /**
+             * Period End
+             * Format: date
+             */
+            period_end: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Locked At
+             * Format: date-time
+             */
+            locked_at: string;
+            /** Released At */
+            released_at: string | null;
+            /** Release Reason */
+            release_reason: string | null;
         };
         /**
          * LoginChallenge
@@ -3172,6 +4719,58 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        Minutes: number;
+        /** NotificationPage */
+        NotificationPage: {
+            /** Items */
+            items: components["schemas"]["NotificationView"][];
+            /** Unread Count */
+            unread_count: number;
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** NotificationView */
+        NotificationView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            type: components["schemas"]["TypeValue"];
+            /** Title */
+            title: string;
+            /** Body */
+            body: string | null;
+            /** Link */
+            link: string | null;
+            /** Read */
+            read: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** OpeningBalanceImport */
+        OpeningBalanceImport: {
+            reason: components["schemas"]["app__modules__leave__schemas__Reason"];
+            /** Rows */
+            rows: components["schemas"]["OpeningBalanceRow"][];
+            /** Apply */
+            apply: boolean;
+        };
+        /** OpeningBalanceRow */
+        OpeningBalanceRow: {
+            /** Employee Code */
+            employee_code: string;
+            leave_type_code: components["schemas"]["Code"];
+            days: components["schemas"]["app__modules__leave__schemas__Amount__3"];
+            /**
+             * Effective Date
+             * Format: date
+             */
+            effective_date: string;
+        };
         /** PasswordChange */
         PasswordChange: {
             current_password: components["schemas"]["PasswordInput"];
@@ -3189,6 +4788,23 @@ export interface components {
              * Format: email
              */
             email: string;
+        };
+        /** PeriodBody */
+        PeriodBody: {
+            /**
+             * From
+             * Format: date
+             */
+            from: string;
+            /**
+             * To
+             * Format: date
+             */
+            to: string;
+            /** Department Id */
+            department_id?: string | null;
+            /** Location Id */
+            location_id?: string | null;
         };
         /** PersonRef */
         PersonRef: {
@@ -3223,6 +4839,142 @@ export interface components {
             version: number;
         };
         Phone: string;
+        /** PolicyCreate */
+        PolicyCreate: {
+            /**
+             * Scope Type
+             * @enum {string}
+             */
+            scope_type: "organization" | "location" | "shift";
+            /** Scope Id */
+            scope_id?: string | null;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            grace_minutes: components["schemas"]["Minutes"];
+            early_departure_grace_minutes: components["schemas"]["Minutes"];
+            /**
+             * Duration Basis
+             * @enum {string}
+             */
+            duration_basis: "effective" | "gross";
+            /** Full Day Min Minutes */
+            full_day_min_minutes: number;
+            /** Half Day Min Minutes */
+            half_day_min_minutes: number;
+            max_break_minutes?: components["schemas"]["Minutes"] | null;
+            /** Breaks Count As Work */
+            breaks_count_as_work: boolean;
+            /**
+             * Break Excess Action
+             * @enum {string}
+             */
+            break_excess_action: "flag" | "deduct";
+            /** Overtime Enabled */
+            overtime_enabled: boolean;
+            /** Overtime Basis */
+            overtime_basis?: ("beyond_full_day" | "beyond_shift_end") | null;
+            overtime_min_minutes?: components["schemas"]["Minutes"] | null;
+            /** Overtime Requires Approval */
+            overtime_requires_approval: boolean;
+            incomplete_after_minutes: components["schemas"]["Minutes"];
+            /** Allow Multiple Sessions */
+            allow_multiple_sessions: boolean;
+        };
+        /** PolicyList */
+        PolicyList: {
+            /** Items */
+            items: components["schemas"]["PolicyView"][];
+        };
+        /** PolicyView */
+        PolicyView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Scope Type
+             * @enum {string}
+             */
+            scope_type: "organization" | "location" | "shift";
+            /** Scope Id */
+            scope_id: string | null;
+            /** Scope Name */
+            scope_name: string | null;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+            /** Grace Minutes */
+            grace_minutes: number;
+            /** Early Departure Grace Minutes */
+            early_departure_grace_minutes: number;
+            /**
+             * Duration Basis
+             * @enum {string}
+             */
+            duration_basis: "effective" | "gross";
+            /** Full Day Min Minutes */
+            full_day_min_minutes: number;
+            /** Half Day Min Minutes */
+            half_day_min_minutes: number;
+            /** Max Break Minutes */
+            max_break_minutes: number | null;
+            /** Breaks Count As Work */
+            breaks_count_as_work: boolean;
+            /**
+             * Break Excess Action
+             * @enum {string}
+             */
+            break_excess_action: "flag" | "deduct";
+            /** Overtime Enabled */
+            overtime_enabled: boolean;
+            /** Overtime Basis */
+            overtime_basis: ("beyond_full_day" | "beyond_shift_end") | null;
+            /** Overtime Min Minutes */
+            overtime_min_minutes: number | null;
+            /** Overtime Requires Approval */
+            overtime_requires_approval: boolean;
+            /** Incomplete After Minutes */
+            incomplete_after_minutes: number;
+            /** Allow Multiple Sessions */
+            allow_multiple_sessions: boolean;
+        };
+        /** PreferenceChange */
+        PreferenceChange: {
+            type: components["schemas"]["TypeValue"];
+            channel: components["schemas"]["ChannelValue"];
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** PreferenceList */
+        PreferenceList: {
+            /** Items */
+            items: components["schemas"]["PreferenceView"][];
+        };
+        /** PreferenceUpdate */
+        PreferenceUpdate: {
+            /** Changes */
+            changes: components["schemas"]["PreferenceChange"][];
+        };
+        /** PreferenceView */
+        PreferenceView: {
+            type: components["schemas"]["TypeValue"];
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Channels */
+            channels: {
+                [key: string]: boolean;
+            };
+        };
         /** PreviewView */
         PreviewView: {
             /** Days */
@@ -3240,7 +4992,11 @@ export interface components {
             /** Weekly Offs Configured */
             weekly_offs_configured: boolean;
         };
-        Reason: string;
+        /** ReadAllResult */
+        ReadAllResult: {
+            /** Marked Read */
+            marked_read: number;
+        };
         /** RecentJoiner */
         RecentJoiner: {
             employee: components["schemas"]["PersonRef"];
@@ -3267,6 +5023,31 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+        };
+        /** RegisterEntryView */
+        RegisterEntryView: {
+            employee: components["schemas"]["TeamMemberRef"];
+            /** Time Zone */
+            time_zone: string;
+            day: components["schemas"]["DayView"];
+        };
+        /** RegisterView */
+        RegisterView: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** In Scope */
+            in_scope: number;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: components["schemas"]["RegisterEntryView"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /** RequestCreate */
         RequestCreate: {
@@ -3421,6 +5202,15 @@ export interface components {
             /** Permissions */
             permissions: string[];
         };
+        /** @enum {string} */
+        RoundingValue: "exact" | "nearest_half" | "down_half" | "up_half";
+        /** ScopeBody */
+        ScopeBody: {
+            /** Department Id */
+            department_id?: string | null;
+            /** Location Id */
+            location_id?: string | null;
+        };
         /** SecurityPage */
         SecurityPage: {
             /** Items */
@@ -3471,6 +5261,8 @@ export interface components {
         SelfProfileUpdate: {
             preferred_name: components["schemas"]["app__modules__people__schemas__Name"] | null;
         };
+        /** @enum {string} */
+        SensitivityValue: "internal" | "personal" | "sensitive";
         /** SessionList */
         SessionList: {
             /** Items */
@@ -3542,6 +5334,170 @@ export interface components {
              */
             permission: "security.settings.manage" | "settings.manage";
         };
+        /** SetupView */
+        SetupView: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Active Shifts */
+            active_shifts: number;
+            /** Policies In Effect */
+            policies_in_effect: number;
+            /** Organization Policy */
+            organization_policy: boolean;
+            /** Employees In Scope */
+            employees_in_scope: number;
+            /** Without Shift */
+            without_shift: components["schemas"]["TeamMemberRef"][];
+            /** Without Policy */
+            without_policy: components["schemas"]["TeamMemberRef"][];
+        };
+        /** ShiftAssignmentCreate */
+        ShiftAssignmentCreate: {
+            /** Employee Ids */
+            employee_ids: string[];
+            /**
+             * Shift Id
+             * Format: uuid
+             */
+            shift_id: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+        };
+        /** ShiftAssignmentList */
+        ShiftAssignmentList: {
+            /** Items */
+            items: components["schemas"]["ShiftAssignmentView"][];
+        };
+        /** ShiftAssignmentResult */
+        ShiftAssignmentResult: {
+            /** Assigned */
+            assigned: number;
+            /** Skipped Not Permitted */
+            skipped_not_permitted: number;
+        };
+        /** ShiftAssignmentView */
+        ShiftAssignmentView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Shift Id
+             * Format: uuid
+             */
+            shift_id: string;
+            /** Shift Name */
+            shift_name: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+        };
+        /** ShiftCreate */
+        ShiftCreate: {
+            code: components["schemas"]["Code"];
+            name: components["schemas"]["app__modules__attendance__schemas__Name"];
+            /** Description */
+            description?: string | null;
+            version: components["schemas"]["ShiftVersionCreate"];
+        };
+        /** ShiftList */
+        ShiftList: {
+            /** Items */
+            items: components["schemas"]["ShiftView"][];
+        };
+        /** ShiftUpdate */
+        ShiftUpdate: {
+            name?: components["schemas"]["app__modules__attendance__schemas__Name"] | null;
+            /** Description */
+            description?: string | null;
+            /** Status */
+            status?: ("active" | "archived") | null;
+        };
+        /** ShiftVersionCreate */
+        ShiftVersionCreate: {
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /**
+             * Start Time
+             * Format: time
+             */
+            start_time: string;
+            /**
+             * End Time
+             * Format: time
+             */
+            end_time: string;
+            /** Weekly Offs */
+            weekly_offs: components["schemas"]["WeeklyOffValue"][];
+        };
+        /** ShiftVersionView */
+        ShiftVersionView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Version No */
+            version_no: number;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+            /**
+             * Start Time
+             * Format: time
+             */
+            start_time: string;
+            /**
+             * End Time
+             * Format: time
+             */
+            end_time: string;
+            /** Crosses Midnight */
+            crosses_midnight: boolean;
+            /** Weekly Offs */
+            weekly_offs: components["schemas"]["WeeklyOffView"][];
+        };
+        /** ShiftView */
+        ShiftView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Code */
+            code: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "archived";
+            /** Version */
+            version: number;
+            /** Versions */
+            versions: components["schemas"]["ShiftVersionView"][];
+        };
         /**
          * SignedIn
          * @description Session cookies are set. `mfa_enrolment` allows only setting up a new authenticator.
@@ -3601,6 +5557,8 @@ export interface components {
              */
             created_at: string;
         };
+        /** @enum {string} */
+        StatusFilter: "present" | "half_day" | "absent" | "on_leave" | "holiday" | "weekly_off" | "incomplete" | "pending_correction" | "not_judged";
         /** StatusHistory */
         StatusHistory: {
             /** Items */
@@ -3674,6 +5632,17 @@ export interface components {
             next_cursor: string | null;
         };
         Text1000: string;
+        /** TimelineEventView */
+        TimelineEventView: {
+            event_type: components["schemas"]["EventTypeValue"];
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+        };
+        /** @enum {string} */
+        TimingValue: "period_start" | "period_end";
         /** TodayView */
         TodayView: {
             state: components["schemas"]["StateValue"];
@@ -3743,6 +5712,8 @@ export interface components {
              */
             label: string;
         };
+        /** @enum {string} */
+        TypeValue: "leave.approval_requested" | "leave.request_updated" | "attendance.correction_requested" | "attendance.correction_updated" | "document.added" | "export.ready";
         /** UnitRef */
         UnitRef: {
             /**
@@ -3752,6 +5723,11 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+        };
+        /** UnreadCount */
+        UnreadCount: {
+            /** Unread Count */
+            unread_count: number;
         };
         /** UserPage */
         UserPage: {
@@ -3811,12 +5787,97 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** VersionView */
+        VersionView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Version No */
+            version_no: number;
+            /** Original Filename */
+            original_filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Scan Status
+             * @enum {string}
+             */
+            scan_status: "pending" | "clean" | "infected" | "failed";
+            /**
+             * Uploaded At
+             * Format: date-time
+             */
+            uploaded_at: string;
+        };
+        /** WeeklyOffValue */
+        WeeklyOffValue: {
+            /** Weekday */
+            weekday: number;
+            /** Weeks */
+            weeks?: number[] | null;
+        };
+        /** WeeklyOffView */
+        WeeklyOffView: {
+            /** Weekday */
+            weekday: number;
+            /** Weeks */
+            weeks: number[] | null;
+        };
         Year: number;
+        /** YearEndResult */
+        YearEndResult: {
+            /** Applied */
+            applied: boolean;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Items */
+            items: components["schemas"]["YearEndRowView"][];
+        };
+        /** YearEndRowView */
+        YearEndRowView: {
+            employee: components["schemas"]["Ref"];
+            /** Outcome */
+            outcome: string;
+            /** Closing */
+            closing: string | null;
+            /** Carried */
+            carried: string | null;
+            /** Lapsed */
+            lapsed: string | null;
+            /** Kept */
+            kept: string | null;
+        };
+        /** YearEndRun */
+        YearEndRun: {
+            /**
+             * Leave Type Id
+             * Format: uuid
+             */
+            leave_type_id: string;
+            /**
+             * Year End
+             * Format: date
+             */
+            year_end: string;
+            /** Apply */
+            apply: boolean;
+        };
+        app__modules__access__schemas__Reason: string;
+        app__modules__attendance__schemas__Name: string;
+        app__modules__attendance__schemas__Reason: string;
+        app__modules__documents__router__Name: string;
         app__modules__leave__router__Name: string;
-        app__modules__leave__schemas__Days__1: number | string;
-        app__modules__leave__schemas__Days__2: number | string;
-        app__modules__leave__schemas__Days__3: number | string;
+        app__modules__leave__schemas__Amount__1: number | string;
+        app__modules__leave__schemas__Amount__2: number | string;
+        app__modules__leave__schemas__Amount__3: number | string;
         app__modules__leave__schemas__Name: string;
+        app__modules__leave__schemas__Reason: string;
         /** @enum {string} */
         app__modules__leave__schemas__StatusValue: "pending" | "approved" | "rejected" | "cancelled" | "cancellation_requested";
         app__modules__org__schemas__Name: string;
@@ -6195,6 +8256,160 @@ export interface operations {
             };
         };
     };
+    exit_employee_api_v1_employees__employee_id__exit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExitCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExitView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmergencyContactList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_employee_emergency_contacts_api_v1_employees__employee_id__emergency_contacts_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyContactsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmergencyContactList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_emergency_contacts_api_v1_me_emergency_contacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmergencyContactList"];
+                };
+            };
+        };
+    };
+    replace_my_emergency_contacts_api_v1_me_emergency_contacts_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmergencyContactsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmergencyContactList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     employee_personal_api_v1_employees__employee_id__personal_get: {
         parameters: {
             query?: never;
@@ -6549,6 +8764,765 @@ export interface operations {
             };
         };
     };
+    attendance_register_api_v1_attendance_register_get: {
+        parameters: {
+            query: {
+                date: string;
+                q?: string | null;
+                department_id?: string | null;
+                location_id?: string | null;
+                status?: components["schemas"]["StatusFilter"] | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attendance_report_api_v1_attendance_report_get: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                q?: string | null;
+                department_id?: string | null;
+                location_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttendanceReportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_corrections_api_v1_me_attendance_corrections_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_correction_api_v1_me_attendance_corrections_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_correction_api_v1_me_attendance_corrections__correction_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_correction_api_v1_employees__employee_id__attendance_corrections_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_corrections_api_v1_attendance_corrections_get: {
+        parameters: {
+            query?: {
+                for_decision?: boolean;
+                status?: ("pending" | "approved" | "rejected" | "cancelled")[] | null;
+                employee_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correction_detail_api_v1_attendance_corrections__correction_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_correction_api_v1_attendance_corrections__correction_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_correction_api_v1_attendance_corrections__correction_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionDetailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_shifts_api_v1_shifts_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_shift_api_v1_shifts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_shift_api_v1_shifts__shift_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                shift_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_shift_version_api_v1_shifts__shift_id__versions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                shift_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftVersionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_default_shifts_api_v1_location_default_shifts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultShiftList"];
+                };
+            };
+        };
+    };
+    set_default_shift_api_v1_location_default_shifts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefaultShiftCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultShiftView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    employee_shift_assignments_api_v1_employees__employee_id__shift_assignments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftAssignmentList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_shift_api_v1_shift_assignments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftAssignmentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftAssignmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_attendance_policies_api_v1_attendance_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyList"];
+                };
+            };
+        };
+    };
+    create_attendance_policy_api_v1_attendance_policies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_attendance_locks_api_v1_attendance_locks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockList"];
+                };
+            };
+        };
+    };
+    create_attendance_lock_api_v1_attendance_locks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_attendance_lock_api_v1_attendance_locks__lock_id__release_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lock_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockRelease"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attendance_setup_api_v1_attendance_setup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupView"];
+                };
+            };
+        };
+    };
     list_calendars_api_v1_holiday_calendars_get: {
         parameters: {
             query?: {
@@ -6731,6 +9705,44 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_holiday_api_v1_holiday_calendars__calendar_id__holidays__holiday_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                calendar_id: string;
+                holiday_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HolidayUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -7202,6 +10214,108 @@ export interface operations {
             };
         };
     };
+    leave_report_api_v1_leave_report_get: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                department_id?: string | null;
+                location_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaveReportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_leave_year_api_v1_leave_year_end_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["YearEndRun"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YearEndResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_opening_balances_api_v1_leave_opening_balances_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpeningBalanceImport"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     preview_request_api_v1_me_leave_requests_preview_post: {
         parameters: {
             query?: never;
@@ -7501,6 +10615,866 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LeaveCalendarView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_notifications_api_v1_me_notifications_get: {
+        parameters: {
+            query?: {
+                unread?: boolean;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_unread_count_api_v1_me_notifications_unread_count_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnreadCount"];
+                };
+            };
+        };
+    };
+    read_all_notifications_api_v1_me_notifications_read_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadAllResult"];
+                };
+            };
+        };
+    };
+    read_notification_api_v1_me_notifications__notification_id__read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_notification_api_v1_me_notifications__notification_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_notification_preferences_api_v1_me_notification_preferences_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceList"];
+                };
+            };
+        };
+    };
+    update_notification_preferences_api_v1_me_notification_preferences_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreferenceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_document_categories_api_v1_document_categories_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_document_category_api_v1_document_categories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CategoryCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_document_category_api_v1_document_categories__category_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                category_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CategoryUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_documents_api_v1_me_documents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentList"];
+                };
+            };
+        };
+    };
+    upload_my_document_api_v1_me_documents_post: {
+        parameters: {
+            query: {
+                category_id: string;
+                title: string;
+                expires_on?: string | null;
+            };
+            header?: {
+                "X-File-Name"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    employee_documents_api_v1_employees__employee_id__documents_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_employee_document_api_v1_employees__employee_id__documents_post: {
+        parameters: {
+            query: {
+                category_id: string;
+                title: string;
+                expires_on?: string | null;
+            };
+            header?: {
+                "X-File-Name"?: string | null;
+            };
+            path: {
+                employee_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    company_documents_api_v1_company_documents_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_company_document_api_v1_company_documents_post: {
+        parameters: {
+            query: {
+                category_id: string;
+                title: string;
+                expires_on?: string | null;
+            };
+            header?: {
+                "X-File-Name"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    document_detail_api_v1_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_document_api_v1_documents__document_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocumentUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_document_api_v1_documents__document_id__versions__version_id__download_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentDownloadLink"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_document_version_api_v1_documents__document_id__versions_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-File-Name"?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_attendance_summary_api_v1_exports_attendance_summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PeriodBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_attendance_days_api_v1_exports_attendance_days_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PeriodBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_leave_requests_api_v1_exports_leave_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PeriodBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_leave_balances_api_v1_exports_leave_balances_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_employees_api_v1_exports_employees_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScopeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_audit_log_api_v1_exports_audit_log_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuditBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_exports_api_v1_me_exports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportList"];
+                };
+            };
+        };
+    };
+    download_export_api_v1_me_exports__export_id__download_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportDownloadLink"];
                 };
             };
             /** @description Validation Error */

@@ -13,12 +13,16 @@ come from the leave type and the effective policy passed in.
 - `most_specific`: the policy that applies to an employee, from the candidates that match
   their location and employment type: a location match outranks an employment-type match,
   and a policy naming both outranks either.
+- `accrual_periods`, `prorated` and `round_days`: periodic accrual and proration on joining
+  and exit, rounded by the policy's rule.
+- `year_end` and `expired_carry`: carrying a balance into the next leave year (all, none or up
+  to a cap), lapsing or keeping the rest, and expiring carried days left unused.
 """
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Final, Protocol
 
 FULL: Final = Decimal("1.00")
@@ -155,3 +159,110 @@ def most_specific[P: PolicyScope](
     if not matching:
         return None
     return max(matching, key=lambda p: (p.location_id is not None) * 2 + (p.employment_type is not None))
+
+
+# --- accrual, proration and the year end (revision 0021) ----------------------------------------
+
+
+def next_leave_year_start(year_start: date) -> date:
+    return date(year_start.year + 1, year_start.month, year_start.day)
+
+
+def add_months(day: date, months: int) -> date:
+    """The same day `months` later, or the month's last day when it has fewer days."""
+    month_index = day.month - 1 + months
+    year, month = day.year + month_index // 12, month_index % 12 + 1
+    last = (date(year + month // 12, month % 12 + 1, 1) - timedelta(days=1)).day
+    return date(year, month, min(day.day, last))
+
+
+@dataclass(frozen=True, slots=True)
+class Period:
+    start: date
+    # Inclusive.
+    end: date
+
+    @property
+    def days(self) -> int:
+        return (self.end - self.start).days + 1
+
+
+def accrual_periods(year_start: date, frequency: str) -> list[Period]:
+    """The accrual periods of a leave year: twelve months or four quarters from its start."""
+    step = 1 if frequency == "monthly" else 3
+    starts = [add_months(year_start, step * index) for index in range(12 // step)]
+    ends = [
+        *(start - timedelta(days=1) for start in starts[1:]),
+        next_leave_year_start(year_start) - timedelta(days=1),
+    ]
+    return [Period(start, end) for start, end in zip(starts, ends, strict=True)]
+
+
+def round_days(amount: Decimal, rounding: str) -> Decimal:
+    """Round a prorated amount by the policy's rule: to hundredths, or to a half day."""
+    if rounding == "exact":
+        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    doubled = amount * 2
+    mode = {"nearest_half": ROUND_HALF_UP, "down_half": ROUND_FLOOR, "up_half": ROUND_CEILING}[rounding]
+    return (doubled.quantize(Decimal("1"), rounding=mode) / 2).quantize(Decimal("0.01"))
+
+
+def prorated(
+    amount: Decimal,
+    period: Period,
+    joined: date,
+    exited: date | None,
+    *,
+    on_joining: bool,
+    on_exit: bool,
+    rounding: str | None,
+) -> Decimal:
+    """The part of `amount` an employee earns for a period: all of it, nothing when not
+    employed in the period, or the share of the period's days employed when the policy
+    prorates on joining or exit (rounded by the policy's rule)."""
+    first = max(period.start, joined)
+    last = min(period.end, exited) if exited else period.end
+    if last < first:
+        return Decimal("0.00")
+    cut_start = first > period.start and on_joining
+    cut_end = last < period.end and on_exit
+    if not (cut_start or cut_end) or rounding is None:
+        return amount
+    covered_from = first if cut_start else period.start
+    covered_to = last if cut_end else period.end
+    share = Decimal((covered_to - covered_from).days + 1) / Decimal(period.days)
+    return round_days(amount * share, rounding)
+
+
+@dataclass(frozen=True, slots=True)
+class YearEnd:
+    """What closing a leave year does to one balance."""
+
+    closing: Decimal
+    carried: Decimal
+    lapsed: Decimal
+    kept: Decimal
+
+
+def year_end(closing: Decimal, *, mode: str, cap: Decimal | None, excess_action: str | None) -> YearEnd:
+    """Carry forward up to the cap (all, none or capped), and lapse or keep the rest. A balance
+    at or below zero carries nothing and lapses nothing: it stays as it is."""
+    zero = Decimal("0.00")
+    if closing <= 0:
+        return YearEnd(closing, zero, zero, zero)
+    if mode == "unlimited":
+        carried = closing
+    elif mode == "capped" and cap is not None:
+        carried = min(closing, cap)
+    else:
+        carried = zero
+    rest = closing - carried
+    lapsed = rest if excess_action == "lapse" else zero
+    return YearEnd(closing, carried, lapsed, rest - lapsed)
+
+
+def expired_carry(carried: Decimal, used: Decimal, balance: Decimal) -> Decimal:
+    """Carried days that expire unused: days taken since the carry use carried days first, and
+    no more than the balance can expire."""
+    unused = max(Decimal("0.00"), carried - max(Decimal("0.00"), used))
+    return max(Decimal("0.00"), min(unused, balance))

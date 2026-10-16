@@ -62,7 +62,13 @@ async def test_hr_admin_builds_a_calendar_and_employees_see_their_locations_holi
         )
         assert mine.status_code == 200
         assert mine.json()["items"] == [
-            {"date": holiday_date.isoformat(), "name": "Test holiday", "is_optional": False, "calendar": name}
+            {
+                "date": holiday_date.isoformat(),
+                "name": "Test holiday",
+                "is_optional": False,
+                "kind": "holiday",
+                "calendar": name,
+            }
         ]
         assert (
             await client.post("/api/v1/holiday-calendars", json={"name": "No", "year": year})

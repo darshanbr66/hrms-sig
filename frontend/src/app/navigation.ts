@@ -3,21 +3,25 @@
  * working with, and each item shown only when the person holds a permission for it. Hiding an
  * item is cosmetic: the API decides every request (CLAUDE.md rule 1).
  *
- * Every item leads to a working page. Features that are not built yet (documents,
- * notifications, reports) are not listed at all.
+ * Every item leads to a working page. Notifications open from the bell in the header.
  */
 import {
   Activity,
+  BarChart3,
   Building2,
+  CalendarClock,
   CalendarCheck,
   CalendarCog,
   CalendarDays,
   CalendarHeart,
   CalendarRange,
+  ClipboardCheck,
   ClipboardList,
   Clock,
   ContactRound,
   FileClock,
+  FileText,
+  FolderCog,
   KeyRound,
   LayoutDashboard,
   type LucideIcon,
@@ -56,6 +60,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { to: "/attendance", label: "My attendance", icon: Clock, anyOf: ["attendance.clock.self"] },
       { to: "/leave", label: "My leave", icon: CalendarHeart, anyOf: ["leave.request.self"], end: true },
       { to: "/holidays", label: "Holidays", icon: CalendarDays, anyOf: ["holiday.read"] },
+      {
+        to: "/documents",
+        label: "Documents",
+        icon: FileText,
+        anyOf: ["document.read.self", "document.company.read", "document.company.manage"],
+      },
       { to: "/profile", label: "My profile", icon: UserRound, anyOf: ["employee.profile.read.self"] },
       { to: "/account/security", label: "Account security", icon: ShieldCheck, anyOf: [] },
     ],
@@ -68,6 +78,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         label: "Team attendance",
         icon: UsersRound,
         anyOf: ["attendance.read.team", "attendance.read.all"],
+      },
+      {
+        to: "/attendance/corrections",
+        label: "Attendance corrections",
+        icon: ClipboardCheck,
+        anyOf: ["attendance.correction.approve.team", "attendance.correction.approve.all"],
+        end: true,
       },
       {
         to: "/leave/approvals",
@@ -96,6 +113,19 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { to: "/organization", label: "Organization", icon: Building2, anyOf: ["org.read"] },
       { to: "/leave/overview", label: "Leave overview", icon: ClipboardList, anyOf: ["leave.read.all"] },
       { to: "/leave/balances", label: "Leave balances", icon: Scale, anyOf: ["leave.balance.adjust"] },
+      {
+        to: "/reports",
+        label: "Reports",
+        icon: BarChart3,
+        anyOf: [
+          "leave.read.team",
+          "leave.read.all",
+          "attendance.export",
+          "leave.export",
+          "employee.export",
+          "audit.export",
+        ],
+      },
     ],
   },
   {
@@ -108,6 +138,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         anyOf: ["holiday.manage"],
       },
       { to: "/setup/leave-types", label: "Leave types", icon: CalendarCog, anyOf: ["leave.policy.manage"] },
+      {
+        to: "/setup/attendance",
+        label: "Attendance set-up",
+        icon: CalendarClock,
+        anyOf: ["shift.manage", "attendance.policy.manage", "shift.assign.all"],
+      },
+      {
+        to: "/setup/document-categories",
+        label: "Document categories",
+        icon: FolderCog,
+        anyOf: ["document.category.manage"],
+      },
     ],
   },
   {
@@ -150,6 +192,8 @@ export function titleFor(pathname: string): string {
   const exact = items.find((item) => item.to === pathname);
   if (exact) return exact.label;
   if (pathname === "/leave/request") return "Request leave";
+  if (pathname === "/notifications") return "Notifications";
+  if (pathname.startsWith("/attendance/corrections/")) return "Attendance correction";
   if (pathname.startsWith("/leave/requests/")) return "Leave request";
   const prefixed = items
     .filter((item) => item.to !== "/" && pathname.startsWith(item.to))

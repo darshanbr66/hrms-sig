@@ -12,7 +12,7 @@ import { hasPermission, useMe } from "../../app/session";
 import { Badge } from "../../design-system/Badge";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { SearchField } from "../../design-system/Fields";
 import { LoadMore } from "../../design-system/LoadMore";
@@ -180,14 +180,14 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           onChange={setEmail}
           error={errors.email}
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={invite.isPending}>
             Send invite
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

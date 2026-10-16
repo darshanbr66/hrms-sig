@@ -39,6 +39,10 @@ export const ENTRY_LABELS: Record<LedgerEntry["entry_type"], string> = {
   usage: "Leave taken",
   usage_reversal: "Leave cancelled",
   adjustment: "Adjustment",
+  carry_forward_out: "Carried to next year",
+  carry_forward: "Carried from last year",
+  carry_forward_expiry: "Carried days expired",
+  lapse: "Lapsed at year end",
 };
 
 /** "1.50" -> "1.5 days", "1.00" -> "1 day". */

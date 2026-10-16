@@ -14,7 +14,7 @@ import { hasPermission, useMe } from "../../app/session";
 import { Badge } from "../../design-system/Badge";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { TextArea } from "../../design-system/Fields";
 import { Panel } from "../../design-system/Panel";
@@ -283,14 +283,14 @@ function AdjustDialog({ employeeId, onClose }: { employeeId: string; onClose: ()
           description="Recorded in the ledger and the audit log. The employee sees it."
           error={errors.reason}
         />
-        <div className="flex justify-end gap-2 pt-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending}>
             Record the change
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

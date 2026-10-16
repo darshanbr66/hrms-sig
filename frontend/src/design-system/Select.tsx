@@ -62,7 +62,10 @@ export function Select({
         <ChevronDown aria-hidden className="size-4 shrink-0" />
       </Button>
       <FieldError className="text-sm text-danger-700">{error}</FieldError>
-      <Popover className="max-h-72 min-w-[var(--trigger-width)] overflow-y-auto rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-[var(--shadow-float)]">
+      <Popover
+        data-scroll-area
+        className="max-h-72 min-w-[var(--trigger-width)] overflow-y-auto overscroll-contain rounded-[var(--radius-surface)] border border-neutral-200 bg-neutral-0 p-1 shadow-[var(--shadow-float)]"
+      >
         <ListBox className="outline-none">
           {options.map((option) => (
             <ListBoxItem

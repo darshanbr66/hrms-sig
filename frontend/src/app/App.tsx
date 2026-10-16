@@ -111,6 +111,27 @@ const RolesPage = lazy(() => import("../features/admin/RolesPage").then((m) => (
 const SecurityEventsPage = lazy(() =>
   import("../features/admin/SecurityEventsPage").then((m) => ({ default: m.SecurityEventsPage })),
 );
+const NotificationsPage = lazy(() =>
+  import("../features/notifications/NotificationsPage").then((m) => ({ default: m.NotificationsPage })),
+);
+const CorrectionsPage = lazy(() =>
+  import("../features/attendance/CorrectionsPage").then((m) => ({ default: m.CorrectionsPage })),
+);
+const CorrectionPage = lazy(() =>
+  import("../features/attendance/CorrectionPage").then((m) => ({ default: m.CorrectionPage })),
+);
+const AttendanceSetupPage = lazy(() =>
+  import("../features/attendance/AttendanceSetupPage").then((m) => ({ default: m.AttendanceSetupPage })),
+);
+const DocumentsPage = lazy(() =>
+  import("../features/documents/DocumentsPage").then((m) => ({ default: m.DocumentsPage })),
+);
+const DocumentCategoriesPage = lazy(() =>
+  import("../features/documents/DocumentCategoriesPage").then((m) => ({ default: m.DocumentCategoriesPage })),
+);
+const ReportsPage = lazy(() =>
+  import("../features/reports/ReportsPage").then((m) => ({ default: m.ReportsPage })),
+);
 const AuditLogPage = lazy(() =>
   import("../features/admin/AuditLogPage").then((m) => ({ default: m.AuditLogPage })),
 );
@@ -228,6 +249,71 @@ export const routes: RouteObject[] = [
             element: (
               <Protected anyOf={["attendance.clock.self"]}>
                 <MyAttendancePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/attendance/corrections",
+            element: (
+              <Protected anyOf={["attendance.read.team", "attendance.read.all"]}>
+                <CorrectionsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/attendance/corrections/:correctionId",
+            element: (
+              <Protected anyOf={["attendance.read.self", "attendance.read.team", "attendance.read.all"]}>
+                <CorrectionPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/notifications",
+            element: (
+              <Protected anyOf={["notification.read.self"]}>
+                <NotificationsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/documents",
+            element: (
+              <Protected anyOf={["document.read.self", "document.company.read", "document.company.manage"]}>
+                <DocumentsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/reports",
+            element: (
+              <Protected
+                anyOf={[
+                  "leave.read.team",
+                  "leave.read.all",
+                  "attendance.export",
+                  "leave.export",
+                  "employee.export",
+                  "audit.export",
+                ]}
+              >
+                <ReportsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/setup/attendance",
+            element: (
+              <Protected anyOf={["shift.manage", "attendance.policy.manage", "shift.assign.all"]}>
+                <AttendanceSetupPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/setup/document-categories",
+            element: (
+              <Protected anyOf={["document.category.manage"]}>
+                <DocumentCategoriesPage />
               </Protected>
             ),
           },

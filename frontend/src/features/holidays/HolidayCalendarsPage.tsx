@@ -1,18 +1,19 @@
 /**
  * Holiday calendars for HR admins (`holiday.manage`): one calendar per year, used by the
  * locations assigned to it. Which days are holidays is Sigvitas's decision; nothing is
- * pre-filled.
+ * pre-filled. Each row opens the calendar, where its dates, locations, name and status are
+ * managed.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarRange, Plus } from "lucide-react";
+import { CalendarRange, ChevronRight, Plus } from "lucide-react";
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link, useNavigate } from "react-router";
 
 import { Badge } from "../../design-system/Badge";
-import { Button } from "../../design-system/Button";
+import { Button, ButtonLink } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { PageHeader } from "../../design-system/PageHeader";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
@@ -47,6 +48,7 @@ export function HolidayCalendarsPage() {
     },
     { key: "year", header: "Year", align: "end", cell: (row) => row.year },
     { key: "holidays", header: "Holidays", align: "end", cell: (row) => row.holiday_count },
+    { key: "working-days", header: "Working days", align: "end", cell: (row) => row.working_day_count },
     {
       key: "locations",
       header: "Locations",
@@ -66,12 +68,23 @@ export function HolidayCalendarsPage() {
         </Badge>
       ),
     },
+    {
+      key: "open",
+      header: "Actions",
+      align: "end",
+      cell: (row) => (
+        <ButtonLink variant="quiet" size="sm" to={`/setup/holiday-calendars/${row.id}`}>
+          Open<span className="sr-only"> {row.name}</span>
+          <ChevronRight aria-hidden className="size-3.5" />
+        </ButtonLink>
+      ),
+    },
   ];
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Holiday calendars"
-        description="Each location uses one calendar per year. Employees see the holidays of their location's calendar."
+        description="Each location uses one calendar per year. Employees see the holidays and declared working days of their location's calendar. Open a calendar to change its dates and locations."
         action={
           <Button
             onPress={() => {
@@ -156,14 +169,14 @@ function CreateCalendarDialog({ onClose }: { onClose: () => void }) {
           maxLength={4}
           error={errors.year}
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={create.isPending}>
             Add calendar
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

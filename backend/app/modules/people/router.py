@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel
 
 from app.modules.people import schemas as s
-from app.modules.people.models import EmployeeJob, EmployeePersonal, EmployeeStatusChange
+from app.modules.people.models import EmergencyContact, EmployeeJob, EmployeePersonal, EmployeeStatusChange
 from app.modules.people.repository import EmployeeFilters, name_of
 from app.modules.people.service import (
     EmployeeListing,
@@ -376,8 +376,8 @@ async def change_employee_status(
     people: Service,
     actor: Annotated[Actor, requires("employee.lifecycle.manage")],
 ) -> s.StatusChangeView:
-    """Exiting someone does not disable their account by itself; the account is disabled
-    through `POST /users/{id}/disable`, which the same screen offers."""
+    """Records a status change. To record someone leaving, use `POST /employees/{id}/exit`,
+    which also disables their account and revokes their sessions in the same step."""
     record = await people.change_status(
         actor,
         RequestContext.from_request(request),
@@ -387,6 +387,90 @@ async def change_employee_status(
         reason=body.reason,
     )
     return _status_change(record)
+
+
+@router.post("/employees/{employee_id}/exit", response_model=s.ExitView, status_code=status.HTTP_201_CREATED)
+async def exit_employee(
+    employee_id: uuid.UUID,
+    body: s.ExitCreate,
+    request: Request,
+    people: Service,
+    actor: Annotated[Actor, requires("employee.lifecycle.manage")],
+) -> s.ExitView:
+    """The employee leaves: the record is marked exited from the last working day and their
+    account is disabled with every session revoked, in one step (needs `user.disable` and a
+    recent step-up when an account is linked)."""
+    result = await people.exit_employee(
+        actor,
+        RequestContext.from_request(request),
+        employee_id,
+        last_working_day=body.last_working_day,
+        reason=body.reason,
+    )
+    return s.ExitView(
+        status_change=_status_change(result.status_change),
+        account=result.account,
+        sessions_revoked=result.sessions_revoked,
+    )
+
+
+def _contacts(rows: list[EmergencyContact]) -> s.EmergencyContactList:
+    return s.EmergencyContactList(
+        items=[
+            s.EmergencyContactView(
+                priority=r.priority, name=r.name, relationship=r.relationship, phone=r.phone
+            )
+            for r in rows
+        ]
+    )
+
+
+@router.get("/employees/{employee_id}/emergency-contacts", response_model=s.EmergencyContactList)
+async def employee_emergency_contacts(
+    employee_id: uuid.UUID,
+    request: Request,
+    people: Service,
+    actor: Annotated[Actor, requires("employee.personal.read")],
+) -> s.EmergencyContactList:
+    """Personal tier: HR (`employee.personal.read.all`), audited. A manager reaches their team's
+    contacts only if Sigvitas grants `employee.emergency_contact.read.team`."""
+    return _contacts(
+        await people.emergency_contacts(actor, RequestContext.from_request(request), employee_id)
+    )
+
+
+@router.put("/employees/{employee_id}/emergency-contacts", response_model=s.EmergencyContactList)
+async def replace_employee_emergency_contacts(
+    employee_id: uuid.UUID,
+    body: s.EmergencyContactsUpdate,
+    request: Request,
+    people: Service,
+    actor: Annotated[Actor, requires("employee.personal.update.all")],
+) -> s.EmergencyContactList:
+    rows = await people.replace_emergency_contacts(
+        actor, RequestContext.from_request(request), employee_id, [c.model_dump() for c in body.contacts]
+    )
+    return _contacts(rows)
+
+
+@router.get("/me/emergency-contacts", response_model=s.EmergencyContactList)
+async def my_emergency_contacts(
+    request: Request, people: Service, actor: Annotated[Actor, requires("employee.personal.read.self")]
+) -> s.EmergencyContactList:
+    return _contacts(await people.emergency_contacts(actor, RequestContext.from_request(request), None))
+
+
+@router.put("/me/emergency-contacts", response_model=s.EmergencyContactList)
+async def replace_my_emergency_contacts(
+    body: s.EmergencyContactsUpdate,
+    request: Request,
+    people: Service,
+    actor: Annotated[Actor, requires("employee.personal.update.self")],
+) -> s.EmergencyContactList:
+    rows = await people.replace_emergency_contacts(
+        actor, RequestContext.from_request(request), None, [c.model_dump() for c in body.contacts]
+    )
+    return _contacts(rows)
 
 
 @router.get("/employees/{employee_id}/personal", response_model=s.PersonalView)

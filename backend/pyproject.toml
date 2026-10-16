@@ -106,6 +106,22 @@ ignore_imports = ["app.** -> app.modules.attendance.public"]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
+name = "documents is imported only through documents.public"
+type = "protected"
+protected_modules = ["app.modules.documents"]
+allowed_importers = ["app.modules.documents", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.documents.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "reports is imported only through reports.public"
+type = "protected"
+protected_modules = ["app.modules.reports"]
+allowed_importers = ["app.modules.reports", "app.metadata", "app.main"]
+ignore_imports = ["app.** -> app.modules.reports.public"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
 name = "leave is imported only through leave.public"
 type = "protected"
 protected_modules = ["app.modules.leave"]

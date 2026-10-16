@@ -197,6 +197,42 @@ class StatusHistory(_Response):
     items: list[StatusChangeView]
 
 
+class ExitCreate(_Request):
+    last_working_day: date
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class ExitView(_Response):
+    status_change: StatusChangeView
+    # none: no account is linked; disabled: disabled now, with its sessions revoked;
+    # already_disabled; administrator_left_active: the account holds an administrator role
+    # and must be disabled by a system admin.
+    account: Literal["none", "disabled", "already_disabled", "administrator_left_active"]
+    sessions_revoked: int
+
+
+class EmergencyContactValue(_Request):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    relationship: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    phone: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\+?[0-9 ()-]{5,30}$")]
+
+
+class EmergencyContactsUpdate(_Request):
+    # In priority order; the whole list is replaced.
+    contacts: Annotated[list[EmergencyContactValue], Field(max_length=5)]
+
+
+class EmergencyContactView(_Response):
+    priority: int
+    name: str
+    relationship: str
+    phone: str
+
+
+class EmergencyContactList(_Response):
+    items: list[EmergencyContactView]
+
+
 # --- summary ------------------------------------------------------------------------------------
 
 

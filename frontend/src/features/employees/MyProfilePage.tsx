@@ -13,7 +13,7 @@ import { Avatar } from "../../design-system/Avatar";
 import { Badge } from "../../design-system/Badge";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { DescriptionList } from "../../design-system/Fields";
 import { Panel } from "../../design-system/Panel";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
@@ -24,6 +24,7 @@ import { client, unwrap } from "../../lib/api";
 import type { components } from "../../lib/api-schema";
 import { formatDate, humanize } from "../../lib/format";
 import { fieldMessages, ifMatch } from "../../lib/problem";
+import { EmergencyContacts } from "./EmergencyContacts";
 import { PersonalDetails } from "./PersonalDetails";
 import { PEOPLE_KEY, STATUS_LABELS, STATUS_TONES, employmentTypeLabel, type Employee } from "./queries";
 
@@ -116,10 +117,16 @@ export function MyProfilePage() {
         />
       </Panel>
       {hasPermission(me.data, "employee.personal.read.self") ? (
-        <PersonalDetails
-          employeeId={null}
-          canEdit={hasPermission(me.data, "employee.personal.update.self")}
-        />
+        <>
+          <PersonalDetails
+            employeeId={null}
+            canEdit={hasPermission(me.data, "employee.personal.update.self")}
+          />
+          <EmergencyContacts
+            employeeId={null}
+            canEdit={hasPermission(me.data, "employee.personal.update.self")}
+          />
+        </>
       ) : null}
       <Panel title="Job history" padded={false}>
         <div className="p-4">
@@ -193,14 +200,14 @@ function PreferredNameDialog({ profile, onClose }: { profile: Employee; onClose:
           description="The name colleagues see in the directory. Leave it empty to use your legal first name."
           error={errors.preferred_name}
         />
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending}>
             Save name
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );

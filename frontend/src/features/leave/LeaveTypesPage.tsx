@@ -14,7 +14,7 @@ import { Badge } from "../../design-system/Badge";
 import { Banner } from "../../design-system/Banner";
 import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
-import { Dialog } from "../../design-system/Dialog";
+import { Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
 import { Checkbox, TextArea } from "../../design-system/Fields";
 import { PageHeader } from "../../design-system/PageHeader";
@@ -68,9 +68,33 @@ const RULES: {
   {
     key: "counts_weekly_offs",
     label: "Weekly offs count as leave",
-    help: "Whether a weekly off inside a request uses a day. Weekly offs arrive with shifts; until then no day is a weekly off.",
+    help: "Whether a weekly off of the person's shift inside a request uses a day. Without a shift no day is a weekly off.",
   },
 ];
+
+function describeAccrual(row: LeavePolicy): string {
+  if (!row.accrual_amount) return "None";
+  const amount = formatDays(row.accrual_amount);
+  const base =
+    row.accrual_method === "periodic"
+      ? `${amount} each ${row.accrual_frequency === "quarterly" ? "quarter" : "month"}, at its ${row.accrual_timing === "period_start" ? "start" : "end"}`
+      : `${amount} each leave year`;
+  const prorates = [row.prorate_on_joining ? "joining" : null, row.prorate_on_exit ? "leaving" : null].filter(
+    Boolean,
+  );
+  return prorates.length > 0 ? `${base}; prorated on ${prorates.join(" and ")}` : base;
+}
+
+function describeYearEnd(row: LeavePolicy): string {
+  if (!row.carry_forward_mode) return "Not decided";
+  const rest = row.excess_action === "lapse" ? "the rest lapses" : "the rest stays";
+  const expiry = row.carried_expire_after_months
+    ? `; carried days expire after ${row.carried_expire_after_months} months`
+    : "";
+  if (row.carry_forward_mode === "unlimited") return `Everything carried${expiry}`;
+  if (row.carry_forward_mode === "none") return `Nothing carried; ${rest}`;
+  return `Up to ${formatDays(row.carry_forward_cap ?? "0")} carried; ${rest}${expiry}`;
+}
 
 function yesNo(value: boolean | undefined): string | null {
   return value === undefined ? null : value ? "yes" : "no";
@@ -217,11 +241,8 @@ function TypePanel({
       header: "Leave year starts",
       cell: (row) => `${row.leave_year_start_day} ${MONTHS[row.leave_year_start_month - 1]?.label ?? ""}`,
     },
-    {
-      key: "allocation",
-      header: "Allocation",
-      cell: (row) => (row.accrual_amount ? `${formatDays(row.accrual_amount)} each leave year` : "None"),
-    },
+    { key: "allocation", header: "Accrual", cell: (row) => describeAccrual(row) },
+    { key: "year_end", header: "Year end", cell: (row) => describeYearEnd(row) },
     {
       key: "negative",
       header: "Below zero",
@@ -239,7 +260,9 @@ function TypePanel({
       action={
         <div className="flex flex-wrap gap-2">
           {leaveType.status === "archived" ? <Badge tone="neutral">Archived</Badge> : null}
-          {canAllocate && leaveType.status === "active" && policies.some((p) => p.accrual_amount) ? (
+          {canAllocate &&
+          leaveType.status === "active" &&
+          policies.some((p) => p.accrual_method === "upfront_per_leave_year") ? (
             <Button size="sm" variant="secondary" onPress={onAllocate}>
               Allocate a leave year
             </Button>
@@ -301,6 +324,7 @@ function TypeDialog({ leaveType, onClose }: { leaveType: LeaveType | null; onClo
     Object.fromEntries(RULES.map((rule) => [rule.key, yesNo(leaveType?.[rule.key])])),
   );
   const [status, setStatus] = useState<string>(leaveType?.status ?? "active");
+  const archiving = leaveType?.status === "active" && status === "archived";
   const [local, setLocal] = useState<Record<string, string>>({});
   const values = Object.fromEntries(RULES.map((rule) => [rule.key, rules[rule.key] === "yes"])) as Record<
     (typeof RULES)[number]["key"],
@@ -415,14 +439,21 @@ function TypeDialog({ leaveType, onClose }: { leaveType: LeaveType | null; onClo
             onChange={setStatus}
           />
         ) : null}
-        <div className="flex justify-end gap-2 pt-2">
+        {archiving ? (
+          <Banner tone="warning">
+            Archiving stops new requests of this type. Balances, the ledger and past requests are kept, and
+            nothing is deleted. It is refused while a request of this type waits for a decision. You can make
+            it active again later.
+          </Banner>
+        ) : null}
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
-          <Button type="submit" isPending={save.isPending}>
-            {leaveType ? "Save changes" : "Add leave type"}
+          <Button type="submit" variant={archiving ? "danger" : "primary"} isPending={save.isPending}>
+            {archiving ? "Archive leave type" : leaveType ? "Save changes" : "Add leave type"}
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );
@@ -435,11 +466,23 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
   const [effectiveFrom, setEffectiveFrom] = useState("");
   const [month, setMonth] = useState<string | null>(null);
   const [day, setDay] = useState("");
-  const [allocation, setAllocation] = useState<string | null>(null);
+  const [method, setMethod] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
+  const [frequency, setFrequency] = useState<string | null>(null);
+  const [timing, setTiming] = useState<string | null>(null);
+  const [onJoining, setOnJoining] = useState<string | null>(null);
+  const [onExit, setOnExit] = useState<string | null>(null);
+  const [rounding, setRounding] = useState<string | null>(null);
   const [negative, setNegative] = useState<string | null>(null);
   const [maxNegative, setMaxNegative] = useState("");
+  const [carry, setCarry] = useState<string>("undecided");
+  const [cap, setCap] = useState("");
+  const [excess, setExcess] = useState<string | null>(null);
+  const [expiry, setExpiry] = useState("");
   const [local, setLocal] = useState<Record<string, string>>({});
+  const accrues = method === "upfront" || method === "periodic";
+  const periodic = method === "periodic";
+  const prorates = onJoining === "yes" || (periodic && onExit === "yes");
   const save = useSave(
     () =>
       unwrap(
@@ -451,10 +494,20 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
             effective_from: effectiveFrom,
             leave_year_start_month: Number(month),
             leave_year_start_day: Number(day),
-            accrual_method: allocation === "upfront" ? "upfront_per_leave_year" : "none",
-            accrual_amount: allocation === "upfront" ? amount.trim() : null,
+            accrual_method: method === "upfront" ? "upfront_per_leave_year" : periodic ? "periodic" : "none",
+            accrual_amount: accrues ? amount.trim() : null,
+            accrual_frequency: periodic ? (frequency as "monthly") : null,
+            accrual_timing: periodic ? (timing as "period_start") : null,
+            prorate_on_joining: accrues ? onJoining === "yes" : null,
+            prorate_on_exit: periodic ? onExit === "yes" : null,
+            proration_rounding: prorates ? (rounding as "exact") : null,
             allow_negative_balance: negative === "yes",
             max_negative_days: negative === "yes" ? maxNegative.trim() : null,
+            carry_forward_mode: carry === "undecided" ? null : (carry as "capped"),
+            carry_forward_cap: carry === "capped" ? cap.trim() : null,
+            excess_action: carry === "capped" || carry === "none" ? (excess as "lapse") : null,
+            carried_expire_after_months:
+              (carry === "capped" || carry === "unlimited") && expiry.trim() !== "" ? Number(expiry) : null,
           },
         }),
       ),
@@ -462,9 +515,9 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
     onClose,
   );
   const errors = { ...fieldMessages(save.error), ...local };
-  const halfDays = (value: string) => {
+  const days = (value: string, step: number) => {
     const number = Number(value);
-    return value.trim() !== "" && Number.isFinite(number) && (number * 2) % 1 === 0;
+    return value.trim() !== "" && Number.isFinite(number) && Math.round(number * step) === number * step;
   };
   return (
     <Dialog title={`Add a policy version for ${leaveType.name}`} isOpen onOpenChange={onClose} size="lg">
@@ -478,12 +531,26 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
           const dayNumber = Number(day);
           if (!Number.isInteger(dayNumber) || dayNumber < 1 || dayNumber > 31)
             problems.leave_year_start_day = "Enter a day from 1 to 31.";
-          if (allocation === null) problems.accrual_method = "Choose whether days are given each leave year.";
-          if (allocation === "upfront" && (!halfDays(amount) || Number(amount) <= 0))
-            problems.accrual_amount = "Enter whole or half days above zero.";
+          if (method === null) problems.accrual_method = "Choose how days are given.";
+          if (accrues && (!days(amount, 100) || Number(amount) <= 0))
+            problems.accrual_amount = "Enter days above zero, with at most two decimals.";
+          if (periodic && !frequency) problems.accrual_frequency = "Choose how often.";
+          if (periodic && !timing) problems.accrual_timing = "Choose when in the period.";
+          if (accrues && !onJoining) problems.prorate_on_joining = "Choose yes or no.";
+          if (periodic && !onExit) problems.prorate_on_exit = "Choose yes or no.";
+          if (prorates && !rounding) problems.proration_rounding = "Choose how a share is rounded.";
           if (negative === null) problems.allow_negative_balance = "Choose yes or no.";
-          if (negative === "yes" && (!halfDays(maxNegative) || Number(maxNegative) < 0))
+          if (negative === "yes" && (!days(maxNegative, 2) || Number(maxNegative) < 0))
             problems.max_negative_days = "Enter whole or half days, zero or more.";
+          if (carry === "capped" && (!days(cap, 100) || Number(cap) < 0))
+            problems.carry_forward_cap = "Enter days, zero or more.";
+          if ((carry === "capped" || carry === "none") && !excess)
+            problems.excess_action = "Choose what happens to the rest.";
+          if (
+            expiry.trim() !== "" &&
+            !(Number.isInteger(Number(expiry)) && Number(expiry) >= 1 && Number(expiry) <= 24)
+          )
+            problems.carried_expire_after_months = "Enter whole months from 1 to 24, or leave empty.";
           setLocal(problems);
           if (Object.keys(problems).length === 0 && !save.isPending) save.mutate();
         }}
@@ -538,21 +605,21 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
             />
           </div>
           <Select
-            label="Days given each leave year"
+            label="How days are given"
             name="accrual_method"
             placeholder="Choose"
             options={[
-              { id: "upfront", label: "Yes, at the start of the leave year" },
-              { id: "none", label: "No allocation" },
+              { id: "upfront", label: "All at once for the leave year (HR runs it)" },
+              { id: "periodic", label: "Each month or quarter (automatic)" },
+              { id: "none", label: "Not given automatically" },
             ]}
-            value={allocation}
-            onChange={setAllocation}
-            description="HR runs the allocation. Proration, monthly accrual and carry-forward are not supported yet."
+            value={method}
+            onChange={setMethod}
             error={errors.accrual_method}
           />
-          {allocation === "upfront" ? (
+          {accrues ? (
             <TextField
-              label="Days each leave year"
+              label={periodic ? "Days each period" : "Days each leave year"}
               name="accrual_amount"
               value={amount}
               onChange={setAmount}
@@ -562,6 +629,78 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
           ) : (
             <div />
           )}
+          {periodic ? (
+            <>
+              <Select
+                label="How often"
+                name="accrual_frequency"
+                placeholder="Choose"
+                options={[
+                  { id: "monthly", label: "Every month of the leave year" },
+                  { id: "quarterly", label: "Every quarter of the leave year" },
+                ]}
+                value={frequency}
+                onChange={setFrequency}
+                error={errors.accrual_frequency}
+              />
+              <Select
+                label="Given on"
+                name="accrual_timing"
+                placeholder="Choose"
+                options={[
+                  { id: "period_start", label: "The first day of the period" },
+                  { id: "period_end", label: "The last day of the period" },
+                ]}
+                value={timing}
+                onChange={setTiming}
+                error={errors.accrual_timing}
+              />
+            </>
+          ) : null}
+          {accrues ? (
+            <Select
+              label="Share for someone joining part way"
+              name="prorate_on_joining"
+              placeholder="Choose"
+              options={[
+                { id: "yes", label: "Yes, by days employed" },
+                { id: "no", label: "No, the full amount" },
+              ]}
+              value={onJoining}
+              onChange={setOnJoining}
+              error={errors.prorate_on_joining}
+            />
+          ) : null}
+          {periodic ? (
+            <Select
+              label="Share for someone leaving part way"
+              name="prorate_on_exit"
+              placeholder="Choose"
+              options={[
+                { id: "yes", label: "Yes, by days employed" },
+                { id: "no", label: "No, the full amount" },
+              ]}
+              value={onExit}
+              onChange={setOnExit}
+              error={errors.prorate_on_exit}
+            />
+          ) : null}
+          {prorates ? (
+            <Select
+              label="Round a share"
+              name="proration_rounding"
+              placeholder="Choose"
+              options={[
+                { id: "exact", label: "To hundredths of a day" },
+                { id: "nearest_half", label: "To the nearest half day" },
+                { id: "down_half", label: "Down to a half day" },
+                { id: "up_half", label: "Up to a half day" },
+              ]}
+              value={rounding}
+              onChange={setRounding}
+              error={errors.proration_rounding}
+            />
+          ) : null}
           <Select
             label="Balance may go below zero"
             name="allow_negative_balance"
@@ -580,16 +719,68 @@ function PolicyDialog({ leaveType, onClose }: { leaveType: LeaveType; onClose: (
               inputMode="decimal"
               error={errors.max_negative_days}
             />
+          ) : (
+            <div />
+          )}
+          <Select
+            label="At the end of the leave year"
+            name="carry_forward_mode"
+            options={[
+              { id: "undecided", label: "Not decided yet (the year end is not run)" },
+              { id: "unlimited", label: "Carry everything forward" },
+              { id: "capped", label: "Carry forward up to a limit" },
+              { id: "none", label: "Carry nothing forward" },
+            ]}
+            value={carry}
+            onChange={setCarry}
+            error={errors.carry_forward_mode}
+          />
+          {carry === "capped" ? (
+            <TextField
+              label="Most days carried"
+              name="carry_forward_cap"
+              value={cap}
+              onChange={setCap}
+              inputMode="decimal"
+              error={errors.carry_forward_cap}
+            />
+          ) : (
+            <div />
+          )}
+          {carry === "capped" || carry === "none" ? (
+            <Select
+              label="Days not carried"
+              name="excess_action"
+              placeholder="Choose"
+              options={[
+                { id: "lapse", label: "Lapse" },
+                { id: "keep", label: "Stay in the balance" },
+              ]}
+              value={excess}
+              onChange={setExcess}
+              error={errors.excess_action}
+            />
+          ) : null}
+          {carry === "capped" || carry === "unlimited" ? (
+            <TextField
+              label="Carried days expire after (months, optional)"
+              name="carried_expire_after_months"
+              value={expiry}
+              onChange={setExpiry}
+              inputMode="numeric"
+              description="Carried days not used this many months into the new leave year expire."
+              error={errors.carried_expire_after_months}
+            />
           ) : null}
         </div>
-        <div className="flex justify-end gap-2 pt-2">
+        <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending}>
             Add policy version
           </Button>
-        </div>
+        </DialogActions>
       </Form>
     </Dialog>
   );
@@ -619,6 +810,9 @@ function AllocationDialog({ leaveType, onClose }: { leaveType: LeaveType; onClos
             <li>Already allocated for this leave year: {result.already_allocated}</li>
             <li>No policy covers them: {result.no_policy}</li>
             <li>Their policy gives no allocation: {result.no_allocation_in_policy}</li>
+            {result.nothing_due ? (
+              <li>Joined too late in the year for a share: {result.nothing_due}</li>
+            ) : null}
             {result.skipped_own ? (
               <li>Your own record, left for another HR person: {result.skipped_own}</li>
             ) : null}
@@ -637,8 +831,8 @@ function AllocationDialog({ leaveType, onClose }: { leaveType: LeaveType; onClos
         >
           <p className="text-sm text-neutral-700">
             Every employee employed on the chosen date, whose policy gives days each leave year, receives the
-            full amount for the leave year that date falls in. Running it again for the same year changes
-            nobody twice. Days are not prorated for people who joined during the year.
+            amount for the leave year that date falls in, prorated for people who joined during the year when
+            their policy says so. Running it again for the same year changes nobody twice.
           </p>
           {run.isError ? (
             <ProblemMessage error={run.error} fallback="We couldn't run the allocation." />
@@ -650,14 +844,14 @@ function AllocationDialog({ leaveType, onClose }: { leaveType: LeaveType; onClos
             value={asOf}
             onChange={setAsOf}
           />
-          <div className="flex justify-end gap-2 pt-2">
+          <DialogActions>
             <Button variant="secondary" onPress={onClose}>
               Cancel
             </Button>
             <Button type="submit" isPending={run.isPending}>
               Allocate
             </Button>
-          </div>
+          </DialogActions>
         </Form>
       )}
     </Dialog>

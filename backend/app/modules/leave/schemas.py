@@ -20,10 +20,28 @@ type Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1
 type Text1000 = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 type Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 type Days = Annotated[Decimal, Field(max_digits=5, decimal_places=2, multiple_of=Decimal("0.5"))]
+# Accruals, caps, opening balances and adjustments may be in hundredths of a day.
+type Amount = Annotated[Decimal, Field(max_digits=5, decimal_places=2)]
 type HalfValue = Literal["first", "second"]
 type StatusValue = Literal["pending", "approved", "rejected", "cancelled", "cancellation_requested"]
 type EmploymentTypeValue = Literal["full_time", "part_time", "contract", "intern"]
-type EntryTypeValue = Literal["opening_balance", "accrual", "usage", "usage_reversal", "adjustment"]
+type EntryTypeValue = Literal[
+    "opening_balance",
+    "accrual",
+    "usage",
+    "usage_reversal",
+    "adjustment",
+    "carry_forward_out",
+    "carry_forward",
+    "carry_forward_expiry",
+    "lapse",
+]
+type AccrualMethodValue = Literal["none", "upfront_per_leave_year", "periodic"]
+type FrequencyValue = Literal["monthly", "quarterly"]
+type TimingValue = Literal["period_start", "period_end"]
+type RoundingValue = Literal["exact", "nearest_half", "down_half", "up_half"]
+type CarryModeValue = Literal["none", "capped", "unlimited"]
+type ExcessValue = Literal["lapse", "keep"]
 
 
 class _Request(BaseModel):
@@ -99,12 +117,29 @@ class LeavePolicyCreate(_Request):
     effective_from: date
     leave_year_start_month: Annotated[int, Field(ge=1, le=12)]
     leave_year_start_day: Annotated[int, Field(ge=1, le=31)]
-    accrual_method: Literal["none", "upfront_per_leave_year"]
-    # Days given at the start of each leave year (upfront); null with no allocation.
-    accrual_amount: Annotated[Days, Field(gt=0)] | None = None
+    accrual_method: AccrualMethodValue
+    # Days given each leave year (upfront) or each period (periodic); null with no accrual.
+    accrual_amount: Annotated[Amount, Field(gt=0, le=366)] | None = None
+    # Periodic accrual only: how often, and whether at the start or the end of each period.
+    accrual_frequency: FrequencyValue | None = None
+    accrual_timing: TimingValue | None = None
+    # Upfront and periodic accrual: whether someone joining (or, periodic only, leaving) part
+    # way through a year or period gets a share by days employed.
+    prorate_on_joining: bool | None = None
+    prorate_on_exit: bool | None = None
+    # How a prorated share is rounded; required when either proration is on.
+    proration_rounding: RoundingValue | None = None
     allow_negative_balance: bool
     # With a negative balance allowed: how far below zero it may go.
     max_negative_days: Annotated[Days, Field(ge=0)] | None = None
+    # The year end. Null: not decided yet (the year-end run skips this policy).
+    carry_forward_mode: CarryModeValue | None = None
+    # Capped carry-forward: the most days carried into the next leave year.
+    carry_forward_cap: Annotated[Amount, Field(ge=0)] | None = None
+    # With nothing or a capped amount carried: whether the rest lapses or stays.
+    excess_action: ExcessValue | None = None
+    # Carried days not used within this many months of the new leave year expire.
+    carried_expire_after_months: Annotated[int, Field(ge=1, le=24)] | None = None
 
 
 class LeavePolicyView(_Response):
@@ -116,10 +151,19 @@ class LeavePolicyView(_Response):
     effective_to: date | None
     leave_year_start_month: int
     leave_year_start_day: int
-    accrual_method: Literal["none", "upfront_per_leave_year"]
+    accrual_method: AccrualMethodValue
     accrual_amount: Decimal | None
+    accrual_frequency: FrequencyValue | None
+    accrual_timing: TimingValue | None
+    prorate_on_joining: bool | None
+    prorate_on_exit: bool | None
+    proration_rounding: RoundingValue | None
     allow_negative_balance: bool
     max_negative_days: Decimal | None
+    carry_forward_mode: CarryModeValue | None
+    carry_forward_cap: Decimal | None
+    excess_action: ExcessValue | None
+    carried_expire_after_months: int | None
     created_at: datetime
 
 
@@ -159,6 +203,8 @@ class LedgerEntryView(_Response):
     amount: Decimal
     effective_date: date
     leave_request_id: uuid.UUID | None
+    # The accrual period of a periodic accrual.
+    period_start: date | None
     reason: str | None
     created_at: datetime
 
@@ -170,7 +216,7 @@ class LedgerList(_Response):
 class AdjustmentCreate(_Request):
     leave_type_id: uuid.UUID
     entry_type: Literal["adjustment", "opening_balance"]
-    amount: Days
+    amount: Amount
     effective_date: date
     reason: Reason
 
@@ -187,6 +233,62 @@ class AllocationResult(_Response):
     no_policy: int
     no_allocation_in_policy: int
     skipped_own: int
+    # Joined so late in the year that the prorated share rounds to nothing.
+    nothing_due: int
+
+
+class YearEndRun(_Request):
+    leave_type_id: uuid.UUID
+    # The last day of the leave year to close; it must have passed.
+    year_end: date
+    # False shows what would happen without recording anything.
+    apply: bool
+
+
+class YearEndRowView(_Response):
+    employee: Ref
+    # done | would_do | already_closed | no_policy | not_decided | not_year_end | skipped_own
+    outcome: str
+    closing: Decimal | None
+    carried: Decimal | None
+    lapsed: Decimal | None
+    kept: Decimal | None
+
+
+class YearEndResult(_Response):
+    applied: bool
+    counts: dict[str, int]
+    items: list[YearEndRowView]
+
+
+class OpeningBalanceRow(_Request):
+    employee_code: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+    leave_type_code: Code
+    days: Amount
+    effective_date: date
+
+
+class OpeningBalanceImport(_Request):
+    reason: Reason
+    rows: Annotated[list[OpeningBalanceRow], Field(min_length=1, max_length=5000)]
+    # False checks every row without recording anything.
+    apply: bool
+
+
+class ImportRowView(_Response):
+    line: int
+    employee_code: str
+    leave_type_code: str
+    # ok | recorded | unknown_employee | unknown_leave_type | not_permitted | own_balance |
+    # no_policy | already_recorded | duplicate_row | zero_days
+    outcome: str
+
+
+class ImportResult(_Response):
+    applied: bool
+    batch_id: uuid.UUID | None
+    counts: dict[str, int]
+    items: list[ImportRowView]
 
 
 # --- requests -----------------------------------------------------------------------------------
@@ -281,3 +383,24 @@ class LeaveCalendarView(_Response):
     items: list[LeaveCalendarEntry]
     # More entries than the limit: narrow the range or the filters.
     truncated: bool
+
+
+# --- report -------------------------------------------------------------------------------------
+
+
+class LeaveReportRow(_Response):
+    employee: Ref
+    employee_code: str
+    department: str | None
+    location: str | None
+    leave_type: Ref
+    # Counted days of approved leave in the period, and of requests still waiting.
+    taken: Decimal
+    pending: Decimal
+
+
+class LeaveReportView(_Response):
+    start: date
+    end: date
+    items: list[LeaveReportRow]
+    next_cursor: str | None

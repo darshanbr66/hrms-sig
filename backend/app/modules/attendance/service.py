@@ -5,31 +5,37 @@
   sequence (ATT-3), checked under a per-employee lock so two requests cannot both pass.
   Each request carries an `Idempotency-Key`; a repeat of the same key and event returns the
   current state instead of recording twice, and the same key for a different event is refused.
-- The work date of an event is the date in the employee's location time zone when the session
-  started: events of an open session keep its date, so a session crossing midnight stays on
-  one day. (Shift-based work dates arrive with shifts.)
+  Events voided by an approved correction no longer count.
+- The work date of an event is the date its session started on: events of an open session
+  keep that date, so a session crossing midnight stays on one day. A clock-in before the end
+  of the previous day's shift, when that shift crosses midnight, belongs to that shift's date
+  (ATT-9: the work date is the date the shift starts). Without a shift it is the date in the
+  employee's location time zone.
+- When the attendance policy effective on the work date does not allow several sessions, a
+  second clock-in on the same work date is refused.
 - Events are never changed or deleted (CLAUDE.md rule 5). A forgotten clock-out stays open
-  until the employee clocks out; the system never invents one (ATT-6).
-- Reading needs `attendance.read` within scope (own, team, all). Totals are clocked-in time
-  and break time measured from the events, nothing more: whether a day counts as present,
-  late or half a day depends on Sigvitas's shift and attendance policy, which this module does
-  not apply until those are configured.
+  until the employee clocks out or a correction closes it; the system never invents one (ATT-6).
+- Reading needs `attendance.read` within scope (own, team, all). Each day is judged by
+  `derive.derive_day` with the shift and policy effective on it (`days.judge`); a day without
+  a configured shift and policy is shown with its times only.
 """
 
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import ColumnElement, select, text
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.attendance import timeline
-from app.modules.attendance.models import AttendanceEvent, EventSource
+from app.modules.attendance.days import MAX_RANGE_DAYS, UTC, JudgedDay, judge
+from app.modules.attendance.models import AttendanceEvent, AttendanceEventVoid, EventSource
+from app.modules.attendance.schedule import Schedule
 from app.modules.attendance.timeline import EventType, SequenceError, State
 from app.modules.org import public as org
 from app.modules.people import public as people
@@ -45,7 +51,8 @@ from app.platform.ratelimit import RateLimiter, RateLimitRule, RateLimitScope
 CLOCK_EVENTS_PER_USER: Final = RateLimitRule(
     RateLimitScope.API, "attendance.events", 10, timedelta(minutes=1)
 )
-MAX_RANGE_DAYS: Final = 93
+# A report over a period judges every day for everyone on the page.
+MAX_REPORT_DAYS: Final = 62
 
 _SEQUENCE_CODES: Final[dict[tuple[State, EventType], tuple[str, str]]] = {
     (State.CLOCKED_IN, EventType.CLOCK_IN): ("attendance.already_clocked_in", "You are already clocked in."),
@@ -72,11 +79,11 @@ def _field(field: str, code: str, message: str) -> ProblemError:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class Day:
-    work_date: date
-    events: list[AttendanceEvent]
-    totals: timeline.Totals
+def _check_range(start: date, end: date, limit: int) -> None:
+    if end < start:
+        raise _field("to", "range.reversed", "The end date must be on or after the start date.")
+    if (end - start).days >= limit:
+        raise _field("to", "range.too_long", f"Choose a range of at most {limit} days.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +95,7 @@ class Today:
     allowed: frozenset[EventType]
     # Set when an open session started on an earlier day (a forgotten clock-out).
     open_since: date | None
-    day: Day
+    day: JudgedDay
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,8 +122,63 @@ class TeamToday:
     next_after: tuple[str, uuid.UUID] | None
 
 
-def _events(rows: Sequence[AttendanceEvent]) -> list[timeline.Event]:
-    return [timeline.Event(EventType(row.event_type), row.occurred_at) for row in rows]
+@dataclass(frozen=True, slots=True)
+class RegisterEntry:
+    colleague: people.Colleague
+    day: JudgedDay
+
+
+@dataclass(frozen=True, slots=True)
+class Register:
+    on: date
+    in_scope: int
+    # Status -> people; "not_judged" for days without a status yet or without configuration.
+    counts: dict[str, int]
+    entries: list[RegisterEntry]
+    next_after: tuple[str, uuid.UUID] | None
+
+
+@dataclass(slots=True)
+class PeriodTotals:
+    colleague: people.Colleague
+    days: Counter[str] = field(default_factory=Counter)
+    effective_minutes: int = 0
+    late_days: int = 0
+    late_minutes: int = 0
+    early_leave_days: int = 0
+    overtime_minutes: int = 0
+    not_judged: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodReport:
+    start: date
+    end: date
+    rows: list[PeriodTotals]
+    next_after: tuple[str, uuid.UUID] | None
+
+
+def not_voided() -> ColumnElement[bool]:
+    return ~select(AttendanceEventVoid.id).where(AttendanceEventVoid.event_id == AttendanceEvent.id).exists()
+
+
+def totals_for(days: Sequence[JudgedDay], colleague: people.Colleague) -> PeriodTotals:
+    row = PeriodTotals(colleague)
+    for day in days:
+        summary = day.summary
+        if summary.status is None:
+            if summary.configured or day.events:
+                row.not_judged += 1
+            continue
+        row.days[summary.status.value] += 1
+        row.effective_minutes += summary.effective_minutes
+        if summary.late_minutes:
+            row.late_days += 1
+            row.late_minutes += summary.late_minutes
+        if summary.early_leave_minutes:
+            row.early_leave_days += 1
+        row.overtime_minutes += summary.overtime_minutes
+    return row
 
 
 class AttendanceService:
@@ -142,17 +204,49 @@ class AttendanceService:
         local_today = timeline.local_date(now, zone)
         last = await _latest_event(session, employee_id)
         state = timeline.state_after(EventType(last.event_type) if last else None)
-        work_date = last.work_date if last is not None and state is not State.CLOCKED_OUT else local_today
-        rows = await _day_events(session, employee_id, work_date, work_date)
+        work_date = (
+            last.work_date
+            if last is not None and state is not State.CLOCKED_OUT
+            else await self._new_work_date(session, employee_id, now, zone)
+        )
+        # A session left open from an earlier day is a forgotten clock-out, unless it is last
+        # night's shift that has not ended yet.
+        open_since = None
+        if state is not State.CLOCKED_OUT and work_date < local_today:
+            overnight = work_date == local_today - timedelta(days=1) and await self._within_previous_shift(
+                session, employee_id, now, zone
+            )
+            open_since = None if overnight else work_date
+        judged = await judge(session, [employee_id], work_date, work_date, now)
         return Today(
             state=state,
             work_date=work_date,
             time_zone=zone_name,
             server_time=now,
             allowed=timeline.ALLOWED[state],
-            open_since=work_date if work_date < local_today else None,
-            day=Day(work_date, rows, timeline.totals(_events(rows), now)),
+            open_since=open_since,
+            day=judged[employee_id][0],
         )
+
+    async def _within_previous_shift(
+        self, session: AsyncSession, employee_id: uuid.UUID, now: datetime, zone: ZoneInfo
+    ) -> bool:
+        """Whether `now` is before the end of yesterday's shift, when that shift crosses midnight."""
+        yesterday = timeline.local_date(now, zone) - timedelta(days=1)
+        schedule = await Schedule.load(session, [employee_id], yesterday, yesterday)
+        found = schedule.shift_on(employee_id, yesterday)
+        if found is None or not found[1].crosses_midnight:
+            return False
+        return now < datetime.combine(yesterday + timedelta(days=1), found[1].end_time, zone)
+
+    async def _new_work_date(
+        self, session: AsyncSession, employee_id: uuid.UUID, now: datetime, zone: ZoneInfo
+    ) -> date:
+        """The work date a new session starting now belongs to (ATT-9)."""
+        local_today = timeline.local_date(now, zone)
+        if await self._within_previous_shift(session, employee_id, now, zone):
+            return local_today - timedelta(days=1)
+        return local_today
 
     async def record(
         self,
@@ -199,11 +293,11 @@ class AttendanceService:
             except SequenceError as exc:
                 code, detail = _SEQUENCE_CODES[(exc.state, exc.event_type)]
                 raise _conflict(code, detail) from exc
-            work_date = (
-                last.work_date
-                if last is not None and state is not State.CLOCKED_OUT
-                else timeline.local_date(now, zone)
-            )
+            if last is not None and state is not State.CLOCKED_OUT:
+                work_date = last.work_date
+            else:
+                work_date = await self._new_work_date(session, employee_id, now, zone)
+                await self._check_single_session(session, employee_id, work_date)
             session.add(
                 AttendanceEvent(
                     employee_id=employee_id,
@@ -221,32 +315,50 @@ class AttendanceService:
             await session.flush()
             return await self._today(session, employee_id)
 
+    async def _check_single_session(
+        self, session: AsyncSession, employee_id: uuid.UUID, work_date: date
+    ) -> None:
+        """Refuse a second session on a work date whose policy allows only one."""
+        schedule = await Schedule.load(session, [employee_id], work_date, work_date)
+        applied = schedule.applied(employee_id, work_date)
+        if applied is None or applied.policy is None or applied.policy.allow_multiple_sessions:
+            return
+        earlier = await session.execute(
+            select(AttendanceEvent.id).where(
+                AttendanceEvent.employee_id == employee_id,
+                AttendanceEvent.work_date == work_date,
+                AttendanceEvent.event_type == EventType.CLOCK_OUT.value,
+                not_voided(),
+            )
+        )
+        if earlier.first() is not None:
+            raise _conflict(
+                "attendance.single_session",
+                "You already clocked out today, and your attendance policy allows one session a day. "
+                "If you clocked out by mistake, ask for a correction.",
+            )
+
     # --- history -------------------------------------------------------------------------------
 
     async def days(
         self, actor: Actor, employee_id: uuid.UUID | None, start: date, end: date
-    ) -> tuple[list[Day], str]:
-        """Days with events in the range (inclusive), newest first, and the employee's time zone."""
-        if end < start:
-            raise _field("to", "range.reversed", "The end date must be on or after the start date.")
-        if (end - start).days >= MAX_RANGE_DAYS:
-            raise _field("to", "range.too_long", f"Choose a range of at most {MAX_RANGE_DAYS} days.")
+    ) -> tuple[list[JudgedDay], str]:
+        """Days in the range (inclusive) with events, a status, leave or a holiday, newest
+        first, and the employee's time zone. Days after today are left out."""
+        _check_range(start, end, MAX_RANGE_DAYS)
         subject = employee_id or _own_employee(actor)
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
             await self._authz.require(
                 session, actor, "attendance.read", subject_employee_id=subject, hide_existence=True
             )
-            zone_name, _ = await self._time_zone(session, subject, required=False)
-            rows = await _day_events(session, subject, start, end)
-        by_date: dict[date, list[AttendanceEvent]] = defaultdict(list)
-        for row in rows:
-            by_date[row.work_date].append(row)
-        days = [
-            Day(work_date, events, timeline.totals(_events(events), now))
-            for work_date, events in sorted(by_date.items(), reverse=True)
-        ]
-        return days, zone_name
+            zone_name, zone = await self._time_zone(session, subject, required=False)
+            last = min(end, timeline.local_date(now, zone))
+            if last < start:
+                return [], zone_name
+            judged = await judge(session, [subject], start, last, now)
+        days = [day for day in judged.get(subject, []) if day.notable]
+        return sorted(days, key=lambda day: day.work_date, reverse=True), zone_name
 
     # --- team ----------------------------------------------------------------------------------
 
@@ -280,7 +392,7 @@ class AttendanceService:
             )
             local_today = {
                 c.id: timeline.local_date(
-                    now, ZoneInfo(zones[c.location_id]) if c.location_id in zones else _UTC
+                    now, ZoneInfo(zones[c.location_id]) if c.location_id in zones else UTC
                 )
                 for c in everyone
             }
@@ -294,6 +406,7 @@ class AttendanceService:
                         AttendanceEvent.employee_id.in_(ids),
                         AttendanceEvent.event_type == EventType.CLOCK_IN.value,
                         AttendanceEvent.work_date >= earliest_today,
+                        not_voided(),
                     )
                     .distinct()
                 )
@@ -329,6 +442,101 @@ class AttendanceService:
         ]
         return TeamToday(summary, members, next_after)
 
+    async def register(
+        self,
+        actor: Actor,
+        *,
+        on: date,
+        text_query: str | None,
+        department_id: uuid.UUID | None,
+        location_id: uuid.UUID | None,
+        status: str | None,
+        after: tuple[str, uuid.UUID] | None,
+        limit: int,
+    ) -> Register:
+        """Everyone in the reader's scope who was employed on the date, with that day judged,
+        and counts per status over the whole scope (the daily attendance register)."""
+        if on > self._authz.today() + timedelta(days=1):
+            raise _field("date", "attendance.future_date", "Choose a date that has already started.")
+        now = self._clock.now()
+        scope = self._authz.scope_filter(actor, "attendance.read", people.employee_id_column(), on=on)
+        async with self._db.unit_of_work() as session:
+            everyone, _ = await people.employed_colleagues(
+                session,
+                scope,
+                on=on,
+                since=on,
+                text=text_query,
+                department_id=department_id,
+                location_id=location_id,
+            )
+            judged = await judge(session, [c.id for c in everyone], on, on, now)
+        entries = [RegisterEntry(c, judged[c.id][0]) for c in everyone]
+        counts = Counter(
+            entry.day.summary.status.value if entry.day.summary.status else "not_judged" for entry in entries
+        )
+        if status is not None:
+            entries = [
+                e
+                for e in entries
+                if (e.day.summary.status.value if e.day.summary.status else "not_judged") == status
+            ]
+        if after is not None:
+            entries = [
+                e
+                for e in entries
+                if (e.colleague.name.lower(), e.colleague.id) > (after[0].lower(), after[1])
+            ]
+        page = entries[:limit]
+        last = page[-1] if len(entries) > limit else None
+        return Register(
+            on=on,
+            in_scope=len(everyone),
+            counts=dict(counts),
+            entries=page,
+            next_after=(last.colleague.name, last.colleague.id) if last else None,
+        )
+
+    async def report(
+        self,
+        actor: Actor,
+        *,
+        start: date,
+        end: date,
+        text_query: str | None,
+        department_id: uuid.UUID | None,
+        location_id: uuid.UUID | None,
+        after: tuple[str, uuid.UUID] | None,
+        limit: int | None,
+        employee_ids: Sequence[uuid.UUID] | None = None,
+    ) -> PeriodReport:
+        """Per person in scope employed at some point in the period: days per status and the
+        period's worked, late and overtime totals (the attendance report, RPT-1)."""
+        _check_range(start, end, MAX_REPORT_DAYS)
+        today = self._authz.today()
+        if start > today:
+            raise _field("from", "attendance.future_date", "Choose a period that has already started.")
+        end = min(end, today)
+        now = self._clock.now()
+        scope = self._authz.scope_filter(actor, "attendance.read", people.employee_id_column(), on=end)
+        if employee_ids is not None:
+            scope = people.employee_id_column().in_(list(employee_ids))
+        async with self._db.unit_of_work() as session:
+            page, next_after = await people.employed_colleagues(
+                session,
+                scope,
+                on=end,
+                since=start,
+                text=text_query,
+                department_id=department_id,
+                location_id=location_id,
+                after=after,
+                limit=limit,
+            )
+            judged = await judge(session, [c.id for c in page], start, end, now)
+        rows = [totals_for(judged.get(c.id, []), c) for c in page]
+        return PeriodReport(start, end, rows, next_after)
+
     # --- helpers -------------------------------------------------------------------------------
 
     async def _time_zone(
@@ -343,12 +551,9 @@ class AttendanceService:
                     "Your employee record has no current job and location, so attendance cannot be "
                     "recorded. Contact HR.",
                 )
-            return "UTC", _UTC
+            return "UTC", UTC
         name = zones[placement.location_id]
         return name, ZoneInfo(name)
-
-
-_UTC: Final = ZoneInfo("UTC")
 
 
 def _own_employee(actor: Actor) -> uuid.UUID:
@@ -357,10 +562,14 @@ def _own_employee(actor: Actor) -> uuid.UUID:
     return actor.employee_id
 
 
+def _events(rows: Sequence[AttendanceEvent]) -> list[timeline.Event]:
+    return [timeline.Event(EventType(row.event_type), row.occurred_at) for row in rows]
+
+
 async def _latest_event(session: AsyncSession, employee_id: uuid.UUID) -> AttendanceEvent | None:
     query = (
         select(AttendanceEvent)
-        .where(AttendanceEvent.employee_id == employee_id)
+        .where(AttendanceEvent.employee_id == employee_id, not_voided())
         .order_by(AttendanceEvent.occurred_at.desc(), AttendanceEvent.id.desc())
         .limit(1)
     )
@@ -374,26 +583,11 @@ async def _latest_events(
         return {}
     query = (
         select(AttendanceEvent)
-        .where(AttendanceEvent.employee_id.in_(employee_ids))
+        .where(AttendanceEvent.employee_id.in_(employee_ids), not_voided())
         .order_by(AttendanceEvent.employee_id, AttendanceEvent.occurred_at.desc(), AttendanceEvent.id.desc())
         .ext(distinct_on(AttendanceEvent.employee_id))
     )
     return {event.employee_id: event for event in await session.scalars(query)}
-
-
-async def _day_events(
-    session: AsyncSession, employee_id: uuid.UUID, start: date, end: date
-) -> list[AttendanceEvent]:
-    query = (
-        select(AttendanceEvent)
-        .where(
-            AttendanceEvent.employee_id == employee_id,
-            AttendanceEvent.work_date >= start,
-            AttendanceEvent.work_date <= end,
-        )
-        .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
-    )
-    return list(await session.scalars(query))
 
 
 async def _events_on(
@@ -407,6 +601,7 @@ async def _events_on(
             AttendanceEvent.employee_id.in_(list(work_dates)),
             AttendanceEvent.work_date >= min(work_dates.values()),
             AttendanceEvent.work_date <= max(work_dates.values()),
+            not_voided(),
         )
         .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
     )

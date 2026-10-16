@@ -16,6 +16,7 @@ from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_va
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.platform.audit.signing import CheckpointSigner, SignatureVerifier
+from app.platform.files import S3FileStore
 from app.platform.storage import S3AnchorStore
 
 type IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -115,7 +116,59 @@ class _WithAppBaseUrl(_Base):
         return _check_app_base_url(value, app_env if isinstance(app_env, AppEnv) else AppEnv.PRODUCTION)
 
 
-class ApiSettings(_WithAppBaseUrl):
+class _FileStorage(_Base):
+    """The private bucket for documents and export files (app/platform/files.py). Optional
+    locally, where the API then says file storage is not set up; required in staging and
+    production. Not the audit anchor bucket, and never with the anchor credentials there."""
+
+    files_bucket: str | None = Field(default=None, min_length=3, max_length=63)
+    files_access_key_id: SecretStr | None = None
+    files_secret_access_key: SecretStr | None = None
+    # Shared with the anchor settings in the worker: empty for AWS S3, the emulator locally.
+    s3_endpoint_url: str | None = None
+    s3_region: str | None = None
+
+    @field_validator(
+        "files_bucket", "files_access_key_id", "files_secret_access_key", "s3_region", mode="before"
+    )
+    @classmethod
+    def _blank_file_setting_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @model_validator(mode="after")
+    def _check_file_storage(self) -> Self:
+        given = [self.files_bucket, self.files_access_key_id, self.files_secret_access_key]
+        if any(value is not None for value in given) and not all(value is not None for value in given):
+            raise ValueError("FILES_BUCKET, FILES_ACCESS_KEY_ID and FILES_SECRET_ACCESS_KEY are set together")
+        if self.files_bucket is not None and not self.s3_region:
+            raise ValueError("S3_REGION is required with FILES_BUCKET")
+        if self.files_bucket is None and self.app_env.is_deployed:
+            raise ValueError("FILES_BUCKET is required in staging and production (documents and exports)")
+        if self.s3_endpoint_url:
+            scheme = urlsplit(self.s3_endpoint_url).scheme
+            if scheme not in ("http", "https"):
+                raise ValueError("S3_ENDPOINT_URL must be an http(s) URL")
+            if self.app_env.is_deployed and scheme != "https":
+                raise ValueError("S3_ENDPOINT_URL must use https in staging and production")
+        return self
+
+    def file_store(self) -> S3FileStore | None:
+        if (
+            self.files_bucket is None
+            or self.files_access_key_id is None
+            or self.files_secret_access_key is None
+        ):
+            return None
+        return S3FileStore(
+            bucket=self.files_bucket,
+            region=self.s3_region or "",
+            access_key_id=self.files_access_key_id,
+            secret_access_key=self.files_secret_access_key,
+            endpoint_url=self.s3_endpoint_url or None,
+        )
+
+
+class ApiSettings(_WithAppBaseUrl, _FileStorage):
     """Settings for the API process."""
 
     database_url_app: SecretStr
@@ -248,7 +301,7 @@ class AuditVerifySettings(_AuditAnchors):
 type RetentionMonths = Annotated[int, Field(ge=1, le=1200)]
 
 
-class WorkerSettings(_WithAppBaseUrl, _AuditAnchors):
+class WorkerSettings(_WithAppBaseUrl, _AuditAnchors, _FileStorage):
     """Settings for the worker process. It sends the email outbox, so it holds the SMTP
     credentials and builds links from APP_BASE_URL (never from a request). It alone holds the
     audit checkpoint signing key, and runs audit retention as its own database role."""
@@ -267,8 +320,13 @@ class WorkerSettings(_WithAppBaseUrl, _AuditAnchors):
     smtp_security: SmtpSecurity
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
+    # The ClamAV daemon that scans uploaded documents (DOC-5). Unset: uploads stay waiting
+    # for a scan and cannot be downloaded (fail closed). Required in staging and production.
+    clamav_host: str | None = None
+    clamav_port: int = 3310
 
     @field_validator(
+        "clamav_host",
         "smtp_username",
         "smtp_password",
         "audit_log_retention_months",
@@ -294,6 +352,10 @@ class WorkerSettings(_WithAppBaseUrl, _AuditAnchors):
             raise ValueError("SMTP_USERNAME and SMTP_PASSWORD are set together or not at all")
         if not 1 <= self.smtp_port <= 65535:
             raise ValueError("SMTP_PORT must be a TCP port")
+        if not 1 <= self.clamav_port <= 65535:
+            raise ValueError("CLAMAV_PORT must be a TCP port")
+        if self.app_env.is_deployed and self.clamav_host is None:
+            raise ValueError("CLAMAV_HOST is required in staging and production (document scanning)")
         return self
 
     def checkpoint_signer(self) -> CheckpointSigner:

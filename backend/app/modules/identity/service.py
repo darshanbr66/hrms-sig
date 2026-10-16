@@ -36,7 +36,7 @@ from typing import Final, Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity import defaults, devices, notifications
+from app.modules.identity import accounts, defaults, devices, notifications
 from app.modules.identity import repository as repo
 from app.modules.identity.history import LoginHistoryRow, login_events
 from app.modules.identity.models import (
@@ -1283,26 +1283,16 @@ class IdentityService:
                         "Make another super admin active before disabling this account.",
                     )
             if disabled and user.status != UserStatus.DISABLED:
-                user.status = UserStatus.DISABLED.value
-                revoked = await repo.revoke_sessions(
-                    session, user_id=user.id, reason=RevokedReason.ACCOUNT_DISABLED, now=now
-                )
-                await devices.revoke_all(
-                    session, user_id=user.id, reason=DeviceRevokedReason.ACCOUNT_DISABLED, now=now
-                )
-                # An outstanding invite stops working too.
-                for purpose in (OneTimePurpose.INVITE, OneTimePurpose.INVITE_ENROLMENT):
-                    await repo.retire_one_time_tokens(session, user.id, purpose, now)
-                await notifications.cancel_invites(session, user.id, now)
+                revoked = await accounts.disable(session, user, now)
                 event_type = SecurityEventType.ACCOUNT_DISABLED
             elif not disabled and user.status == UserStatus.DISABLED:
                 # An account that was never activated goes back to waiting for its invite.
                 user.status = (UserStatus.ACTIVE if user.email_verified_at else UserStatus.INVITED).value
+                user.updated_at = now
+                user.version += 1
                 event_type = SecurityEventType.ACCOUNT_ENABLED
             else:
                 return user
-            user.updated_at = now
-            user.version += 1
             await self._audit.record_security_event(
                 session,
                 SecurityEvent(
