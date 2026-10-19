@@ -301,6 +301,60 @@ test("an audit record opens to its changes and request context", async ({ page }
   expect(await axe(page)).toEqual([]);
 });
 
+/** The focused element's outline, when the browser treats the focus as keyboard focus. */
+async function focusOutline(page: Page) {
+  return page.evaluate(() => {
+    const focused = document.activeElement;
+    if (!focused?.matches(":focus-visible")) return null;
+    const style = getComputedStyle(focused);
+    return { width: style.outlineWidth, style: style.outlineStyle };
+  });
+}
+
+test("audit details and the department hierarchy work from the keyboard with a visible focus outline", async ({
+  page,
+}) => {
+  await serve(page, AUDITOR);
+  await page.goto("/admin/audit-log");
+  const table = page.getByRole("table", { name: "Audit log" });
+  const show = table.getByRole("button", { name: /^Show details for holiday.updated/ });
+  await show.focus();
+  expect(await focusOutline(page)).toEqual({ width: "2px", style: "solid" });
+  await page.keyboard.press("Enter");
+  const hide = table.getByRole("button", { name: /^Hide details for holiday.updated/ });
+  await expect(hide).toBeFocused();
+  await expect(hide).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(`[id="${(await hide.getAttribute("aria-controls")) ?? ""}"]`)).toContainText(
+    "req-test-1",
+  );
+  await page.keyboard.press("Space");
+  await expect(table.getByRole("button", { name: /^Show details for holiday.updated/ })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await serve(page, HR_ADMIN);
+  await page.goto("/organization?tab=departments");
+  // Keyboard throughout: a pointer click would make the browser hide the focus outline.
+  await page.getByRole("radio", { name: "Hierarchy" }).focus();
+  await page.keyboard.press("Space");
+  const tree = page.getByRole("table", { name: "Department hierarchy" });
+  await tree.getByRole("button", { name: /^Expand Test finance/ }).focus();
+  expect(await focusOutline(page)).toEqual({ width: "2px", style: "solid" });
+  await page.keyboard.press("Enter");
+  // Tab moves from the expand control to the department's name; Enter selects it.
+  await page.keyboard.press("Tab");
+  await expect(tree.getByRole("button", { name: "Test finance", exact: true })).toBeFocused();
+  expect(await focusOutline(page)).toEqual({ width: "2px", style: "solid" });
+  await page.keyboard.press("Enter");
+  await expect(tree.getByRole("button", { name: "Test finance", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("region", { name: "Selected department" })).toContainText("Test payroll");
+});
+
 test("departments show as a hierarchy whose children render only when opened", async ({ page }) => {
   await serve(page, HR_ADMIN);
   await page.goto("/organization?tab=departments");

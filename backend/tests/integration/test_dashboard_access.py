@@ -119,6 +119,28 @@ async def test_a_manager_s_figures_cover_only_their_team(api: Api) -> None:
         assert sum(item["employed"] for item in stats["by_department"]) == 2
 
 
+async def test_the_department_link_lists_only_the_manager_s_team(api: Api) -> None:
+    """The department hierarchy links to `/employees?department_id=…`; the filter narrows the
+    reader's scope and never widens it, so a colleague in the same department who is not on
+    the manager's team stays out of the list."""
+    today = api.clock.now().date()
+    joined = today - timedelta(days=100)
+    async with api.database.unit_of_work() as session:
+        units = await create_org_units(session)
+        manager = await create_employee(session, joined=joined)
+        await add_job(session, units, manager, manager_id=None, effective_from=joined)
+        report = await create_employee(session, joined=joined)
+        await add_job(session, units, report, manager_id=manager, effective_from=joined)
+        colleague = await create_employee(session, joined=joined)
+        await add_job(session, units, colleague, manager_id=None, effective_from=joined)
+    account = await api.create_account(employee_id=manager)
+    async with api.client() as client:
+        await api.sign_in(client, account)
+        response = await client.get("/api/v1/employees", params={"department_id": str(units.department_id)})
+    assert response.status_code == 200
+    assert {item["id"] for item in response.json()["items"]} == {str(manager), str(report)}
+
+
 async def test_a_super_admin_reaches_the_hr_figures_only_through_an_approved_elevation(
     isolated_api: Api,
 ) -> None:

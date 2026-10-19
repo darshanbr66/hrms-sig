@@ -64,7 +64,7 @@ export function ComboBox({
         </Text>
       ) : null}
       <div className="relative flex items-center">
-        <Input className="min-h-10 w-full rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 pl-3 pr-9 text-base text-neutral-900" />
+        <Input className="min-h-10 w-full rounded-[var(--radius-control)] border border-control-border bg-neutral-0 pl-3 pr-9 text-base text-neutral-900 data-[invalid]:border-danger-700" />
         <Button className="absolute right-1 rounded p-1.5 text-neutral-600">
           <ChevronDown aria-hidden className="size-4" />
         </Button>

@@ -63,7 +63,7 @@ export function TextField({
         {...(inputRef ? { ref: inputRef } : {})}
         {...(min ? { min } : {})}
         {...(max ? { max } : {})}
-        className="min-h-10 rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 text-base text-neutral-900 invalid:border-danger-700"
+        className="min-h-10 rounded-[var(--radius-control)] border border-control-border bg-neutral-0 px-3 text-base text-neutral-900 data-[invalid]:border-danger-700"
       />
       <FieldError className="text-sm text-danger-700">{error}</FieldError>
     </AriaTextField>

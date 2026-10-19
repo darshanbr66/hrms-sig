@@ -49,7 +49,7 @@ export function Select({
       isDisabled={isDisabled}
       {...(placeholder ? { placeholder } : {})}
       validationBehavior="aria"
-      className="flex flex-col gap-1"
+      className="group flex flex-col gap-1"
     >
       <Label className="text-sm font-semibold text-neutral-800">{label}</Label>
       {description ? (
@@ -57,7 +57,8 @@ export function Select({
           {description}
         </Text>
       ) : null}
-      <Button className="flex min-h-10 min-w-0 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 text-left text-base text-neutral-900">
+      {/* The invalid mark is on the Select root, not on its trigger button. */}
+      <Button className="flex min-h-10 min-w-0 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-control-border bg-neutral-0 px-3 text-left text-base text-neutral-900 group-data-[invalid]:border-danger-700">
         <SelectValue className="truncate placeholder-shown:text-neutral-500" />
         <ChevronDown aria-hidden className="size-4 shrink-0" />
       </Button>

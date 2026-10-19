@@ -35,6 +35,12 @@
   --color-neutral-800: #2e2b28;
   --color-neutral-900: #1c1a18;
 
+  /* The edge of a form field (text, text area, select, combo box, search). WCAG 1.4.11 asks
+     for 3:1 against what is next to it; neutral-300 gave 1.6:1. This step sits between
+     neutral-400 and neutral-500 and gives at least 3.2:1 against neutral-0, -50 and -100 in
+     both themes (checked in e2e/field-contrast.e2e.ts). */
+  --color-control-border: #8a847c;
+
   /* One accent: primary buttons, links, focus rings, the current navigation item. */
   --color-accent-50: #eef3fb;
   --color-accent-100: #dbe5f5;
@@ -104,6 +110,8 @@
   --color-neutral-700: #cfcac3;
   --color-neutral-800: #e3dfd9;
   --color-neutral-900: #f4f2ef;
+
+  --color-control-border: #7d7670;
 
   --color-accent-50: #1c283b;
   --color-accent-100: #243653;

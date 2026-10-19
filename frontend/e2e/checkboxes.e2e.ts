@@ -16,6 +16,11 @@ interface Saved {
   channels: Record<string, Record<string, boolean>>;
   puts: unknown[];
   failNext: boolean;
+  // When set, the fake API holds its answer to a save until this settles (instead of 300 ms),
+  // so a test can look at the page while the save is certainly still unanswered.
+  hold: Promise<void> | null;
+  // Saves the fake API has answered so far.
+  answered: number;
 }
 
 function preferences(saved: Saved) {
@@ -45,6 +50,8 @@ async function openPreferences(page: Page, theme: "light" | "dark" = "light") {
     },
     puts: [],
     failNext: false,
+    hold: null,
+    answered: 0,
   };
   await page.addInitScript((value) => {
     window.localStorage.setItem("sv-theme", value);
@@ -59,7 +66,8 @@ async function openPreferences(page: Page, theme: "light" | "dark" = "light") {
         };
         saved.puts.push(body);
         // A little latency, so the immediate (optimistic) state is what the test sees first.
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await (saved.hold ?? new Promise((resolve) => setTimeout(resolve, 300)));
+        saved.answered += 1;
         if (saved.failNext) {
           saved.failNext = false;
           return route.fulfill({
@@ -113,11 +121,18 @@ test("a click shows the new state at once, sends it, and survives a reload", asy
   const unchecked = await boxFill(page);
   expect(unchecked).not.toBe(ACCENT_LIGHT);
 
+  // The fake API holds its answer until the test releases it, so what the test sees below is
+  // the state shown before any answer, however slow the machine is.
+  let release: () => void = () => undefined;
+  saved.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   await emailBox(page).click({ force: true });
-  // Before the API answers (it waits 300 ms), the box is already checked and filled.
-  await expect(emailBox(page)).toBeChecked({ timeout: 250 });
-  await expect.poll(() => boxFill(page), { timeout: 250 }).toBe(ACCENT_LIGHT);
-  expect(saved.puts).toHaveLength(1);
+  await expect(emailBox(page)).toBeChecked();
+  await expect.poll(() => boxFill(page)).toBe(ACCENT_LIGHT);
+  await expect.poll(() => saved.puts.length).toBe(1);
+  expect(saved.answered).toBe(0);
+  release();
   await expect(page.getByText("Preference saved")).toBeVisible();
   expect(saved.puts).toEqual([
     { changes: [{ type: "leave.approval_requested", channel: "email", enabled: true }] },
@@ -170,12 +185,19 @@ test("the checkbox works from the keyboard with a visible focus ring", async ({ 
   await page.keyboard.press("Tab");
   await page.keyboard.press("Tab");
   await expect(emailBox(page)).toBeFocused();
-  const ring = await emailBox(page).evaluate((input) => {
-    const box = input.closest("label")?.querySelector("span[aria-hidden]");
-    const style = box ? getComputedStyle(box) : null;
-    return style ? { width: style.outlineWidth, style: style.outlineStyle, color: style.outlineColor } : null;
-  });
-  expect(ring).toEqual({ width: "2px", style: "solid", color: ACCENT_LIGHT });
+  // Polled: the box's colour transition (120 ms) also fades the outline colour in, so a read
+  // straight after the key press can catch it part way.
+  await expect
+    .poll(() =>
+      emailBox(page).evaluate((input) => {
+        const box = input.closest("label")?.querySelector("span[aria-hidden]");
+        const style = box ? getComputedStyle(box) : null;
+        return style
+          ? { width: style.outlineWidth, style: style.outlineStyle, color: style.outlineColor }
+          : null;
+      }),
+    )
+    .toEqual({ width: "2px", style: "solid", color: ACCENT_LIGHT });
   await page.keyboard.press("Space");
   await expect(emailBox(page)).toBeChecked();
   await expect.poll(() => saved.puts.length).toBe(1);

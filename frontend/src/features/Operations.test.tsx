@@ -439,6 +439,60 @@ describe("documents", () => {
     expect(screen.queryByRole("button", { name: "Upload a document" })).not.toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
+
+  it("keeps the file picker native, reachable by keyboard, and links its error to it", async () => {
+    const user = userEvent.setup();
+    api.on("GET /api/v1/me/notifications/unread-count", json({ unread_count: 0 })).on(
+      "GET /api/v1/me/documents",
+      json({
+        storage_ready: true,
+        sensitive_hidden: 0,
+        items: [
+          {
+            id: "d1",
+            owner_employee_id: "01900000-0000-7000-8000-0000000000e1",
+            owner_name: null,
+            category: {
+              id: "c1",
+              code: "LETTERS",
+              name: "Test letters",
+              description: null,
+              sensitivity: "internal",
+              employee_visible: true,
+              employee_can_upload: true,
+              requires_expiry: false,
+              status: "active",
+              version: 1,
+            },
+            title: "Test offer letter",
+            expires_on: null,
+            status: "active",
+            version: 1,
+            created_at: "2026-10-01T05:00:00Z",
+            versions: [],
+            can_manage: false,
+            can_add_version: true,
+          },
+        ],
+      }),
+    );
+    renderSignedIn(api, EMPLOYEE, "/documents");
+    await user.click(await screen.findByRole("button", { name: "New version of Test offer letter" }));
+    const dialog = await screen.findByRole("dialog");
+    const picker = within(dialog).getByLabelText("File (PDF, PNG or JPEG, at most 10 MB)");
+    expect(picker).toHaveAttribute("type", "file");
+    expect(picker).not.toHaveAttribute("aria-invalid");
+    picker.focus();
+    // Tab leaves the picker for the dialog's buttons; Shift+Tab comes back to it.
+    await user.tab();
+    expect(picker).not.toHaveFocus();
+    await user.tab({ shift: true });
+    expect(picker).toHaveFocus();
+    await user.click(within(dialog).getByRole("button", { name: "Upload version" }));
+    expect(picker).toHaveAttribute("aria-invalid", "true");
+    expect(picker).toHaveAccessibleDescription("Choose a file.");
+    expect(api.called("POST /api/v1/documents/d1/versions")).toHaveLength(0);
+  });
 });
 
 describe("reports and exports", () => {

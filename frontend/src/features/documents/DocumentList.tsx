@@ -5,7 +5,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Upload } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Form } from "react-aria-components";
 
 import { Badge } from "../../design-system/Badge";
@@ -341,7 +341,10 @@ function DocumentCard({ document, storageReady }: { document: DocumentView; stor
   );
 }
 
+/** The browser's own file picker, kept native for its keyboard and screen reader support; the
+ * error is linked to it like the other fields' errors. */
 function FileInput({ onFile, error }: { onFile: (file: File | null) => void; error?: string | undefined }) {
+  const errorId = useId();
   return (
     <div className="flex flex-col gap-1">
       <label className="flex flex-col gap-1 text-sm font-semibold text-neutral-800">
@@ -350,12 +353,18 @@ function FileInput({ onFile, error }: { onFile: (file: File | null) => void; err
           type="file"
           accept="application/pdf,image/png,image/jpeg"
           className="text-sm font-normal"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
           onChange={(event) => {
             onFile(event.target.files?.[0] ?? null);
           }}
         />
       </label>
-      {error ? <p className="text-sm text-danger-700">{error}</p> : null}
+      {error ? (
+        <p id={errorId} className="text-sm text-danger-700">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

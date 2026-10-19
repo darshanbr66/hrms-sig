@@ -20,5 +20,10 @@ export default defineConfig({
     css: false,
     restoreMocks: true,
     testTimeout: 20000,
+    // Pages load on demand, so each file's first render compiles its page. With one worker per
+    // core (13 files at once on a 12-thread machine) that first import sometimes took longer
+    // than the 5 s wait in src/test/setup.ts, failing a different few tests on each run
+    // (2026-10-19, docs/module-acceptance.md §13). Four workers keep it well inside the wait.
+    maxWorkers: 4,
   },
 });

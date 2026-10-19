@@ -6,8 +6,11 @@
 import type { LucideIcon } from "lucide-react";
 import { ToggleButton, ToggleButtonGroup } from "react-aria-components";
 
+// The chosen button is marked by a 2 px accent bar along its bottom edge, like the selected
+// tab, not by colour alone: the pale fill and text colour differ from the other buttons by
+// about 1.1:1, below WCAG 1.4.11's 3:1 for a state (e2e/field-contrast.e2e.ts).
 const BUTTON =
-  "flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-neutral-700 outline-none first:rounded-l-[var(--radius-control)] last:rounded-r-[var(--radius-control)] hover:bg-neutral-100 selected:bg-accent-50 selected:text-accent-700 data-[focus-visible]:outline-2 data-[focus-visible]:-outline-offset-2 data-[focus-visible]:outline-accent-600";
+  "flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-neutral-700 outline-none first:rounded-l-[var(--radius-control)] last:rounded-r-[var(--radius-control)] hover:bg-neutral-100 selected:bg-accent-50 selected:text-accent-700 selected:shadow-[inset_0_-2px_0_var(--color-accent-600)] data-[focus-visible]:outline-2 data-[focus-visible]:-outline-offset-2 data-[focus-visible]:outline-accent-600";
 
 export function ViewSwitch<K extends string>({
   label,

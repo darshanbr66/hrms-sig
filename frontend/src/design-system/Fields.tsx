@@ -54,7 +54,7 @@ export function TextArea({
       ) : null}
       <AriaTextArea
         rows={rows}
-        className="rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 px-3 py-2 text-base text-neutral-900"
+        className="rounded-[var(--radius-control)] border border-control-border bg-neutral-0 px-3 py-2 text-base text-neutral-900 data-[invalid]:border-danger-700"
       />
       <FieldError className="text-sm text-danger-700">{error}</FieldError>
     </AriaTextField>
@@ -86,7 +86,7 @@ export function SearchField({
       <Search aria-hidden className="pointer-events-none absolute left-3 size-4 text-neutral-500" />
       <Input
         {...(placeholder ? { placeholder } : {})}
-        className="min-h-10 w-full rounded-[var(--radius-control)] border border-neutral-300 bg-neutral-0 pl-9 pr-9 text-sm text-neutral-900 placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
+        className="min-h-10 w-full rounded-[var(--radius-control)] border border-control-border bg-neutral-0 pl-9 pr-9 text-sm text-neutral-900 placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
       />
       <AriaButton
         aria-label="Clear search"
