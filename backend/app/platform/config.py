@@ -42,6 +42,10 @@ class _Base(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         frozen=True,
+        # A refused setting is reported by name and reason only. Without this, the error a
+        # process prints at startup includes the offending value (a key, a password in a
+        # URL) and, for a cross-field rule, part of the whole environment, into the logs.
+        hide_input_in_errors=True,
     )
 
     app_env: AppEnv

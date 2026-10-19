@@ -1,0 +1,11 @@
+# Only what the image needs (Dockerfile): the lockfile, alembic.ini, app/ and migrations/.
+# Never local settings, credentials, dumps or caches.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!alembic.ini
+!app/
+!migrations/
+**/__pycache__
+**/*.py[cod]

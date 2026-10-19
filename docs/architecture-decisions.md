@@ -193,6 +193,7 @@ Not included: global state libraries, CSS-in-JS, chart libraries (added only whe
 ## ADR-023 Hosting (pending)
 
 - **Decision pending.** Requirements: managed PostgreSQL 18 with PITR, private object storage with public-access block, secrets manager, container runtime, region near users (India region if Sigvitas operates in India). Options to evaluate with Sigvitas: AWS (RDS, S3, ECS/App Runner), Azure (if Microsoft 365 shop), GCP (Cloud SQL, GCS, Cloud Run), or a single well-managed VM with managed database for lowest cost.
+- **Proposal under review (2026-10-19).** Vercel for the SPA (forwarding `/api/*`, so one origin and no CORS), Render (Singapore) for the API, worker, ClamAV and migrations, PostgreSQL 18, AWS S3 for files and the Object Lock anchor bucket, Resend over the existing SMTP sender, and a TLS Redis. Not accepted: blockers B1–B8 in `deployment.md` §2 (client addresses behind Vercel, PostgreSQL `verify-full` on Render, role bootstrap, Redis TLS, the committed dump, anchor retention, region, backups) need the owner's decisions first.
 
 ## ADR-024 Migration ownership: Alembic applies both application and Procrastinate schemas
 

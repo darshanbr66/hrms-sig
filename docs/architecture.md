@@ -239,11 +239,13 @@ Target for MVP, assuming a single region hosting close to Sigvitas users:
 
 Hosting provider and region are open questions (see roadmap). If Sigvitas operates in India, an India region is the default choice for data residency and latency.
 
+Proposed concrete setup (2026-10-19, not applied, ADR-023 still pending): the SPA on Vercel, which forwards `/api/*` to the API so the browser keeps one origin; API, worker, ClamAV and the migration job on Render; PostgreSQL 18; AWS S3; Resend over SMTP; a TLS Redis. The open blockers (client addresses behind Vercel, PostgreSQL certificate verification, roles, Redis TLS, region) and the runbook are in `deployment.md`.
+
 ## 11. Observability
 
 - Structured JSON logs with request ID, actor ID (not name/email), route, status, latency. A redaction filter removes tokens, passwords, and fields tagged as personal or sensitive.
 - Metrics: request rates/latencies per route, job queue depth and failures, login failure rate.
 - Tracing with OpenTelemetry in Phase 2.
 - Error tracking must scrub request bodies and never receive personal data; self-hosted or an EU/India-region provider with a data processing agreement.
-- Health endpoints: `/api/health/live` (process up), `/api/health/ready` (database and storage reachable). Redis unavailability does not make the API unready, because it degrades per §3.1, but it raises an operational alert. Neither endpoint reveals versions or configuration.
+- Health endpoints: `/api/health/live` (process up), `/api/health/ready` (database reachable). Redis and object storage are deliberately not part of readiness: Redis degrades per §3.1, and a storage outage fails only uploads, downloads and exports (503) while the rest keeps working; both raise operational alerts instead. Neither endpoint reveals versions or configuration.
 - Operational alerts specific to integrity: unsealed audit rows older than 10 minutes, checkpoint signature or anchor mismatch, audit partition missing without a retention tombstone.

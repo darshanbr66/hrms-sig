@@ -150,7 +150,9 @@ Cross-Origin-Resource-Policy: same-origin
 Cache-Control: no-store   (all authenticated API responses)
 ```
 
-Fonts are self-hosted so no third-party origins are needed in the CSP. The only script outside the bundle is `/theme-init.js`, a same-origin file that sets the colour theme before the first paint; it is a file rather than an inline script so `script-src 'self'` needs no `unsafe-inline` or hash, and it reads only the theme preference from `localStorage`. Tailwind output is a static stylesheet, so `style-src 'self'` works without `unsafe-inline`. Styles set from JavaScript through the CSSOM (as React, React Aria and Motion do) are not affected by CSP; libraries that inject `<style>` elements at runtime (most CSS-in-JS) are not used.
+In the proposed deployment the SPA's headers are set in `frontend/vercel.json` (`deployment.md` §8) and checked against the production build by `pnpm test:csp`. Downloads are top-level navigations to presigned URLs, so the storage origin is not needed in `img-src` or `connect-src`. `style-src` also lists two `sha256` hashes: React Aria injects two fixed `<style>` rules (`touch-action` on pressable elements, and `overscroll-behavior` on iOS while a dialog is open); a hash allows exactly that text and nothing else, and a React Aria upgrade that changes it fails `pnpm test:csp`.
+
+Fonts are self-hosted so no third-party origins are needed in the CSP. The only script outside the bundle is `/theme-init.js`, a same-origin file that sets the colour theme before the first paint; it is a file rather than an inline script so `script-src 'self'` needs no `unsafe-inline` or hash, and it reads only the theme preference from `localStorage`. Tailwind output is a static stylesheet, so `style-src 'self'` works without `unsafe-inline`. Styles set from JavaScript through the CSSOM (as React, React Aria and Motion do) are not affected by CSP; libraries that inject `<style>` elements at runtime (most CSS-in-JS) are not used, apart from React Aria's two fixed rules allowed by hash above.
 
 ## 6. Data protection
 

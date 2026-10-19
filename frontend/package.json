@@ -16,6 +16,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:csp": "pnpm build && playwright test -c playwright.csp.config.ts",
     "api:types": "openapi-typescript ../api/openapi.json -o src/lib/api-schema.ts",
     "copy:check": "node scripts/check-copy.mjs"
   },

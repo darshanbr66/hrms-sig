@@ -36,7 +36,21 @@ GRANT hrms_app TO hrms_migrator WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;
 GRANT hrms_worker TO hrms_migrator WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;
 GRANT hrms_audit_retention TO hrms_migrator WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;
 
+-- Creating a database owned by another role, and changing its privileges, needs the ability to
+-- act as that role (PostgreSQL 16+). A superuser has it; a managed database's administrator
+-- (CREATEROLE and CREATEDB, not superuser, as on Render) does not. So the administrator takes
+-- SET on hrms_migrator for these statements only, without inheriting its privileges, and gives
+-- it up at the end. If a statement fails, ON_ERROR_STOP leaves the grant in place: the
+-- administrator could grant it to itself again anyway (it holds ADMIN OPTION on every role it
+-- created), and a failed bootstrap is repeated on a fresh instance.
+GRANT hrms_migrator TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
+
 CREATE DATABASE :"db_name" OWNER hrms_migrator ENCODING 'UTF8' TEMPLATE template0;
 
+-- As the owner, so the revoke removes the owner's default grants to PUBLIC (CONNECT, TEMP).
+SET ROLE hrms_migrator;
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"db_name" TO hrms_app, hrms_worker, hrms_audit_retention;
+RESET ROLE;
+
+REVOKE hrms_migrator FROM CURRENT_USER;

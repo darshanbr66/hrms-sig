@@ -32,3 +32,11 @@ local-test-credentials.md
 
 # Local-only secrets (passwords for local test accounts); never commit
 .local-secrets/
+
+# Database dumps and backups: may hold credentials and personal data; never commit.
+# (hrms_local_test-pre-0027.dump was committed before this rule and is still in the history;
+# docs/deployment.md §2, B5.)
+*.dump
+*.pgdump
+*.backup
+/backups/

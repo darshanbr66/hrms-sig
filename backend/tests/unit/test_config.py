@@ -160,6 +160,24 @@ def test_secrets_are_not_shown_in_repr() -> None:
     assert FIELD_KEY not in repr(settings)
 
 
+def test_refused_settings_do_not_print_their_values() -> None:
+    """A startup error names the setting and the rule, never the value: it goes to the logs."""
+    short_key = base64.b64encode(b"leaked-key-material").decode()
+    with pytest.raises(ValidationError) as field_error:
+        api_settings(rate_limit_key_hmac_key=short_key)
+    with pytest.raises(ValidationError) as model_error:
+        MigrationSettings(
+            app_env=AppEnv.STAGING, database_url_migrator="postgresql://m:db-password-1@db.internal/hrms"
+        )
+    for error in (field_error.value, model_error.value):
+        text = str(error)
+        assert "input_value" not in text
+        assert short_key not in text
+        assert "db-password-1" not in text
+    assert "RATE_LIMIT_KEY_HMAC_KEY" in str(field_error.value)
+    assert "DATABASE_URL_MIGRATOR" in str(model_error.value)
+
+
 def test_sqlalchemy_url_selects_psycopg() -> None:
     settings = api_settings()
     assert sqlalchemy_url(settings.database_url_app).startswith("postgresql+psycopg://")

@@ -2,7 +2,10 @@
 
 Readiness covers the database only. Redis is deliberately excluded: rate limiting degrades
 per scope when it is down, so it must not take the API out of rotation. Object storage is
-added to readiness when the API starts using it.
+excluded for the same reason: when it is down only uploads, downloads and exports fail (each
+with a 503 problem), while sign-in, attendance and leave keep working; taking every replica
+out of rotation would turn a storage outage into a full outage. Storage and Redis failures
+are watched through logs and alerts instead (docs/deployment.md §12).
 """
 
 import logging

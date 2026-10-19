@@ -558,6 +558,7 @@ Backend (`backend/`):
 | Dependency audit | `uv run pip-audit --strict --progress-spinner off` |
 | Regenerate the API contract `api/openapi.json` | `uv run python -m scripts.export_openapi` |
 | Verify the local audit chain and its anchors (read-only; exit code 1 on any problem) | `uv run --env-file ../.env python -m app.cli audit-verify` |
+| Build the production image (API, worker, migrations; `docs/deployment.md` §4) | `docker build -t hrms-backend .` |
 
 Frontend (`frontend/`):
 
@@ -570,6 +571,7 @@ Frontend (`frontend/`):
 | Tests | `pnpm test` |
 | Browser layout tests (Playwright, Chromium; starts its own Vite on port 5180 and answers every API call with fake data, so no database or account is used; first run on a new machine: `pnpm exec playwright install chromium`) | `pnpm test:e2e` |
 | Build | `pnpm build` |
+| Production build under the production headers and CSP from `vercel.json` (builds first; Chromium) | `pnpm test:csp` |
 | Dependency audit | `pnpm audit` |
 | Regenerate API types after the contract changes | `pnpm api:types` |
 
