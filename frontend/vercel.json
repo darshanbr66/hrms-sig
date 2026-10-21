@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://__RENDER_API_HOST__/api/:path*"
+      "destination": "https://hrms-sig-api.onrender.com/api/:path*"
     },
     {
       "source": "/((?!api/|assets/).*)",
