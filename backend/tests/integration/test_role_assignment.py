@@ -2,12 +2,16 @@
 
 import asyncio
 import uuid
+from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy.exc import DBAPIError
+from pymongo.errors import WriteError
 
+from app.modules.access.models import UserRole, role_id
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
+from app.platform.db import to_document
 from tests.api_support import Account, Api
 
 
@@ -47,20 +51,19 @@ async def test_assigning_a_role_applies_rotates_sessions_and_is_audited(api: Api
         await target_client.post("/api/v1/auth/refresh")
         assert (await target_client.get("/api/v1/users")).status_code == 403
 
-    rows = await api.fetch(
-        "SELECT action, permission_used, changes->'role' FROM audit.audit_log "
-        "WHERE actor_user_id = :id ORDER BY recorded_at, id",
-        id=admin.user_id,
-    )
+    rows = [
+        (row.action, row.permission_used, (row.changes or {}).get("role"))
+        for row in await api.records(
+            AuditLogRecord, {"actor_user_id": admin.user_id}, sort=[("recorded_at", 1), ("id", 1)]
+        )
+    ]
     assert rows == [
         ("access.role.assigned", "role.assign", {"old": None, "new": "hr"}),
         ("access.role.removed", "role.assign", {"old": "hr", "new": None}),
     ]
     # History is kept: the removed assignment is revoked, not deleted.
-    [(revoked_by,)] = await api.fetch(
-        "SELECT revoked_by FROM access.user_roles WHERE id = :id", id=uuid.UUID(assignment["id"])
-    )
-    assert revoked_by == admin.user_id
+    [stored] = await api.records(UserRole, {"id": uuid.UUID(assignment["id"])})
+    assert stored.revoked_by == admin.user_id
 
 
 async def test_role_assignment_needs_step_up(api: Api) -> None:
@@ -79,20 +82,17 @@ async def test_nobody_changes_their_own_roles(api: Api) -> None:
         response = await assign(client, admin.user_id, "auditor")
         assert response.status_code == 403
         assert response.json()["code"] == "sod.own_roles"
-        [(assignment_id,)] = await api.fetch(
-            "SELECT id FROM access.user_roles WHERE user_id = :id", id=admin.user_id
-        )
+        [own] = await api.records(UserRole, {"user_id": admin.user_id})
+        assignment_id = own.id
         removal = await client.delete(f"/api/v1/users/{admin.user_id}/roles/{assignment_id}")
         assert removal.json()["code"] == "sod.own_roles"
 
 
 async def test_the_database_refuses_a_self_granted_role(api: Api) -> None:
     account = await api.create_account()
-    with pytest.raises(DBAPIError, match="ck_user_roles_not_self_granted"):
-        await api.execute(
-            "INSERT INTO access.user_roles (user_id, role_id, granted_by, grant_reason) "
-            "SELECT :id, id, :id, 'Self' FROM access.roles WHERE key = 'hr'",
-            id=account.user_id,
+    with pytest.raises(WriteError, match="Document failed validation"):
+        await api.database.collection("user_roles").insert_one(
+            stored_role(api, account.user_id, RoleKey.HR.value, granted_by=account.user_id)
         )
 
 
@@ -121,12 +121,27 @@ async def test_derived_and_unknown_roles_are_refused(api: Api) -> None:
 
 async def test_the_database_refuses_a_stored_derived_role(api: Api) -> None:
     account = await api.create_account()
-    with pytest.raises(DBAPIError, match="fk_user_roles_role_id_role_is_derived"):
-        await api.execute(
-            "INSERT INTO access.user_roles (user_id, role_id, grant_reason) "
-            "SELECT :id, id, 'Derived' FROM access.roles WHERE key = 'manager'",
-            id=account.user_id,
+    with pytest.raises(WriteError, match="Document failed validation"):
+        await api.database.collection("user_roles").insert_one(
+            stored_role(api, account.user_id, RoleKey.MANAGER.value)
         )
+
+
+def stored_role(
+    api: Api, user_id: uuid.UUID, key: str, *, granted_by: uuid.UUID | None = None
+) -> dict[str, Any]:
+    """A role assignment as stored, written past the application, so only the validator judges it."""
+    return to_document(
+        UserRole(
+            organization_id=api.organization_id,
+            user_id=user_id,
+            role_id=role_id(key),
+            role_key=key,
+            granted_by=granted_by,
+            valid_from=api.clock.now(),
+            grant_reason="Test assignment",
+        )
+    )
 
 
 async def test_a_super_admin_holds_no_standing_data_role(api: Api) -> None:
@@ -149,22 +164,14 @@ async def test_an_active_assignment_cannot_be_duplicated(api: Api) -> None:
 
 
 async def test_at_least_two_super_admins_remain_even_under_concurrent_removals(api: Api) -> None:
-    # Start from exactly the three super admins of this test (earlier tests in the shared
-    # database created others); revoking is the normal way to end an assignment.
-    await api.execute(
-        "UPDATE access.user_roles SET revoked_at = now() WHERE revoked_at IS NULL AND role_id = "
-        "(SELECT id FROM access.roles WHERE key = 'super_admin')"
-    )
+    # The organization is the test's own, so it holds exactly the three super admins below.
     async with api.client() as first_client, api.client() as second_client:
         await super_admin(api, first_client)
         second = await super_admin(api, second_client)
         third = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
-        [(third_assignment,)] = await api.fetch(
-            "SELECT id FROM access.user_roles WHERE user_id = :id", id=third.user_id
-        )
-        [(second_assignment,)] = await api.fetch(
-            "SELECT id FROM access.user_roles WHERE user_id = :id", id=second.user_id
-        )
+        [third_role] = await api.records(UserRole, {"user_id": third.user_id})
+        [second_role] = await api.records(UserRole, {"user_id": second.user_id})
+        third_assignment, second_assignment = third_role.id, second_role.id
         # Two removals at once would leave one super admin: only one may succeed.
         results = await asyncio.gather(
             first_client.delete(f"/api/v1/users/{third.user_id}/roles/{third_assignment}"),
@@ -173,19 +180,14 @@ async def test_at_least_two_super_admins_remain_even_under_concurrent_removals(a
         assert sorted(r.status_code for r in results) == [204, 409]
         refused = next(r for r in results if r.status_code == 409)
         assert refused.json()["code"] == "role.min_super_admins"
-    [(holders,)] = await api.fetch(
-        "SELECT count(*) FROM access.user_roles ur JOIN access.roles r ON r.id = ur.role_id "
-        "WHERE r.key = 'super_admin' AND ur.revoked_at IS NULL"
-    )
-    assert holders == 2
+    assert await api.count("user_roles", {"role_key": RoleKey.SUPER_ADMIN.value, "revoked_at": None}) == 2
 
 
 async def test_removing_the_same_assignment_twice_at_once_is_clean(api: Api) -> None:
     """Locked reads see the current row, so the loser finds the assignment already revoked."""
     target = await api.create_account(roles=(RoleKey.AUDITOR.value,))
-    [(assignment_id,)] = await api.fetch(
-        "SELECT id FROM access.user_roles WHERE user_id = :id", id=target.user_id
-    )
+    [held] = await api.records(UserRole, {"user_id": target.user_id})
+    assignment_id = held.id
     async with api.client() as client:
         await super_admin(api, client)
         path = f"/api/v1/users/{target.user_id}/roles/{assignment_id}"

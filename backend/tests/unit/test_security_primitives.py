@@ -6,10 +6,12 @@ import hashlib
 import threading
 import time
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pyotp
 import pytest
+import segno
 from argon2 import PasswordHasher
 
 from app.platform.security import passwords, tokens, totp
@@ -157,14 +159,42 @@ def test_codes_must_be_six_ascii_digits(code: str) -> None:
     assert totp.match_step(RFC_SECRET, code, datetime.now(UTC)) is None
 
 
-def test_provisioning_uri_and_qr_code() -> None:
+def test_provisioning_uri_carries_the_secret_and_the_parameters_the_server_checks() -> None:
     secret = totp.new_secret()
     assert len(base64.b32decode(secret + "=" * (-len(secret) % 8))) == 20
     uri = totp.provisioning_uri(secret, "person@dev.example")
     assert uri.startswith("otpauth://totp/Sigvitas%20HRMS:person%40dev.example?")
-    qr = totp.qr_svg_data_uri(uri)
-    assert qr.startswith("data:image/svg+xml;base64,")
-    assert b"<svg" in base64.b64decode(qr.split(",", 1)[1])
+    query = parse_qs(urlsplit(uri).query)
+    assert query["secret"] == [secret]
+    assert query["issuer"] == ["Sigvitas HRMS"]
+    # What an authenticator app reads from the QR code: the same key, SHA-1, 6 digits, 30 s.
+    app = pyotp.parse_uri(uri)
+    assert isinstance(app, pyotp.TOTP)
+    assert (app.secret, app.digits, app.interval, app.digest().name) == (secret, 6, 30, "sha1")
+    moment = datetime(2026, 10, 21, 9, 30, 15, tzinfo=UTC)
+    assert totp.match_step(secret, app.at(moment), moment) == totp.step_at(moment)
+
+
+def test_a_code_for_another_key_is_refused() -> None:
+    moment = datetime(2026, 10, 21, 9, 30, 15, tzinfo=UTC)
+    replaced, current = totp.new_secret(), totp.new_secret()
+    code = pyotp.TOTP(replaced).at(moment)
+    candidates = {pyotp.TOTP(current).at(int(moment.timestamp()) + 30 * offset) for offset in (-1, 0, 1)}
+    if code not in candidates:  # one chance in about 330,000 that the keys agree
+        assert totp.match_step(current, code, moment) is None
+
+
+def test_qr_code_is_black_on_white_with_a_full_quiet_zone() -> None:
+    uri = totp.provisioning_uri(totp.new_secret(), "person@dev.example")
+    data_uri = totp.qr_svg_data_uri(uri)
+    assert data_uri.startswith("data:image/svg+xml;base64,")
+    svg = base64.b64decode(data_uri.split(",", 1)[1]).decode()
+    # An opaque white square under the whole symbol, quiet zone included, so it scans on any
+    # page background (dark theme too), and black modules.
+    width, _ = segno.make(uri, error="m").symbol_size(border=totp.QR_QUIET_ZONE)
+    assert f'<path fill="#fff" d="M0 0h{width}v{width}h-{width}z"/>' in svg
+    assert 'stroke="#000"' in svg
+    assert totp.QR_QUIET_ZONE == 4
 
 
 # --- field encryption --------------------------------------------------------------------

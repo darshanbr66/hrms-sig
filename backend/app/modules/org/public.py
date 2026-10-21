@@ -5,16 +5,16 @@
 - `inactive_units` tells a caller which of the units it is about to place someone in are
   missing or archived.
 - `location_time_zones` gives the IANA time zone of each location, for work dates.
+- `missing_units` names the department or location references that point at nothing, for
+  records that refer to them (there are no foreign keys in MongoDB).
 """
 
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.org.models import Department, Designation, Location, OrgUnitStatus
+from app.platform.db import Session
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,7 @@ class UnitNames:
 
 
 async def unit_names(
-    session: AsyncSession,
+    session: Session,
     *,
     department_ids: Collection[uuid.UUID] = (),
     designation_ids: Collection[uuid.UUID] = (),
@@ -36,8 +36,7 @@ async def unit_names(
     ) -> dict[uuid.UUID, str]:
         if not ids:
             return {}
-        rows = (await session.execute(select(model.id, model.name).where(model.id.in_(set(ids))))).all()
-        return {row.id: row.name for row in rows}
+        return {row.id: row.name for row in await session.find(model, {"id": {"$in": list(set(ids))}})}
 
     return UnitNames(
         departments=await names(Department, department_ids),
@@ -47,34 +46,40 @@ async def unit_names(
 
 
 async def inactive_units(
-    session: AsyncSession, *, department_id: uuid.UUID, designation_id: uuid.UUID, location_id: uuid.UUID
+    session: Session, *, department_id: uuid.UUID, designation_id: uuid.UUID, location_id: uuid.UUID
 ) -> list[str]:
     """The fields (`department_id`, ...) naming a unit that does not exist or is archived.
 
-    The units are locked FOR SHARE until the caller commits, so archiving one (which locks it
-    FOR UPDATE and then counts the people placed in it) waits for this placement, or this
-    placement waits for the archive and then sees it archived."""
+    The units are locked until the caller commits, so archiving one (which locks it and then
+    counts the people placed in it) and this placement never both succeed: one of the two meets
+    a write conflict and changes nothing."""
     found: list[str] = []
-    for field, model, unit_id in (
+    units: tuple[tuple[str, type[Department | Designation | Location], uuid.UUID], ...] = (
         ("department_id", Department, department_id),
         ("designation_id", Designation, designation_id),
         ("location_id", Location, location_id),
-    ):
-        query = select(model.status).where(model.id == unit_id).with_for_update(read=True)
-        status = (await session.execute(query)).scalar_one_or_none()
-        if status != OrgUnitStatus.ACTIVE.value:
+    )
+    for field, model, unit_id in units:
+        unit = await session.get(model, unit_id, for_update=True)
+        if unit is None or unit.status != OrgUnitStatus.ACTIVE.value:
             found.append(field)
     return found
 
 
-async def location_time_zones(
-    session: AsyncSession, location_ids: Collection[uuid.UUID]
-) -> dict[uuid.UUID, str]:
+async def location_time_zones(session: Session, location_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, str]:
     if not location_ids:
         return {}
-    rows = (
-        await session.execute(
-            select(Location.id, Location.time_zone).where(Location.id.in_(set(location_ids)))
-        )
-    ).all()
-    return {row.id: row.time_zone for row in rows}
+    locations = await session.find(Location, {"id": {"$in": list(set(location_ids))}})
+    return {location.id: location.time_zone for location in locations}
+
+
+async def missing_units(
+    session: Session, *, department_id: uuid.UUID | None = None, location_id: uuid.UUID | None = None
+) -> list[str]:
+    """The fields (`department_id`, `location_id`) naming a unit that does not exist."""
+    missing: list[str] = []
+    if department_id is not None and await session.get(Department, department_id) is None:
+        missing.append("department_id")
+    if location_id is not None and await session.get(Location, location_id) is None:
+        missing.append("location_id")
+    return missing

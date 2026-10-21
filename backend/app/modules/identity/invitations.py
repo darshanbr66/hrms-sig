@@ -21,9 +21,6 @@ an invite need the same permission. All are audited.
 
 import uuid
 
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import notifications
 from app.modules.identity import public as identity
 from app.modules.identity import repository as repo
@@ -34,7 +31,7 @@ from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.security.emails import canonical_email
 
@@ -90,20 +87,18 @@ class InvitationService:
                 raise RuntimeError("an invited account vanished in its own transaction")
             return user
 
-    async def _create(self, session: AsyncSession, address: str, employee_id: uuid.UUID | None) -> uuid.UUID:
+    async def _create(self, session: Session, address: str, employee_id: uuid.UUID | None) -> uuid.UUID:
         try:
-            async with session.begin_nested():
-                return await identity.create_invited_account(session, address, employee_id=employee_id)
-        except IntegrityError as exc:
-            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-            if constraint == "uq_users_email":
+            return await identity.create_invited_account(session, address, employee_id=employee_id)
+        except UniqueViolationError as exc:
+            if exc.index == "uq_users_email":
                 raise _conflict("user.email_in_use", "An account with this email already exists.") from exc
-            if constraint == "uq_users_employee_id":
+            if exc.index == "uq_users_employee_id":
                 raise _conflict("user.employee_has_account", "This employee already has an account.") from exc
             raise
 
     async def _check_employee_link(
-        self, session: AsyncSession, admin: Actor, address: str, employee_id: uuid.UUID
+        self, session: Session, admin: Actor, address: str, employee_id: uuid.UUID
     ) -> None:
         # Linking gives the account the employee's self-service access: HR authority over
         # that employee is required, and existence is not confirmed to anyone without it.

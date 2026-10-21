@@ -1,25 +1,26 @@
 """Permission catalog, role matrix boundaries and the engine's decisions (docs/authorization-model.md).
 
 The engine runs here against an in-memory `Relationships`, so each rule is checked in
-isolation; the integration matrix checks the same rules against PostgreSQL and HTTP.
+isolation; the integration matrix checks the same rules against MongoDB and HTTP.
 """
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import ColumnElement, Select, Uuid, column, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.platform.authz.catalog import CATALOG, PERMISSIONS, Permission, Scope
 from app.platform.authz.context import UNRESTRICTED, Actor, Constraint, SessionScope
 from app.platform.authz.engine import STEP_UP_WINDOW, AccessDenied, Authorizer, Placement, StepUpRequired
 from app.platform.authz.roles import ACCOUNT_BASELINE, DATA_ROLES, ROLE_DEFINITIONS, RoleKey
+from app.platform.db import Session, TenantScopeError
 
 NOW = datetime(2030, 6, 1, 9, 0, tzinfo=UTC)
-# The fake relationships never touch the database.
-NO_SESSION = cast(AsyncSession, None)
+ORGANIZATION = uuid.uuid4()
+# The fake relationships never touch the database; decisions only check the organization.
+NO_SESSION = cast(Session, SimpleNamespace(tenant=ORGANIZATION))
 TODAY = NOW.date()
 
 # --- catalog and matrix ------------------------------------------------------------------
@@ -118,16 +119,23 @@ class FakeRelationships:
     ) -> bool:
         return employee_id in self.team.get((manager_employee_id, on), set())
 
-    def team_member_ids_query(self, manager_employee_id: uuid.UUID, on: date) -> Select[uuid.UUID]:
-        return select(column("team_member", Uuid()))
+    async def team_member_ids(
+        self, session: Any, manager_employee_id: uuid.UUID, on: date
+    ) -> frozenset[uuid.UUID]:
+        return frozenset(self.team.get((manager_employee_id, on), set()))
 
     async def placement(self, session: Any, employee_id: uuid.UUID, on: date) -> Placement | None:
         return self.placements.get(employee_id)
 
-    def placed_employee_ids_query(
-        self, department_id: uuid.UUID | None, location_id: uuid.UUID | None, on: date
-    ) -> Select[uuid.UUID]:
-        return select(column("placed", Uuid()))
+    async def placed_employee_ids(
+        self, session: Any, department_id: uuid.UUID | None, location_id: uuid.UUID | None, on: date
+    ) -> frozenset[uuid.UUID]:
+        return frozenset(
+            employee
+            for employee, placement in self.placements.items()
+            if department_id in (None, placement.department_id)
+            and location_id in (None, placement.location_id)
+        )
 
 
 class FixedClock:
@@ -146,6 +154,7 @@ def actor(
 ) -> Actor:
     grants = {key: (constraints.get(key.replace(".", "_"), UNRESTRICTED),) for key in keys}
     return Actor(
+        organization_id=ORGANIZATION,
         user_id=uuid.uuid4(),
         session_id=uuid.uuid4(),
         session_scope=SessionScope.FULL,
@@ -258,22 +267,37 @@ async def test_step_up_is_checked_only_after_the_permission(engine: Authorizer) 
         await engine.require(NO_SESSION, actor(), "user.disable")
 
 
-def test_scope_filter_unions_held_scopes_and_refuses_with_none(engine: Authorizer) -> None:
-    employee_id: ColumnElement[uuid.UUID] = column("employee_id", Uuid())
+async def test_scope_filter_unions_held_scopes_and_refuses_with_none(engine: Authorizer) -> None:
     with pytest.raises(AccessDenied):
-        engine.scope_filter(actor(), "attendance.read", employee_id)
-    unrestricted = engine.scope_filter(actor("attendance.read.all"), "attendance.read", employee_id)
-    assert str(unrestricted) == "true"
-    combined = engine.scope_filter(
-        actor("attendance.read.self", "attendance.read.team"), "attendance.read", employee_id
+        await engine.scope_filter(NO_SESSION, actor(), "attendance.read", "employee_id")
+    unrestricted = await engine.scope_filter(
+        NO_SESSION, actor("attendance.read.all"), "attendance.read", "employee_id"
     )
-    rendered = str(combined)
-    assert " OR " in rendered
-    assert "employee_id IN" in rendered
-    unlinked = engine.scope_filter(
-        actor("attendance.read.self", employee_id=None), "attendance.read", employee_id
+    assert unrestricted == {}
+    combined = await engine.scope_filter(
+        NO_SESSION, actor("attendance.read.self", "attendance.read.team"), "attendance.read", "employee_id"
     )
-    assert str(unlinked) == "false"
+    assert set(combined["employee_id"]["$in"]) == {MANAGER, REPORT}
+    restricted = await engine.scope_filter(
+        NO_SESSION,
+        actor("attendance.read.all", attendance_read_all=Constraint(department_id=DEPT_B)),
+        "attendance.read",
+        "employee_id",
+    )
+    assert restricted == {"employee_id": {"$in": [OUTSIDER]}}
+    unlinked = await engine.scope_filter(
+        NO_SESSION, actor("attendance.read.self", employee_id=None), "attendance.read", "employee_id"
+    )
+    assert unlinked == {"employee_id": {"$in": []}}
+
+
+async def test_decisions_are_made_only_in_the_actors_organization(engine: Authorizer) -> None:
+    other = cast(Session, SimpleNamespace(tenant=uuid.uuid4()))
+    hr = actor("employee.lifecycle.manage")
+    with pytest.raises(TenantScopeError):
+        await engine.require(other, hr, "employee.lifecycle.manage", subject_employee_id=REPORT)
+    with pytest.raises(TenantScopeError):
+        await engine.scope_filter(other, actor("attendance.read.all"), "attendance.read", "employee_id")
 
 
 def test_scopes_are_ordered(engine: Authorizer) -> None:

@@ -3,6 +3,7 @@
 import secrets
 from datetime import date, timedelta
 
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Api
 from tests.people_data import add_job, create_employee, create_org_units
@@ -74,10 +75,10 @@ async def test_hr_admin_builds_a_calendar_and_employees_see_their_locations_holi
             await client.post("/api/v1/holiday-calendars", json={"name": "No", "year": year})
         ).status_code == 403
 
-    actions = await api.fetch(
-        "SELECT action FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id", id=calendar["id"]
+    actions = await api.records(
+        AuditLogRecord, {"target_id": calendar["id"]}, sort=[("recorded_at", 1), ("id", 1)]
     )
-    assert [row[0] for row in actions] == [
+    assert [row.action for row in actions] == [
         "holiday.calendar.created",
         "holiday.added",
         "holiday.calendar.location_assigned",

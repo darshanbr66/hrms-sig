@@ -28,10 +28,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Final
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.documents.models import (
     Document,
     DocumentCategory,
@@ -56,7 +52,7 @@ from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer, StepUpRequired
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import CASE_INSENSITIVE, Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.files import DOWNLOAD_SECONDS, FileStore, FileStoreError
 from app.platform.ratelimit import RateLimiter, RateLimitRule, RateLimitScope
@@ -86,12 +82,12 @@ def conflict(code: str, detail: str) -> ProblemError:
     return ProblemError(ProblemType.CONFLICT, detail=detail, extensions={"code": code})
 
 
-def storage_missing() -> ProblemError:
+def uploads_disabled() -> ProblemError:
     return ProblemError(
         ProblemType.TEMPORARILY_UNAVAILABLE,
-        detail="File storage is not set up, so documents cannot be stored or downloaded. "
-        "Ask your system administrator to configure it.",
-        extensions={"code": "files.not_configured"},
+        detail="Document uploads are turned off until virus scanning is set up. "
+        "Ask your system administrator.",
+        extensions={"code": "documents.uploads_disabled"},
     )
 
 
@@ -154,7 +150,8 @@ class DocumentService:
         audit: AuditWriter,
         authorizer: Authorizer,
         rate_limiter: RateLimiter,
-        store: FileStore | None,
+        store: FileStore,
+        uploads_enabled: bool,
     ) -> None:
         self._db = database
         self._clock = clock
@@ -162,24 +159,26 @@ class DocumentService:
         self._authz = authorizer
         self._limiter = rate_limiter
         self._store = store
+        self._uploads_enabled = uploads_enabled
 
     @property
-    def configured(self) -> bool:
-        return self._store is not None
+    def uploads_ready(self) -> bool:
+        return self._uploads_enabled
 
-    def _require_store(self) -> FileStore:
-        if self._store is None:
-            raise storage_missing()
+    def _require_upload_store(self) -> FileStore:
+        """Uploads need the virus scanner behind them (DOC-5)."""
+        if not self._uploads_enabled:
+            raise uploads_disabled()
         return self._store
 
     # --- categories ----------------------------------------------------------------------------
 
     async def categories(self, *, include_archived: bool) -> list[DocumentCategory]:
-        query = select(DocumentCategory).order_by(func.lower(DocumentCategory.name), DocumentCategory.id)
-        if not include_archived:
-            query = query.where(DocumentCategory.status == Status.ACTIVE.value)
+        query = {} if include_archived else {"status": Status.ACTIVE.value}
         async with self._db.unit_of_work() as session:
-            return list(await session.scalars(query))
+            return await session.find(
+                DocumentCategory, query, sort=[("name", 1), ("id", 1)], collation=CASE_INSENSITIVE
+            )
 
     async def create_category(
         self, actor: Actor, context: RequestContext, values: Mapping[str, Any]
@@ -190,9 +189,8 @@ class DocumentService:
             category = DocumentCategory(**values)
             session.add(category)
             try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
+                await session.flush()
+            except UniqueViolationError as exc:
                 raise conflict(
                     "document.category_code_in_use", "Another category already uses this code."
                 ) from exc
@@ -231,9 +229,7 @@ class DocumentService:
     ) -> DocumentCategory:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "document.category.manage")
-            category = await session.get(
-                DocumentCategory, category_id, with_for_update=True, populate_existing=True
-            )
+            category = await session.get(DocumentCategory, category_id, for_update=True)
             if category is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             check_version(category.version, expected_version)
@@ -243,9 +239,7 @@ class DocumentService:
             }
             self._check_category(merged)
             if "sensitivity" in values and values["sensitivity"] != category.sensitivity:
-                in_use = (
-                    await session.execute(select(func.count()).where(Document.category_id == category.id))
-                ).scalar_one()
+                in_use = await session.count(Document, {"category_id": category.id})
                 if in_use:
                     raise conflict(
                         "document.category_in_use",
@@ -277,7 +271,7 @@ class DocumentService:
     # --- who may do what -----------------------------------------------------------------------
 
     async def _read_permission(
-        self, session: AsyncSession, actor: Actor, owner: uuid.UUID | None, category: DocumentCategory
+        self, session: Session, actor: Actor, owner: uuid.UUID | None, category: DocumentCategory
     ) -> str | None:
         """The narrowest permission that lets the actor read documents of this owner and
         category, or None. Raises StepUpRequired for a sensitive category without step-up."""
@@ -307,7 +301,7 @@ class DocumentService:
             return key
         return None
 
-    async def _can_manage(self, session: AsyncSession, actor: Actor, owner: uuid.UUID | None) -> str | None:
+    async def _can_manage(self, session: Session, actor: Actor, owner: uuid.UUID | None) -> str | None:
         key = "document.company.manage" if owner is None else "document.manage.all"
         if not actor.holds(key):
             return None
@@ -328,15 +322,13 @@ class DocumentService:
     # --- reading -------------------------------------------------------------------------------
 
     async def _records(
-        self, session: AsyncSession, actor: Actor, documents: Sequence[Document]
+        self, session: Session, actor: Actor, documents: Sequence[Document]
     ) -> tuple[list[DocumentRecord], int, set[str]]:
         categories = (
             {
                 c.id: c
-                for c in await session.scalars(
-                    select(DocumentCategory).where(
-                        DocumentCategory.id.in_({d.category_id for d in documents})
-                    )
+                for c in await session.find(
+                    DocumentCategory, {"id": {"$in": list({d.category_id for d in documents})}}
                 )
             }
             if documents
@@ -344,10 +336,10 @@ class DocumentService:
         )
         versions: dict[uuid.UUID, list[DocumentVersion]] = {d.id: [] for d in documents}
         if documents:
-            for version in await session.scalars(
-                select(DocumentVersion)
-                .where(DocumentVersion.document_id.in_(list(versions)))
-                .order_by(DocumentVersion.document_id, DocumentVersion.version_no.desc())
+            for version in await session.find(
+                DocumentVersion,
+                {"document_id": {"$in": list(versions)}},
+                sort=[("document_id", 1), ("version_no", -1)],
             ):
                 versions[version.document_id].append(version)
         names = await people.employee_names(
@@ -385,12 +377,10 @@ class DocumentService:
         async with self._db.unit_of_work() as session:
             if not await people.employee_exists(session, owner):
                 raise ProblemError(ProblemType.NOT_FOUND)
-            query = select(Document).where(Document.owner_employee_id == owner)
+            query: dict[str, Any] = {"owner_employee_id": owner}
             if not include_archived:
-                query = query.where(Document.status == Status.ACTIVE.value)
-            documents = list(
-                await session.scalars(query.order_by(Document.created_at.desc(), Document.id.desc()))
-            )
+                query["status"] = Status.ACTIVE.value
+            documents = await session.find(Document, query, sort=[("created_at", -1), ("id", -1)])
             if owner != actor.employee_id and not await self._reaches(session, actor, owner):
                 # Someone outside every document scope learns nothing about the record.
                 raise ProblemError(ProblemType.NOT_FOUND)
@@ -411,7 +401,7 @@ class DocumentService:
                 )
             return Listing(records, hidden)
 
-    async def _reaches(self, session: AsyncSession, actor: Actor, owner: uuid.UUID) -> bool:
+    async def _reaches(self, session: Session, actor: Actor, owner: uuid.UUID) -> bool:
         """Whether some document permission the actor holds covers this employee."""
         for key in (
             "document.read.team",
@@ -432,12 +422,10 @@ class DocumentService:
 
     async def company_documents(self, actor: Actor, *, include_archived: bool) -> Listing:
         async with self._db.unit_of_work() as session:
-            query = select(Document).where(Document.owner_employee_id.is_(None))
+            query: dict[str, Any] = {"owner_employee_id": None}
             if not include_archived:
-                query = query.where(Document.status == Status.ACTIVE.value)
-            documents = list(
-                await session.scalars(query.order_by(Document.created_at.desc(), Document.id.desc()))
-            )
+                query["status"] = Status.ACTIVE.value
+            documents = await session.find(Document, query, sort=[("created_at", -1), ("id", -1)])
             records, hidden, _ = await self._records(session, actor, documents)
             return Listing(records, hidden)
 
@@ -445,8 +433,8 @@ class DocumentService:
         async with self._db.unit_of_work() as session:
             return await self._readable(session, actor, document_id)
 
-    async def _readable(self, session: AsyncSession, actor: Actor, document_id: uuid.UUID) -> DocumentRecord:
-        document = await session.get(Document, document_id, populate_existing=True)
+    async def _readable(self, session: Session, actor: Actor, document_id: uuid.UUID) -> DocumentRecord:
+        document = await session.get(Document, document_id)
         if document is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         category = await session.get(DocumentCategory, document.category_id)
@@ -483,7 +471,7 @@ class DocumentService:
                     "document.unavailable",
                     "This file did not pass the virus check, so it cannot be downloaded. Upload it again.",
                 )
-            store = self._require_store()
+            store = self._store
             await self._audit.record(
                 session,
                 AuditEvent(
@@ -541,7 +529,7 @@ class DocumentService:
                 raise field_error(
                     "expires_on", "document.expiry_required", "This category needs an expiry date."
                 )
-            store = self._require_store()
+            store = self._require_upload_store()
             document = Document(
                 owner_employee_id=owner,
                 category_id=category.id,
@@ -583,7 +571,7 @@ class DocumentService:
         self, actor: Actor, context: RequestContext, document_id: uuid.UUID, upload: Upload
     ) -> DocumentRecord:
         async with self._db.unit_of_work() as session:
-            document = await session.get(Document, document_id, with_for_update=True, populate_existing=True)
+            document = await session.get(Document, document_id, for_update=True)
             category = await session.get(DocumentCategory, document.category_id) if document else None
             if document is None or category is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
@@ -593,14 +581,11 @@ class DocumentService:
             )
             if document.status != Status.ACTIVE:
                 raise conflict("document.archived", "This document is archived. Upload it as a new document.")
-            store = self._require_store()
-            number = (
-                await session.execute(
-                    select(func.coalesce(func.max(DocumentVersion.version_no), 0)).where(
-                        DocumentVersion.document_id == document.id
-                    )
-                )
-            ).scalar_one() + 1
+            store = self._require_upload_store()
+            latest = await session.find_one(
+                DocumentVersion, {"document_id": document.id}, sort=[("version_no", -1)]
+            )
+            number = (latest.version_no if latest else 0) + 1
             version = await self._store_version(session, store, actor, document, number=number, upload=upload)
             document.version += 1
             document.updated_at = self._clock.now()
@@ -627,7 +612,7 @@ class DocumentService:
 
     async def _upload_permission(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         owner: uuid.UUID | None,
         category: DocumentCategory,
@@ -649,7 +634,7 @@ class DocumentService:
 
     async def _store_version(
         self,
-        session: AsyncSession,
+        session: Session,
         store: FileStore,
         actor: Actor,
         document: Document,
@@ -684,7 +669,7 @@ class DocumentService:
         return version
 
     async def _tell_owner(
-        self, session: AsyncSession, actor: Actor, document: Document, category: DocumentCategory
+        self, session: Session, actor: Actor, document: Document, category: DocumentCategory
     ) -> None:
         if document.owner_employee_id is None or document.owner_employee_id == actor.employee_id:
             return
@@ -716,7 +701,7 @@ class DocumentService:
         values: Mapping[str, Any],
     ) -> DocumentRecord:
         async with self._db.unit_of_work() as session:
-            document = await session.get(Document, document_id, with_for_update=True, populate_existing=True)
+            document = await session.get(Document, document_id, for_update=True)
             category = await session.get(DocumentCategory, document.category_id) if document else None
             if document is None or category is None:
                 raise ProblemError(ProblemType.NOT_FOUND)

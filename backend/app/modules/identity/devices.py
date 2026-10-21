@@ -19,10 +19,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import repository as repo
 from app.modules.identity.models import DeviceRevokedReason, TrustedDevice
+from app.platform.db import Session
 from app.platform.security import tokens
 
 DEVICE_COOKIE: Final = "__Host-sv_dev"
@@ -50,7 +49,7 @@ def digest_of(device_token: str | None) -> bytes | None:
 
 
 async def recognize(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     device_token: str | None,
@@ -79,7 +78,7 @@ async def recognize(
 
 
 async def revoke_all(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     reason: DeviceRevokedReason,

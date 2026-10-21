@@ -20,6 +20,7 @@ DIGITS: Final = 6
 TOLERANCE_STEPS: Final = 1
 SECRET_BYTES: Final = 20  # 160 bits, the RFC 4226 recommendation
 ISSUER: Final = "Sigvitas HRMS"
+QR_QUIET_ZONE: Final = 4  # modules
 
 
 def new_secret() -> str:
@@ -55,7 +56,20 @@ def provisioning_uri(secret: str, account_name: str) -> str:
 
 
 def qr_svg_data_uri(uri: str) -> str:
-    """The provisioning URI as an SVG QR code in a data: URI, for an <img> element."""
+    """The provisioning URI as an SVG QR code in a data: URI, for an <img> element.
+
+    Black modules on an opaque white background with the standard 4-module quiet zone
+    (ISO/IEC 18004), so it scans whatever the page behind it looks like: without its own
+    background the code was black on the dark theme's near-black surface."""
     buffer = io.BytesIO()
-    segno.make(uri, error="m").save(buffer, kind="svg", scale=4, border=2, xmldecl=False, svgns=True)
+    segno.make(uri, error="m").save(
+        buffer,
+        kind="svg",
+        scale=4,
+        border=QR_QUIET_ZONE,
+        dark="#000",
+        light="#fff",
+        xmldecl=False,
+        svgns=True,
+    )
     return "data:image/svg+xml;base64," + base64.b64encode(buffer.getvalue()).decode()

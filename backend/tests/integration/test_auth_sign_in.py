@@ -1,6 +1,6 @@
 """Two-step sign-in, lockout and throttling (docs/security-architecture.md §3.3-3.4, api-architecture §5).
 
-Runs against real PostgreSQL and Redis. Every failure must answer identically, so no response
+Runs against a real MongoDB replica set. Every failure must answer identically, so no response
 reveals whether an account exists, is locked or is disabled.
 """
 
@@ -11,13 +11,19 @@ import httpx
 import pyotp
 import pytest
 from argon2 import PasswordHasher
-from pydantic import SecretStr
+from pymongo.errors import ServerSelectionTimeoutError
 
-from app.modules.identity.models import UserStatus
-from tests.api_support import PASSWORD, Account, Api, running_api
-from tests.conftest import PostgresServer, RedisServer
+from app.modules.identity.models import Credential, User, UserStatus
+from tests.api_support import PASSWORD, Account, Api
 
 LOGIN = "/api/v1/auth/login"
+
+
+async def failed_logins(api: Api, account: Account) -> int:
+    [user] = await api.records(User, {"id": account.user_id})
+    return user.failed_login_count
+
+
 LOGIN_MFA = "/api/v1/auth/login/mfa"
 
 
@@ -91,19 +97,13 @@ async def test_a_wrong_code_counts_as_a_failure_and_the_challenge_is_single_use(
         token = (await password_step(client, account.email)).json()["mfa_token"]
         wrong = await client.post(LOGIN_MFA, json={"mfa_token": token, "code": "000000"})
         assert_generic_failure(wrong)
-        [(count,)] = await api.fetch(
-            "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-        )
-        assert count == 1
+        assert await failed_logins(api, account) == 1
         right = await client.post(LOGIN_MFA, json={"mfa_token": token, "code": account.code(api.clock.now())})
         assert right.status_code == 200
         again = await client.post(LOGIN_MFA, json={"mfa_token": token, "code": account.code(api.clock.now())})
         assert again.status_code == 401
         assert again.json()["code"] == "login.challenge_expired"
-    [(count,)] = await api.fetch(
-        "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-    )
-    assert count == 0
+    assert await failed_logins(api, account) == 0
 
 
 async def test_a_totp_code_cannot_be_replayed(api: Api) -> None:
@@ -152,14 +152,10 @@ async def test_ten_failures_lock_the_account_without_revealing_it(api: Api) -> N
             assert_generic_failure(await password_step(client, account.email, "a wrong but long password"))
         # The right password is now refused with the same answer as a wrong one.
         assert_generic_failure(await password_step(client, account.email))
-    [(locked_until,)] = await api.fetch(
-        "SELECT locked_until FROM identity.users WHERE id = :id", id=account.user_id
-    )
-    assert locked_until > api.clock.now()
-    events = await api.fetch(
-        "SELECT event_type FROM audit.security_events WHERE user_id = :id AND event_type = 'account.locked'",
-        id=account.user_id,
-    )
+    [user] = await api.records(User, {"id": account.user_id})
+    assert user.locked_until is not None
+    assert user.locked_until > api.clock.now()
+    events = await api.find("security_events", {"user_id": account.user_id, "event_type": "account.locked"})
     assert len(events) == 1
     # From the sixth failure on, attempts are slowed: 1, 2, 4, 8 ... seconds.
     assert api.sleep.calls
@@ -178,10 +174,7 @@ async def test_failures_outside_the_window_start_a_new_count(api: Api) -> None:
         api.clock.advance(timedelta(minutes=16))
         await password_step(client, account.email, "a wrong but long password")
         assert (await password_step(client, account.email)).status_code == 200
-    [(count,)] = await api.fetch(
-        "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-    )
-    assert count == 1
+    assert await failed_logins(api, account) == 1
 
 
 async def test_concurrent_failures_are_all_counted(api: Api) -> None:
@@ -191,10 +184,7 @@ async def test_concurrent_failures_are_all_counted(api: Api) -> None:
         await asyncio.gather(
             *(password_step(client, account.email, "a wrong but long password") for _ in range(6))
         )
-    [(count,)] = await api.fetch(
-        "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-    )
-    assert count == 6
+    assert await failed_logins(api, account) == 6
 
 
 async def test_twenty_failures_from_one_address_block_it(api: Api) -> None:
@@ -209,24 +199,34 @@ async def test_twenty_failures_from_one_address_block_it(api: Api) -> None:
     # Another address is not affected.
     async with api.client() as client:
         assert (await password_step(client, account.email)).status_code == 200
-    events = await api.fetch(
-        "SELECT details->>'rule' FROM audit.security_events WHERE event_type = 'ratelimit.tripped' "
-        "AND ip = '198.51.100.20'"
+    # The address is not tied to an account, so the event has no organization: read it directly.
+    events = (
+        await api.worker_database.collection("security_events")
+        .find({"event_type": "ratelimit.tripped", "ip": "198.51.100.20"})
+        .to_list()
     )
-    assert events == [("login.ip_block",)]
+    assert [event["details"]["rule"] for event in events] == ["login.ip_block"]
 
 
 async def test_sign_in_fails_closed_when_the_rate_limit_store_is_down(
-    migrated_postgres: PostgresServer, redis: RedisServer
+    api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    unreachable = SecretStr("redis://hrms_ratelimit:x@127.0.0.1:1/0")
-    async with running_api(migrated_postgres, redis, redis_url=unreachable) as api:
-        account = await api.create_account()
-        async with api.client() as client:
-            response = await password_step(client, account.email)
-            assert response.status_code == 503
-            assert response.json()["type"] == "/problems/temporarily-unavailable"
-            assert "Retry-After" in response.headers
+    class Unreachable:
+        """The counters' collection while MongoDB cannot be reached."""
+
+        async def find_one(self, *_: object, **__: object) -> None:
+            raise ServerSelectionTimeoutError("no primary")
+
+        async def find_one_and_update(self, *_: object, **__: object) -> None:
+            raise ServerSelectionTimeoutError("no primary")
+
+    account = await api.create_account()
+    monkeypatch.setattr(api.app.state.identity_service._limiter, "_collection", Unreachable())
+    async with api.client() as client:
+        response = await password_step(client, account.email)
+        assert response.status_code == 503
+        assert response.json()["type"] == "/problems/temporarily-unavailable"
+        assert "Retry-After" in response.headers
 
 
 async def test_recovery_code_gives_an_enrolment_only_session(api: Api) -> None:
@@ -265,12 +265,10 @@ async def test_recovery_code_gives_an_enrolment_only_session(api: Api) -> None:
         token = (await password_step(client, account.email)).json()["mfa_token"]
         reused = await client.post(LOGIN_MFA, json={"mfa_token": token, "recovery_code": codes[0]})
         assert_generic_failure(reused)
-    events = await api.fetch(
-        "SELECT severity FROM audit.security_events "
-        "WHERE user_id = :id AND event_type = 'mfa.recovery_code_used'",
-        id=account.user_id,
+    events = await api.find(
+        "security_events", {"user_id": account.user_id, "event_type": "mfa.recovery_code_used"}
     )
-    assert events == [("high",)]
+    assert [event["severity"] for event in events] == ["high"]
 
 
 def totp_code(secret: str, api: Api) -> str:
@@ -308,17 +306,13 @@ async def test_unsafe_requests_from_another_origin_are_refused(api: Api) -> None
 async def test_rehash_on_sign_in_when_parameters_change(api: Api, account_with_old_hash: Account) -> None:
     async with api.client() as client:
         await api.sign_in(client, account_with_old_hash)
-    [(password_hash,)] = await api.fetch(
-        "SELECT password_hash FROM identity.credentials WHERE user_id = :id", id=account_with_old_hash.user_id
-    )
-    assert password_hash.startswith("$argon2id$v=19$m=65536,t=3,p=1$")
+    [credential] = await api.records(Credential, {"user_id": account_with_old_hash.user_id})
+    assert credential.password_hash.startswith("$argon2id$v=19$m=65536,t=3,p=1$")
 
 
 @pytest.fixture
 async def account_with_old_hash(api: Api) -> Account:
     account = await api.create_account()
     weak = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1).hash(PASSWORD)
-    await api.execute(
-        "UPDATE identity.credentials SET password_hash = :h WHERE user_id = :id", h=weak, id=account.user_id
-    )
+    assert await api.update("credentials", {"_id": account.user_id}, {"password_hash": weak}) == 1
     return account

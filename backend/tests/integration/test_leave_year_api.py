@@ -9,7 +9,9 @@ from typing import Any
 
 import httpx
 
+from app.modules.leave.models import LeaveLedgerEntry
 from app.modules.leave.year import accrue_due
+from app.modules.people.models import Employee
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
@@ -31,7 +33,8 @@ async def setup(api: Api, joined: date, **policy: Any) -> Setup:
         units = await create_org_units(session)
         employee = await create_employee(session, joined=joined)
         await add_job(session, units, employee, manager_id=None, effective_from=joined)
-    [(code,)] = await api.fetch("SELECT employee_code FROM people.employees WHERE id = :id", id=employee)
+    [stored] = await api.records(Employee, {"id": employee})
+    code = stored.employee_code
     admin = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
     type_code = fake_code("LT")
     async with api.client() as client:
@@ -64,12 +67,12 @@ async def setup(api: Api, joined: date, **policy: Any) -> Setup:
 
 
 async def ledger(api: Api, s: Setup) -> list[tuple[str, Decimal]]:
-    rows = await api.fetch(
-        "SELECT entry_type, amount FROM leave.leave_ledger "
-        "WHERE employee_id = :id ORDER BY effective_date, id",
-        id=s.employee_id,
+    rows = await api.records(
+        LeaveLedgerEntry,
+        {"employee_id": uuid.UUID(s.employee_id)},
+        sort=[("effective_date", 1), ("id", 1)],
     )
-    return [(row[0], row[1]) for row in rows]
+    return [(row.entry_type, row.amount) for row in rows]
 
 
 async def test_periodic_accrual_with_proration_runs_once_per_period(api: Api) -> None:

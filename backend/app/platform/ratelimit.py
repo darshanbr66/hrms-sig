@@ -1,34 +1,41 @@
-"""Shared rate limiting with ephemeral counters in Redis (docs/architecture.md §3.1, ADR-010).
+"""Shared rate limiting with counters in MongoDB (docs/architecture.md §3.1, ADR-030).
 
-A sliding log per key: a sorted set of request timestamps, trimmed to the window on every
-call. A key expires one window after its last entry, so no key outlives its window.
+A sliding log per key: one document holding the request times (milliseconds) inside the
+window, trimmed and extended by a single atomic update, so concurrent requests on several API
+instances count exactly. The log never holds more entries than the rule's limit, and the
+document expires (TTL index on `expires_at`) one window after its last entry, so no counter
+outlives its window and storage stays bounded.
+
+Counters are written outside the request's transaction: an attempt counts even when the
+request then fails, as a failed sign-in must.
 
 Key names never contain the subject itself (IP address, email, user ID): the subject is
-HMAC-ed with a dedicated key. When Redis cannot be reached, each scope behaves as defined in
-the architecture: authentication, download and export limits fail closed with 503; general
-API limits fail open with a warning for operational alerting.
+HMAC-ed with a dedicated key. Counter documents hold only that key, times and the expiry: no
+password, token or personal data. When the database cannot be reached, each scope behaves as
+defined in the architecture: authentication, download and export limits fail closed with 503;
+general API limits fail open with a warning for operational alerting. Account lockout is not
+a counter here: it is part of the account (identity module), so it survives anything.
 
 Limits and windows are not defined here. Callers build RateLimitRule values from the
 security settings they belong to.
 """
 
+import dataclasses
 import hashlib
 import hmac
 import logging
 import math
 import re
-import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Any, ClassVar, Final
 
-from redis.asyncio import Redis
-from redis.asyncio.retry import Retry
-from redis.backoff import NoBackoff
-from redis.exceptions import RedisError
+from pymongo import ReturnDocument
+from pymongo.errors import PyMongoError
 
 from app.platform.clock import Clock
+from app.platform.db import ID, Database, Document, Index, asc
 from app.platform.errors import ProblemError, ProblemType
 
 logger = logging.getLogger(__name__)
@@ -38,11 +45,29 @@ MAX_WINDOW: Final = timedelta(hours=1)
 # How long a client is told to wait when a fail-closed limit cannot be checked.
 STORE_UNAVAILABLE_RETRY_AFTER_SECONDS: Final = 30
 
-# Connection and command timeouts. A rate-limit check must not hold up a request for long,
-# and the fail-open/fail-closed decision must happen quickly when Redis is down.
-REDIS_TIMEOUT_SECONDS: Final = 0.5
-
 _RULE_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,39}$")
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class RateLimitCounter(Document):
+    """`rate_limit_counters`: one sliding log. Not owned by an organization: the key is an HMAC
+    of the subject, and a network address is not an organization's."""
+
+    __collection__ = "rate_limit_counters"
+    __id_field__ = "key"
+    __tenant_scoped__ = False
+    __indexes__ = (
+        Index(asc("expires_at"), name="ttl_rate_limit_counters_expires_at", expire_after_seconds=0),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "key": {"bsonType": "string", "maxLength": 120},
+        "hits": {"bsonType": "array", "maxItems": 1000, "items": {"bsonType": ["long", "int"]}},
+    }
+
+    key: str
+    hits: list[int]
+    allowed: bool
+    expires_at: datetime
 
 
 class FailureMode(StrEnum):
@@ -71,8 +96,8 @@ class RateLimitRule:
     def __post_init__(self) -> None:
         if not _RULE_NAME.fullmatch(self.name):
             raise ValueError("rule name must be lowercase letters, digits, '_', '.' or '-'")
-        if self.limit < 1:
-            raise ValueError("limit must be at least 1")
+        if not 1 <= self.limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
         if not timedelta(seconds=1) <= self.window <= MAX_WINDOW:
             raise ValueError("window must be between 1 second and 1 hour")
 
@@ -98,49 +123,40 @@ class RateLimitStoreUnavailable(ProblemError):
         )
 
 
-# KEYS[1]: key. ARGV: now_ms, window_ms, limit, member, mode.
-# mode "peek" only reads; "hit" adds an entry if under the limit; "record" always adds one.
-# Returns {allowed (1/0), count after the call, retry_after_ms}. "allowed" reflects the
-# count before the call. retry_after_ms is when the count drops below the limit again.
-_SLIDING_LOG: Final = """
-local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local mode = ARGV[5]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-local count = redis.call('ZCARD', key)
-local allowed = count < limit
-local retry_after = 0
-if not allowed then
-  local entry = redis.call('ZRANGE', key, count - limit, count - limit, 'WITHSCORES')
-  retry_after = tonumber(entry[2]) + window - now
-end
-if mode == 'record' or (mode == 'hit' and allowed) then
-  redis.call('ZADD', key, now, ARGV[4])
-  redis.call('PEXPIRE', key, window)
-  count = count + 1
-end
-return {allowed and 1 or 0, count, retry_after}
-"""
-
-
-def create_redis_client(url: str) -> Redis:
-    return Redis.from_url(
-        url,
-        socket_connect_timeout=REDIS_TIMEOUT_SECONDS,
-        socket_timeout=REDIS_TIMEOUT_SECONDS,
-        retry=Retry(NoBackoff(), 0),
-        decode_responses=False,
-    )
+def _sliding_log(
+    now_ms: int, window_ms: int, limit: int, mode: str, expires_at: datetime
+) -> list[dict[str, Any]]:
+    """The atomic update: drop entries outside the window, decide, then (by mode) add this one.
+    "hit" adds it only when under the limit; "record" always adds it. The log keeps at most
+    `limit` entries, the newest."""
+    live = {
+        "$filter": {
+            "input": {"$ifNull": ["$hits", []]},
+            "as": "h",
+            "cond": {"$gt": ["$$h", now_ms - window_ms]},
+        }
+    }
+    allowed = {"$lt": [{"$size": "$hits"}, limit]}
+    add = True if mode == "record" else "$allowed"
+    return [
+        {"$set": {"hits": live}},
+        {"$set": {"allowed": allowed}},
+        {
+            "$set": {
+                "hits": {
+                    "$cond": [add, {"$slice": [{"$concatArrays": ["$hits", [now_ms]]}, -limit]}, "$hits"]
+                },
+                "expires_at": expires_at,
+            }
+        },
+    ]
 
 
 class RateLimiter:
-    def __init__(self, redis: Redis, *, hmac_key: bytes, clock: Clock) -> None:
-        self._redis = redis
+    def __init__(self, database: Database, *, hmac_key: bytes, clock: Clock) -> None:
+        self._collection = database.collection(RateLimitCounter.__collection__)
         self._hmac_key = hmac_key
         self._clock = clock
-        self._script = redis.register_script(_SLIDING_LOG)
 
     def key_for(self, rule: RateLimitRule, subject: str) -> str:
         digest = hmac.new(self._hmac_key, subject.encode(), hashlib.sha256).hexdigest()
@@ -166,24 +182,40 @@ class RateLimiter:
         return decision
 
     async def _run(self, rule: RateLimitRule, subject: str, mode: str) -> Decision:
-        now_ms = int(self._clock.now().timestamp() * 1000)
+        now = self._clock.now()
+        now_ms = int(now.timestamp() * 1000)
         window_ms = int(rule.window.total_seconds() * 1000)
-        member = f"{now_ms}:{secrets.token_hex(8)}"
+        key = self.key_for(rule, subject)
         try:
-            allowed, count, retry_after_ms = await self._script(
-                keys=[self.key_for(rule, subject)],
-                args=[now_ms, window_ms, rule.limit, member, mode],
-            )
-        except RedisError as exc:
+            if mode == "peek":
+                stored = await self._collection.find_one({ID: key})
+                hits = [hit for hit in (stored or {}).get("hits", []) if hit > now_ms - window_ms]
+                allowed = len(hits) < rule.limit
+                count = len(hits)
+            else:
+                stored = await self._collection.find_one_and_update(
+                    {ID: key},
+                    _sliding_log(now_ms, window_ms, rule.limit, mode, now + rule.window),
+                    upsert=True,
+                    return_document=ReturnDocument.AFTER,
+                )
+                hits = list(stored["hits"]) if stored else []
+                allowed = bool(stored and stored["allowed"])
+                count = len(hits)
+        except PyMongoError as exc:
             return self._store_unavailable(rule, exc)
+        if allowed:
+            return Decision(allowed=True, remaining=max(rule.limit - count, 0), retry_after_seconds=0)
+        oldest_relevant = sorted(hits)[-rule.limit] if len(hits) >= rule.limit else now_ms
+        retry_after_ms = oldest_relevant + window_ms - now_ms
         return Decision(
-            allowed=bool(allowed),
-            remaining=max(rule.limit - int(count), 0),
-            retry_after_seconds=max(math.ceil(int(retry_after_ms) / 1000), 1) if not allowed else 0,
+            allowed=False,
+            remaining=max(rule.limit - count, 0),
+            retry_after_seconds=max(math.ceil(retry_after_ms / 1000), 1),
         )
 
     @staticmethod
-    def _store_unavailable(rule: RateLimitRule, exc: RedisError) -> Decision:
+    def _store_unavailable(rule: RateLimitRule, exc: PyMongoError) -> Decision:
         mode = rule.scope.failure_mode
         logger.warning(
             "ratelimit.store_unavailable",

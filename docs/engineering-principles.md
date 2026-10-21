@@ -14,7 +14,7 @@ Status: Draft v0.1. These rules apply to every change, human- or AI-written.
 8. No invented business data in the product.
 9. No Sigvitas HR policy value in code, migrations or seed data (ADR-026). Grace periods, thresholds, weekly offs, leave types, accrual amounts, leave year start, identifier types and retention periods are configuration. Tests that need values use fixtures named `TEST – …`.
 10. MFA is mandatory for every account. No code path, flag or setting creates a session from a password alone (ADR-008).
-11. Redis holds only ephemeral rate-limit counters (ADR-010). Any other use needs a new ADR.
+11. MongoDB Atlas is the only data store (ADR-030). A second database or store (PostgreSQL, Redis, S3 or other) needs a new ADR. Every query of a tenant-owned collection goes through a tenant-scoped session.
 
 ## 2. Repository layout
 
@@ -22,7 +22,7 @@ Status: Draft v0.1. These rules apply to every change, human- or AI-written.
 hrms/
   CLAUDE.md
   docs/                 # this documentation set
-  backend/              # FastAPI app, Alembic, tests (Python, uv)
+  backend/              # FastAPI app, MongoDB migrations, tests (Python, uv)
   frontend/             # React SPA (TypeScript, pnpm)
   api/openapi.json      # committed contract, generated
   infra/                # Dockerfiles, compose for local, deployment config
@@ -38,17 +38,17 @@ One repository, two applications, one contract.
 | Package / env manager | `uv` with `uv.lock` | `pnpm` with `pnpm-lock.yaml` |
 | Formatting + lint | Ruff (format + lint incl. `S` security, `B`, `UP`, `SIM`, `I`) | ESLint (typescript-eslint strict, react-hooks, jsx-a11y) + Prettier |
 | Types | mypy `--strict` with the Pydantic plugin | `tsc --noEmit` with `strict`, `noUncheckedIndexedAccess` |
-| Tests | pytest, pytest-asyncio, testcontainers (real PostgreSQL) | Vitest + Testing Library; Playwright for end-to-end |
+| Tests | pytest, pytest-asyncio, testcontainers (real MongoDB replica set) | Vitest + Testing Library; Playwright for end-to-end |
 | Architecture checks | import-linter (module boundaries) | ESLint `no-restricted-imports` for feature boundaries |
 | Security | Semgrep, pip-audit, gitleaks | pnpm audit, gitleaks |
 | Accessibility | — | axe-core in Vitest and Playwright |
 
-Local services (PostgreSQL, Redis, object storage emulator, ClamAV, mail catcher) via Docker Compose in `infra/`.
+Local services (MongoDB replica set, ClamAV, mail catcher) via Docker Compose in `infra/`.
 
 ## 4. Dependencies
 
 - Add a dependency only when it removes meaningful complexity or risk that we would otherwise own. Write the reason in the commit message.
-- Prefer the standard library and platform features (PostgreSQL features over new services; CSS over animation libraries; `Intl` over date formatting libraries where sufficient).
+- Prefer the standard library and platform features (MongoDB features over new services; CSS over animation libraries; `Intl` over date formatting libraries where sufficient).
 - Before adding: check maintenance activity, licence (permissive only), transitive dependency count, and known vulnerabilities.
 - One library per concern. No second component library, no second date library, no second HTTP client.
 - Lockfiles committed. Renovate/Dependabot weekly; security updates immediately.
@@ -65,7 +65,7 @@ Local services (PostgreSQL, Redis, object storage emulator, ClamAV, mail catcher
 - Money: `Decimal` only.
 - Errors: raise domain exceptions; a single handler maps them to problem details.
 - Logging: structured, via the platform logger, IDs not personal data.
-- Migrations: follow `database-design.md` §11. One linear Alembic history applies both our schemas and the vendored Procrastinate SQL. Every revision is expand/contract-compatible with the previously deployed code and sets `lock_timeout`. Large backfills run as batched jobs. Staging and production are forward-only; `downgrade()` exists for local development and CI only.
+- Migrations: `python -m app.cli migrate` applies model declarations (collections, `$jsonSchema` validators, indexes; never drops anything) and numbered, idempotent data migrations (`migrations/__init__.py`). A change must work with the previously deployed code: tighten a validator only after the code that satisfies it has shipped. Large backfills run as batched jobs. There is no downgrade; fix forward.
 - Domain rules for attendance, leave and (later) payroll are pure functions that take effective-dated policy objects as parameters. They read no settings, environment variables or constants for policy values.
 
 ## 6. Frontend rules
@@ -86,10 +86,10 @@ Local services (PostgreSQL, Redis, object storage emulator, ClamAV, mail catcher
 |---|---|---|
 | Domain unit tests | Attendance derivation, leave day counting, accrual, carry-forward/lapse, SoD rules, permission evaluation, validation | Exhaustive for rules; edge cases (midnight shifts, DST-free zones and zones with DST, half days, holidays on weekly offs, leap years, leave years starting mid-calendar-year) |
 | Policy independence | The same attendance and leave scenarios run against at least two deliberately different test policy sets | Proves no policy value is hard-coded |
-| Security invariants | MFA invariants (no password-only session; last factor cannot be removed), elevation and break-glass limits, audit tamper detection (modify, delete, insert, drop partition, rewrite without key), Redis-down behaviour | Every commit |
-| Migrations | Single Alembic head; `upgrade head → downgrade base → upgrade head` for application revisions; grants and catalog checks after upgrade; vendored Procrastinate SQL checksums | Every commit |
+| Security invariants | MFA invariants (no password-only session; last factor cannot be removed), elevation and break-glass limits, audit tamper detection (modify, delete, insert, remove a month, rewrite without key, truncation against the witness), database-down behaviour of the rate limits | Every commit |
+| Database guarantees | Validators refuse malformed documents; uniqueness; append-only and set-once rules; each database user's privileges (`scripts/mongo_roles.py`); tenant isolation; migrate is idempotent | Every commit |
 | Authorization matrix | Every endpoint × every role × {own, team, other, other-department} record | 100% of endpoints; generated from route metadata |
-| API integration | Endpoints against a real PostgreSQL (testcontainers), including constraints and triggers | All MVP endpoints |
+| API integration | Endpoints against a real MongoDB replica set (testcontainers) with the production database users and roles | All MVP endpoints |
 | Contract | Committed OpenAPI matches the app; frontend types regenerate cleanly | Every commit |
 | Frontend component | Design-system components, forms, a11y checks | All design-system components |
 | End-to-end | Critical journeys: invite → activate → MFA; clock in/break/out; correction request → approval; leave apply → approve → balance; document upload → download; deactivate user → session ends | Every release; smoke subset every commit |
@@ -137,4 +137,4 @@ Tests never use production data. Fixtures use obviously fake data.
 - Every deployment follows `database-design.md` §11: one image digest, PITR confirmed, migration job as `hrms_migrator`, post-migration checks, then worker, then API, then smoke tests. The same digest must have deployed to staging first.
 - Feature flags (settings-based, simple booleans) for staged rollout; removed once a feature is fully live.
 - Incident basics: alert on error-rate spikes, job failures, audit chain mismatch, unusual download/export volume, login failure spikes.
-- Runbooks in `docs/runbooks/` from Phase 1: restore from backup, rotate keys (including the audit checkpoint signing key), revoke all sessions for a user, respond to suspected account compromise, MFA reset identity check, break-glass use and review, total super admin lock-out recovery, audit chain mismatch response, Redis outage.
+- Runbooks in `docs/runbooks/` from Phase 1: restore from backup, rotate keys (including the audit checkpoint signing key), revoke all sessions for a user, respond to suspected account compromise, MFA reset identity check, break-glass use and review, total super admin lock-out recovery, audit chain mismatch response, database outage.

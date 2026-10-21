@@ -20,9 +20,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance.derive import PolicyValues, ShiftTimes, WeeklyOff
 from app.modules.attendance.models import (
     AttendancePolicy,
@@ -33,14 +30,19 @@ from app.modules.attendance.models import (
     ShiftVersion,
 )
 from app.modules.people import public as people
+from app.platform.db import Session
 
 
 def _covers(row: Any, on: date) -> bool:
     return bool(row.effective_from <= on and (row.effective_to is None or on < row.effective_to))
 
 
-def _overlapping(model: Any, start: date, end: date) -> Any:
-    return (model.effective_from <= end, or_(model.effective_to.is_(None), model.effective_to > start))
+def overlapping(start: date, end: date) -> dict[str, Any]:
+    """A condition for effective-dated documents overlapping `start`..`end` (inclusive)."""
+    return {
+        "effective_from": {"$lte": end},
+        "$or": [{"effective_to": None}, {"effective_to": {"$gt": start}}],
+    }
 
 
 def weekly_offs_of(raw: Iterable[dict[str, Any]]) -> tuple[WeeklyOff, ...]:
@@ -104,26 +106,20 @@ class Schedule:
 
     @classmethod
     async def load(
-        cls, session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date
+        cls, session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date
     ) -> "Schedule":
         employments = await people.job_periods(session, employee_ids, start, end)
         location_ids = {job.location_id for e in employments.values() for job in e.jobs}
         assignments: dict[uuid.UUID, list[ShiftAssignment]] = defaultdict(list)
         if employee_ids:
-            for row in await session.scalars(
-                select(ShiftAssignment).where(
-                    ShiftAssignment.employee_id.in_(set(employee_ids)),
-                    *_overlapping(ShiftAssignment, start, end),
-                )
+            for row in await session.find(
+                ShiftAssignment, {"employee_id": {"$in": list(set(employee_ids))}, **overlapping(start, end)}
             ):
                 assignments[row.employee_id].append(row)
         defaults: dict[uuid.UUID, list[LocationDefaultShift]] = defaultdict(list)
         if location_ids:
-            for default in await session.scalars(
-                select(LocationDefaultShift).where(
-                    LocationDefaultShift.location_id.in_(location_ids),
-                    *_overlapping(LocationDefaultShift, start, end),
-                )
+            for default in await session.find(
+                LocationDefaultShift, {"location_id": {"$in": list(location_ids)}, **overlapping(start, end)}
             ):
                 defaults[default.location_id].append(default)
         shift_ids = {a.shift_id for rows in assignments.values() for a in rows} | {
@@ -132,16 +128,12 @@ class Schedule:
         versions: dict[uuid.UUID, list[ShiftVersion]] = defaultdict(list)
         shifts: dict[uuid.UUID, Shift] = {}
         if shift_ids:
-            shifts = {s.id: s for s in await session.scalars(select(Shift).where(Shift.id.in_(shift_ids)))}
-            for version in await session.scalars(
-                select(ShiftVersion).where(
-                    ShiftVersion.shift_id.in_(shift_ids), *_overlapping(ShiftVersion, start, end)
-                )
+            shifts = {s.id: s for s in await session.find(Shift, {"id": {"$in": list(shift_ids)}})}
+            for version in await session.find(
+                ShiftVersion, {"shift_id": {"$in": list(shift_ids)}, **overlapping(start, end)}
             ):
                 versions[version.shift_id].append(version)
-        policies = list(
-            await session.scalars(select(AttendancePolicy).where(*_overlapping(AttendancePolicy, start, end)))
-        )
+        policies = await session.find(AttendancePolicy, overlapping(start, end))
         return cls(
             employments=employments,
             shifts=shifts,

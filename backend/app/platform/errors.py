@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.platform.db import ConcurrentChangeError
 from app.platform.logging import request_id_var
 
 PROBLEM_MEDIA_TYPE = "application/problem+json"
@@ -198,7 +199,20 @@ async def _handle_http(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _handle_concurrent_change(request: Request, exc: Exception) -> JSONResponse:
+    """Another request changed the same record in the same moment; nothing of this one applied."""
+    if not isinstance(exc, ConcurrentChangeError):
+        raise exc
+    return _from_problem_type(
+        request,
+        ProblemType.CONFLICT,
+        detail="Someone changed this at the same moment. Reload it and try again.",
+        extensions={"code": "concurrent_change"},
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ProblemError, _handle_problem)
+    app.add_exception_handler(ConcurrentChangeError, _handle_concurrent_change)
     app.add_exception_handler(RequestValidationError, _handle_validation)
     app.add_exception_handler(StarletteHTTPException, _handle_http)

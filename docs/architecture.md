@@ -3,6 +3,8 @@
 Status: Draft v0.1
 Related: `architecture-decisions.md` (ADRs), `security-architecture.md`, `database-design.md`, `api-architecture.md`
 
+> **2026-10-20, ADR-030:** MongoDB Atlas replaces PostgreSQL, Redis and S3; the scheduled jobs can run inside the API process; hosting is Vercel, Render and Resend (`deployment.md`). §3 (data stores, including §3.1 rate limits) and §10 (deployment) describe the earlier design; where they disagree with ADR-030, ADR-030 and the code win.
+
 ## 1. Summary
 
 A modular monolith: one FastAPI application and one React single-page application, served from the same origin, backed by PostgreSQL as the only system of record. Redis is ephemeral infrastructure used only for shared rate-limit counters (§3.1); losing it loses no data. Background work runs in a separate worker process from the same codebase, using a PostgreSQL-backed job queue. Files live in private S3-compatible object storage.
@@ -247,5 +249,5 @@ Proposed concrete setup (2026-10-19, not applied, ADR-023 still pending): the SP
 - Metrics: request rates/latencies per route, job queue depth and failures, login failure rate.
 - Tracing with OpenTelemetry in Phase 2.
 - Error tracking must scrub request bodies and never receive personal data; self-hosted or an EU/India-region provider with a data processing agreement.
-- Health endpoints: `/api/health/live` (process up), `/api/health/ready` (database reachable). Redis and object storage are deliberately not part of readiness: Redis degrades per §3.1, and a storage outage fails only uploads, downloads and exports (503) while the rest keeps working; both raise operational alerts instead. Neither endpoint reveals versions or configuration.
+- Health endpoints: `/api/health/live` (process up), `/api/health/ready` (database reachable and, when the jobs run inside the API, their heartbeat fresh and the runner not stopped; ADR-030). Redis and object storage are deliberately not part of readiness: Redis degrades per §3.1, and a storage outage fails only uploads, downloads and exports (503) while the rest keeps working; both raise operational alerts instead. Neither endpoint reveals versions or configuration.
 - Operational alerts specific to integrity: unsealed audit rows older than 10 minutes, checkpoint signature or anchor mismatch, audit partition missing without a retention tombstone.

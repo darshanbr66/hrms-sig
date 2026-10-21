@@ -3,11 +3,13 @@
 All data is obviously fake (docs/database-design.md §10).
 """
 
+import json
 import uuid
 from datetime import timedelta
 from typing import Any
 
-from app.modules.people.models import EmployeeStatus
+from app.modules.people.models import Employee, EmployeeStatus
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
 from tests.people_data import OrgUnits, add_job, create_employee, create_org_units, fake_code
@@ -96,10 +98,12 @@ async def test_hr_admin_maintains_locations_with_versions_and_audit(api: Api) ->
         ]
         assert location["id"] in {item["id"] for item in everything}
 
-    actions = await api.fetch(
-        "SELECT action, changes->'name' FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id",
-        id=location["id"],
-    )
+    actions = [
+        (row.action, (row.changes or {}).get("name"))
+        for row in await api.records(
+            AuditLogRecord, {"target_id": location["id"]}, sort=[("recorded_at", 1), ("id", 1)]
+        )
+    ]
     assert [row[0] for row in actions] == [
         "org.location.created",
         "org.location.updated",
@@ -175,11 +179,10 @@ async def test_hr_creates_an_employee_with_a_first_job_and_an_audit_record(api: 
         assert stats["employed"] >= 1
         assert any(item["employee"]["id"] == future.json()["id"] for item in stats["starting_soon"])
 
-    [(permission, changes)] = await api.fetch(
-        "SELECT permission_used, changes FROM audit.audit_log "
-        "WHERE subject_employee_id = :id AND action = 'employee.created'",
-        id=employee["id"],
+    [audited] = await api.records(
+        AuditLogRecord, {"subject_employee_id": uuid.UUID(employee["id"]), "action": "employee.created"}
     )
+    permission, changes = audited.permission_used, audited.changes or {}
     assert permission == "employee.create"
     assert changes["employee_code"] == {"redacted": True}
     assert changes["legal_first_name"] == {"old": None, "new": "Test"}
@@ -241,14 +244,13 @@ async def test_directory_search_finds_people_by_name_and_code(api: Api) -> None:
     async with api.database.unit_of_work() as session:
         target = await create_employee(session, joined=today - timedelta(days=5))
         await add_job(session, org_units, target, manager_id=None, effective_from=today - timedelta(days=5))
-    [(code,)] = await api.fetch("SELECT employee_code FROM people.employees WHERE id = :id", id=target)
+    [stored] = await api.records(Employee, {"id": target})
+    code = stored.employee_code
     async with api.client() as client:
         await api.sign_in(client, reader)
         found = (await client.get("/api/v1/directory", params={"q": code.lower()})).json()["items"]
         assert [entry["id"] for entry in found] == [str(target)]
         assert (await client.get("/api/v1/directory", params={"q": "100%_"})).json()["items"] == []
-    indexes = await api.fetch("SELECT indexname FROM pg_indexes WHERE indexname = 'ix_employees_search'")
-    assert indexes == [("ix_employees_search",)]
 
 
 async def test_job_changes_close_the_current_row_and_refuse_reporting_cycles(api: Api) -> None:
@@ -385,11 +387,14 @@ async def test_personal_details_are_separate_audited_and_never_copied_to_audit(a
         assert read.status_code == 200
         assert read.json()["personal_phone"] == "+91 00000 00000"
 
-    rows = await api.fetch(
-        "SELECT action, changes::text FROM audit.audit_log WHERE subject_employee_id = :id "
-        "AND action LIKE 'employee.personal.%' ORDER BY recorded_at, id",
-        id=account.employee_id,
-    )
+    rows = [
+        (row.action, json.dumps(row.changes))
+        for row in await api.records(
+            AuditLogRecord,
+            {"subject_employee_id": account.employee_id, "action": {"$regex": "^employee[.]personal[.]"}},
+            sort=[("recorded_at", 1), ("id", 1)],
+        )
+    ]
     assert [row[0] for row in rows] == ["employee.personal.updated", "employee.personal.read"]
     assert "Test Street" not in rows[0][1]
     assert "00000" not in rows[0][1]
@@ -498,10 +503,10 @@ async def test_department_descriptions_parents_and_children_are_checked(api: Api
         assert cleared.status_code == 200
         assert cleared.json()["description"] is None
 
-    [(changes,)] = await api.fetch(
-        "SELECT changes FROM audit.audit_log WHERE target_id = :id AND action = 'org.department.updated'",
-        id=parent_id,
+    [updated] = await api.records(
+        AuditLogRecord, {"target_id": str(parent_id), "action": "org.department.updated"}
     )
+    changes = updated.changes or {}
     assert changes["description"] == {"old": "Runs the tests.", "new": None}
 
 
@@ -616,7 +621,8 @@ async def test_a_department_head_must_be_a_current_or_future_employee(api: Api) 
             session, joined=today - timedelta(days=300), exited=today - timedelta(days=1)
         )
         leaving_today = await create_employee(session, joined=today - timedelta(days=300), exited=today)
-    [(head_code,)] = await api.fetch("SELECT employee_code FROM people.employees WHERE id = :id", id=head)
+    [stored_head] = await api.records(Employee, {"id": head})
+    head_code = stored_head.employee_code
     async with api.client() as client:
         await api.sign_in(client, admin)
         created = await client.post(

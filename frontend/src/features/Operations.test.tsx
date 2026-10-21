@@ -391,6 +391,7 @@ describe("documents", () => {
       "GET /api/v1/me/documents",
       json({
         storage_ready: false,
+        uploads_ready: false,
         sensitive_hidden: 0,
         items: [
           {
@@ -446,6 +447,7 @@ describe("documents", () => {
       "GET /api/v1/me/documents",
       json({
         storage_ready: true,
+        uploads_ready: true,
         sensitive_hidden: 0,
         items: [
           {
@@ -492,6 +494,61 @@ describe("documents", () => {
     expect(picker).toHaveAttribute("aria-invalid", "true");
     expect(picker).toHaveAccessibleDescription("Choose a file.");
     expect(api.called("POST /api/v1/documents/d1/versions")).toHaveLength(0);
+  });
+
+  it("offers no upload while uploads are turned off, and still downloads clean files", async () => {
+    api.on("GET /api/v1/me/notifications/unread-count", json({ unread_count: 0 })).on(
+      "GET /api/v1/me/documents",
+      json({
+        storage_ready: true,
+        uploads_ready: false,
+        sensitive_hidden: 0,
+        items: [
+          {
+            id: "d1",
+            owner_employee_id: "01900000-0000-7000-8000-0000000000e1",
+            owner_name: null,
+            category: {
+              id: "c1",
+              code: "LETTERS",
+              name: "Test letters",
+              description: null,
+              sensitivity: "internal",
+              employee_visible: true,
+              employee_can_upload: true,
+              requires_expiry: false,
+              status: "active",
+              version: 1,
+            },
+            title: "Test offer letter",
+            expires_on: null,
+            status: "active",
+            version: 1,
+            created_at: "2026-10-01T05:00:00Z",
+            versions: [
+              {
+                id: "v1",
+                version_no: 1,
+                original_filename: "offer.pdf",
+                content_type: "application/pdf",
+                size_bytes: 20480,
+                scan_status: "clean",
+                uploaded_at: "2026-10-01T05:00:00Z",
+              },
+            ],
+            can_manage: false,
+            can_add_version: true,
+          },
+        ],
+      }),
+    );
+    renderSignedIn(api, EMPLOYEE, "/documents");
+    expect(
+      await screen.findByText(/Document uploads are turned off until virus scanning is set up/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upload a document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New version/ })).not.toBeInTheDocument();
   });
 });
 

@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
+from app.modules.identity.models import AuthSession, User
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
 
@@ -21,10 +23,12 @@ async def signed_in_admin(
 
 @pytest.fixture(autouse=True)
 async def restore_defaults(api: Api) -> AsyncIterator[None]:
-    """Settings are global in the shared test database: each test starts and ends at the defaults."""
-    await api.execute("DELETE FROM app.settings")
+    """Settings belong to an organization and every test has one of its own, so each starts at the
+    defaults; any overrides left are removed afterwards."""
     yield
-    await api.execute("DELETE FROM app.settings")
+    await api.worker_database.collection("organization_settings").delete_many(
+        {"organization_id": api.organization_id}
+    )
 
 
 async def test_settings_list_the_registry_with_defaults(api: Api) -> None:
@@ -73,11 +77,14 @@ async def test_changes_need_step_up_and_are_audited(api: Api) -> None:
             "overridden": False,
             "description": "",
         }
-    rows = await api.fetch(
-        "SELECT permission_used, changes->'value' FROM audit.audit_log "
-        "WHERE actor_user_id = :id AND action = 'settings.value.changed' ORDER BY recorded_at, id",
-        id=admin.user_id,
-    )
+    rows = [
+        (row.permission_used, (row.changes or {})["value"])
+        for row in await api.records(
+            AuditLogRecord,
+            {"actor_user_id": admin.user_id, "action": "settings.value.changed"},
+            sort=[("recorded_at", 1), ("id", 1)],
+        )
+    ]
     assert rows == [
         ("security.settings.manage", {"old": 10, "new": 6}),
         ("security.settings.manage", {"old": 6, "new": 10}),
@@ -122,23 +129,20 @@ async def test_a_lower_lockout_threshold_applies_to_the_next_failures(api: Api) 
             await client.post(
                 "/api/v1/auth/login", json={"email": target.email, "password": "a wrong passphrase"}
             )
-    [(locked_until,)] = await api.fetch(
-        "SELECT locked_until FROM identity.users WHERE id = :id", id=target.user_id
-    )
-    assert locked_until is not None
+    [stored] = await api.records(User, {"id": target.user_id})
+    assert stored.locked_until is not None
 
 
 async def test_a_new_idle_timeout_applies_to_new_sessions(api: Api) -> None:
     async with api.client() as client:
         admin = await signed_in_admin(api, client)
         await api.step_up(client, admin)
-        await client.put("/api/v1/settings/security.session.idle_timeout_minutes", json={"value": 5})
+        changed = await client.put(
+            "/api/v1/settings/security.session.idle_timeout_minutes", json={"value": 5}
+        )
+        assert changed.status_code == 200, changed.text
     user = await api.create_account()
     async with api.client() as client:
         await api.sign_in(client, user)
-    [(window,)] = await api.fetch(
-        "SELECT extract(epoch FROM idle_expires_at - last_activity_at) "
-        "FROM identity.sessions WHERE user_id = :id",
-        id=user.user_id,
-    )
-    assert float(window) == 300
+    [session] = await api.records(AuthSession, {"user_id": user.user_id})
+    assert (session.idle_expires_at - session.last_activity_at).total_seconds() == 300

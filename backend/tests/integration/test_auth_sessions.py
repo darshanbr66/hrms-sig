@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import httpx
 
-from app.modules.identity.models import UserStatus
+from app.modules.identity.models import AuthSession, SessionToken, UserStatus
 from tests.api_support import Api, refresh_cookie
 
 REFRESH = "/api/v1/auth/refresh"
@@ -20,12 +20,10 @@ async def test_tokens_are_stored_only_as_digests(api: Api) -> None:
     async with api.client() as client:
         await api.sign_in(client, account)
         access, refresh = access_cookie(client), refresh_cookie(client)
-    rows = await api.fetch(
-        "SELECT encode(t.token_hash, 'escape') FROM identity.session_tokens t "
-        "JOIN identity.sessions s ON s.id = t.session_id WHERE s.user_id = :id",
-        id=account.user_id,
-    )
-    stored = " ".join(row[0] for row in rows)
+    sessions = [row.id for row in await api.records(AuthSession, {"user_id": account.user_id})]
+    rows = await api.records(SessionToken, {"session_id": {"$in": sessions}})
+    assert rows
+    stored = " ".join(row.token_hash.decode("latin-1") for row in rows)
     assert access not in stored
     assert refresh not in stored
 
@@ -60,16 +58,12 @@ async def test_a_reused_refresh_token_revokes_the_whole_session(api: Api) -> Non
         # The legitimate client is signed out too: the session is revoked.
         assert (await client.get("/api/v1/me")).status_code == 401
         assert (await client.post(REFRESH)).status_code == 401
-    events = await api.fetch(
-        "SELECT severity FROM audit.security_events "
-        "WHERE user_id = :id AND event_type = 'token.reuse_detected'",
-        id=account.user_id,
+    events = await api.find(
+        "security_events", {"user_id": account.user_id, "event_type": "token.reuse_detected"}
     )
-    assert events == [("high",)]
-    [(reason,)] = await api.fetch(
-        "SELECT revoked_reason FROM identity.sessions WHERE user_id = :id", id=account.user_id
-    )
-    assert reason == "token_reuse"
+    assert [event["severity"] for event in events] == ["high"]
+    [session] = await api.records(AuthSession, {"user_id": account.user_id})
+    assert session.revoked_reason == "token_reuse"
 
 
 async def test_two_simultaneous_refreshes_with_one_token_are_treated_as_reuse(api: Api) -> None:
@@ -83,10 +77,8 @@ async def test_two_simultaneous_refreshes_with_one_token_are_treated_as_reuse(ap
                 other.cookies.set("__Secure-sv_rt", token, path="/api/v1/auth/refresh")
             results = await asyncio.gather(first.post(REFRESH), second.post(REFRESH))
         assert sorted(r.status_code for r in results) == [200, 401]
-    [(revoked_at,)] = await api.fetch(
-        "SELECT revoked_at FROM identity.sessions WHERE user_id = :id", id=account.user_id
-    )
-    assert revoked_at is not None
+    [session] = await api.records(AuthSession, {"user_id": account.user_id})
+    assert session.revoked_at is not None
 
 
 async def test_a_refresh_racing_a_sign_out_never_errors(api: Api) -> None:
@@ -97,10 +89,8 @@ async def test_a_refresh_racing_a_sign_out_never_errors(api: Api) -> None:
             await api.sign_in(client, account)
             results = await asyncio.gather(client.post(REFRESH), client.post("/api/v1/auth/logout"))
             assert all(r.status_code in (200, 204, 401) for r in results), [r.text for r in results]
-        [(revoked_at,)] = await api.fetch(
-            "SELECT revoked_at FROM identity.sessions WHERE user_id = :id", id=account.user_id
-        )
-        assert revoked_at is not None
+        [session] = await api.records(AuthSession, {"user_id": account.user_id})
+        assert session.revoked_at is not None
 
 
 async def test_logout_revokes_the_session_and_clears_cookies(api: Api) -> None:
@@ -116,12 +106,8 @@ async def test_logout_revokes_the_session_and_clears_cookies(api: Api) -> None:
     async with api.client() as replay:
         replay.cookies.set("__Host-sv_at", token)
         assert (await replay.get("/api/v1/me")).status_code == 401
-    events = await api.fetch(
-        "SELECT details->>'reason' FROM audit.security_events "
-        "WHERE user_id = :id AND event_type = 'session.revoked'",
-        id=account.user_id,
-    )
-    assert events == [("logout",)]
+    events = await api.find("security_events", {"user_id": account.user_id, "event_type": "session.revoked"})
+    assert [event["details"]["reason"] for event in events] == ["logout"]
 
 
 async def test_sessions_list_and_revocation(api: Api) -> None:
@@ -197,11 +183,7 @@ async def test_disabling_an_account_ends_its_sessions_at_once(api: Api) -> None:
     account = await api.create_account()
     async with api.client() as client:
         await api.sign_in(client, account)
-        await api.execute(
-            "UPDATE identity.users SET status = :status WHERE id = :id",
-            status=UserStatus.DISABLED.value,
-            id=account.user_id,
-        )
+        await api.update("users", {"_id": account.user_id}, {"status": UserStatus.DISABLED.value})
         assert (await client.get("/api/v1/me")).status_code == 401
         assert (await client.post(REFRESH)).status_code == 401
 
@@ -213,3 +195,18 @@ async def test_garbage_credentials_are_unauthenticated_not_errors(api: Api) -> N
             assert (await client.get("/api/v1/me")).status_code == 401
             client.cookies.set("__Secure-sv_rt", value, path="/api/v1/auth/refresh")
             assert (await client.post(REFRESH)).status_code == 401
+
+
+async def test_parallel_requests_of_one_session_all_succeed_and_extend_it(api: Api) -> None:
+    """A page loading several panels at once after a quiet minute: every request records activity,
+    none collides with another on the session (the activity write is outside the transactions)."""
+    account = await api.create_account()
+    async with api.client() as client:
+        await api.sign_in(client, account)
+        [before] = await api.records(AuthSession, {"user_id": account.user_id})
+        api.clock.advance(timedelta(minutes=2))
+        responses = await asyncio.gather(*(client.get("/api/v1/me") for _ in range(8)))
+    assert [response.status_code for response in responses] == [200] * 8
+    [after] = await api.records(AuthSession, {"user_id": account.user_id})
+    assert after.last_activity_at == before.last_activity_at + timedelta(minutes=2)
+    assert after.idle_expires_at > before.idle_expires_at

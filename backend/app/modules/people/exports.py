@@ -9,13 +9,11 @@ from collections.abc import Collection
 from datetime import date
 from typing import Final
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.org import public as org
 from app.modules.people import repository
 from app.modules.people.models import Employee
 from app.platform.csvfile import Cell
+from app.platform.db import Session
 
 EMPLOYEES_HEADER: Final = (
     "employee_code",
@@ -34,16 +32,10 @@ EMPLOYEES_HEADER: Final = (
 )
 
 
-async def employee_rows(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], on: date
-) -> list[list[Cell]]:
+async def employee_rows(session: Session, employee_ids: Collection[uuid.UUID], on: date) -> list[list[Cell]]:
     if not employee_ids:
         return []
-    employees = list(
-        await session.scalars(
-            select(Employee).where(Employee.id.in_(set(employee_ids))).order_by(Employee.employee_code)
-        )
-    )
+    employees = await session.find(Employee, {"id": {"$in": list(set(employee_ids))}}, sort=[("code_key", 1)])
     ids = [e.id for e in employees]
     jobs = await repository.current_jobs(session, ids, on)
     jobs |= await repository.latest_jobs(session, [i for i in ids if i not in jobs])
@@ -55,13 +47,7 @@ async def employee_rows(
     )
     managers = {j.manager_employee_id for j in jobs.values() if j.manager_employee_id}
     manager_codes = (
-        dict(
-            (
-                await session.execute(
-                    select(Employee.id, Employee.employee_code).where(Employee.id.in_(managers))
-                )
-            ).all()
-        )
+        {e.id: e.employee_code for e in await session.find(Employee, {"id": {"$in": list(managers)}})}
         if managers
         else {}
     )

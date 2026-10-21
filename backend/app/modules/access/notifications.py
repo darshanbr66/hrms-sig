@@ -10,17 +10,16 @@ could hold anything, and never an address.
 import uuid
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.access import repository as repo
 from app.modules.access.models import RoleGrantRequest
 from app.modules.identity import public as identity
 from app.modules.notify.public import EmailTemplate, enqueue
 from app.platform.authz.roles import RoleKey
+from app.platform.db import Session
 
 
 async def grant_event(
-    session: AsyncSession,
+    session: Session,
     request: RoleGrantRequest,
     event: str,
     now: datetime,

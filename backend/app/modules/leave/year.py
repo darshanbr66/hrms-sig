@@ -27,16 +27,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Final
-
-import procrastinate
-from sqlalchemy import ColumnElement, func, or_, select, text
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any, Final
 
 from app.modules.leave.models import (
-    PERIODIC_WHERE,
-    YEARLY_WHERE,
     AccrualMethod,
     EntryType,
     LeaveLedgerEntry,
@@ -60,15 +53,15 @@ from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session, decode, encode_filter
 from app.platform.errors import ProblemError, ProblemType
+from app.platform.jobs import Scheduler
 
 logger = logging.getLogger(__name__)
 
 ACCRUAL_TASK: Final = "leave.accrue"
 # Daily, early in the UTC day.
 ACCRUAL_SCHEDULE: Final = "15 0 * * *"
-QUEUE: Final = "leave"
 ZERO: Final = Decimal("0.00")
 
 
@@ -79,36 +72,36 @@ def field_error(field: str, code: str, message: str) -> ProblemError:
     )
 
 
-async def _lock_employee(session: AsyncSession, employee_id: uuid.UUID) -> None:
+async def _lock_employee(session: Session, employee_id: uuid.UUID) -> None:
     """The lock every change to one employee's leave takes (service.py)."""
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"leave:{employee_id}"}
-    )
+    await session.lock(f"leave:{employee_id}")
 
 
 async def _policy_on(
-    session: AsyncSession, leave_type_id: uuid.UUID, employee_id: uuid.UUID, on: date
+    session: Session, leave_type_id: uuid.UUID, employee_id: uuid.UUID, on: date
 ) -> tuple[LeavePolicy | None, people.JobFacts | None]:
     facts = await people.job_facts(session, employee_id, on)
     if facts is None:
         return None, None
-    candidates = list(
-        await session.scalars(
-            select(LeavePolicy).where(
-                LeavePolicy.leave_type_id == leave_type_id,
-                LeavePolicy.effective_from <= on,
-                or_(LeavePolicy.effective_to.is_(None), LeavePolicy.effective_to > on),
-            )
-        )
+    candidates = await session.find(
+        LeavePolicy,
+        {
+            "leave_type_id": leave_type_id,
+            "effective_from": {"$lte": on},
+            "$or": [{"effective_to": None}, {"effective_to": {"$gt": on}}],
+        },
     )
     return most_specific(candidates, facts.location_id, facts.employment_type), facts
 
 
-async def _sum(session: AsyncSession, *conditions: ColumnElement[bool]) -> Decimal:
-    value = (
-        await session.execute(select(func.coalesce(func.sum(LeaveLedgerEntry.amount), 0)).where(*conditions))
-    ).scalar_one()
-    return Decimal(value)
+async def ledger_sum(session: Session, match: dict[str, Any]) -> Decimal:
+    """The exact sum of the ledger entries matching `match` (Decimal128 arithmetic)."""
+    pipeline = [
+        {"$match": encode_filter(LeaveLedgerEntry, match)},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ]
+    found = await session.aggregate(LeaveLedgerEntry, pipeline)
+    return decode(Decimal, found[0]["total"]) if found else ZERO
 
 
 # --- the worker's daily run -----------------------------------------------------------------------
@@ -127,38 +120,35 @@ async def accrue_due(database: Database, clock: Clock, audit: AuditWriter) -> Ac
     accrued = expired = 0
     async with database.unit_of_work() as session:
         # Only leave types with a periodic policy in force during the last two leave years.
-        periodic = list(
-            await session.scalars(
-                select(LeavePolicy.leave_type_id)
-                .join(LeaveType, LeaveType.id == LeavePolicy.leave_type_id)
-                .where(
-                    LeaveType.status == LeaveTypeStatus.ACTIVE.value,
-                    LeavePolicy.accrual_method == AccrualMethod.PERIODIC.value,
-                    or_(
-                        LeavePolicy.effective_to.is_(None),
-                        LeavePolicy.effective_to > since - timedelta(days=366),
-                    ),
+        active_types = await session.distinct(LeaveType, "id", {"status": LeaveTypeStatus.ACTIVE.value})
+        periodic = sorted(
+            set(
+                await session.distinct(
+                    LeavePolicy,
+                    "leave_type_id",
+                    {
+                        "leave_type_id": {"$in": active_types},
+                        "accrual_method": AccrualMethod.PERIODIC.value,
+                        "$or": [
+                            {"effective_to": None},
+                            {"effective_to": {"$gt": since - timedelta(days=366)}},
+                        ],
+                    },
                 )
-                .distinct()
             )
         )
         employed = (
-            (
-                await people.employed_colleagues(
-                    session, people.employee_id_column().is_not(None), on=today, since=since
-                )
-            )[0]
-            if periodic
-            else []
+            (await people.employed_colleagues(session, {}, on=today, since=since))[0] if periodic else []
         )
         # Only balances that carried days into a leave year.
-        carried = (
-            await session.execute(
-                select(LeaveLedgerEntry.employee_id, LeaveLedgerEntry.leave_type_id)
-                .where(LeaveLedgerEntry.entry_type == EntryType.CARRY_FORWARD.value)
-                .distinct()
-            )
-        ).all()
+        carried = sorted(
+            {
+                (entry.employee_id, entry.leave_type_id)
+                for entry in await session.find(
+                    LeaveLedgerEntry, {"entry_type": EntryType.CARRY_FORWARD.value}
+                )
+            }
+        )
     for leave_type_id in periodic:
         for colleague in employed:
             async with database.unit_of_work() as session:
@@ -187,7 +177,7 @@ async def accrue_due(database: Database, clock: Clock, audit: AuditWriter) -> Ac
 
 
 async def _accrue_employee(
-    session: AsyncSession, leave_type_id: uuid.UUID, employee_id: uuid.UUID, today: date
+    session: Session, leave_type_id: uuid.UUID, employee_id: uuid.UUID, today: date
 ) -> int:
     policy, _ = await _policy_on(session, leave_type_id, employee_id, today)
     if policy is None or policy.accrual_method != AccrualMethod.PERIODIC.value:
@@ -195,13 +185,15 @@ async def _accrue_employee(
     current = leave_year_start(today, policy.leave_year_start_month, policy.leave_year_start_day)
     previous = date(current.year - 1, current.month, current.day)
     credited = set(
-        await session.scalars(
-            select(LeaveLedgerEntry.period_start).where(
-                LeaveLedgerEntry.employee_id == employee_id,
-                LeaveLedgerEntry.leave_type_id == leave_type_id,
-                LeaveLedgerEntry.entry_type == EntryType.ACCRUAL.value,
-                LeaveLedgerEntry.period_start >= previous,
-            )
+        await session.distinct(
+            LeaveLedgerEntry,
+            "period_start",
+            {
+                "employee_id": employee_id,
+                "leave_type_id": leave_type_id,
+                "entry_type": EntryType.ACCRUAL.value,
+                "period_start": {"$gte": previous},
+            },
         )
     )
     written = 0
@@ -229,45 +221,32 @@ async def _accrue_employee(
             )
             if amount <= 0:
                 continue
-            inserted = (
-                await session.execute(
-                    insert(LeaveLedgerEntry)
-                    .values(
-                        employee_id=employee_id,
-                        leave_type_id=leave_type_id,
-                        leave_year=year,
-                        entry_type=EntryType.ACCRUAL.value,
-                        amount=amount,
-                        effective_date=credit,
-                        period_start=period.start,
-                        policy_id=on_policy.id,
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=[
-                            LeaveLedgerEntry.employee_id,
-                            LeaveLedgerEntry.leave_type_id,
-                            LeaveLedgerEntry.period_start,
-                        ],
-                        index_where=text(PERIODIC_WHERE),
-                    )
-                    .returning(LeaveLedgerEntry.id)
-                )
-            ).scalar_one_or_none()
-            written += inserted is not None
+            entry = LeaveLedgerEntry(
+                employee_id=employee_id,
+                leave_type_id=leave_type_id,
+                leave_year=year,
+                entry_type=EntryType.ACCRUAL.value,
+                amount=amount,
+                effective_date=credit,
+                period_start=period.start,
+                policy_id=on_policy.id,
+            )
+            written += await session.insert_if_absent(
+                entry, ["employee_id", "leave_type_id", "period_start", "slot"]
+            )
     return written
 
 
 async def _expire_employee(
-    session: AsyncSession, leave_type_id: uuid.UUID, employee_id: uuid.UUID, today: date
+    session: Session, leave_type_id: uuid.UUID, employee_id: uuid.UUID, today: date
 ) -> int:
-    carries = list(
-        await session.scalars(
-            select(LeaveLedgerEntry).where(
-                LeaveLedgerEntry.employee_id == employee_id,
-                LeaveLedgerEntry.leave_type_id == leave_type_id,
-                LeaveLedgerEntry.entry_type == EntryType.CARRY_FORWARD.value,
-            )
-        )
+    carries = await session.find(
+        LeaveLedgerEntry,
+        {
+            "employee_id": employee_id,
+            "leave_type_id": leave_type_id,
+            "entry_type": EntryType.CARRY_FORWARD.value,
+        },
     )
     written = 0
     for carry in carries:
@@ -277,60 +256,47 @@ async def _expire_employee(
         expires_on = add_months(carry.leave_year, policy.carried_expire_after_months)
         if expires_on > today:
             continue
-        used = -await _sum(
+        used = -await ledger_sum(
             session,
-            LeaveLedgerEntry.employee_id == employee_id,
-            LeaveLedgerEntry.leave_type_id == leave_type_id,
-            LeaveLedgerEntry.entry_type.in_([EntryType.USAGE.value, EntryType.USAGE_REVERSAL.value]),
-            LeaveLedgerEntry.effective_date >= carry.leave_year,
-            LeaveLedgerEntry.effective_date < expires_on,
+            {
+                "employee_id": employee_id,
+                "leave_type_id": leave_type_id,
+                "entry_type": {"$in": [EntryType.USAGE.value, EntryType.USAGE_REVERSAL.value]},
+                "effective_date": {"$gte": carry.leave_year, "$lt": expires_on},
+            },
         )
-        balance = await _sum(
+        balance = await ledger_sum(
             session,
-            LeaveLedgerEntry.employee_id == employee_id,
-            LeaveLedgerEntry.leave_type_id == leave_type_id,
-            LeaveLedgerEntry.effective_date < expires_on,
+            {
+                "employee_id": employee_id,
+                "leave_type_id": leave_type_id,
+                "effective_date": {"$lt": expires_on},
+            },
         )
         amount = expired_carry(carry.amount, used, balance)
         if amount <= 0:
             continue
-        inserted = (
-            await session.execute(
-                insert(LeaveLedgerEntry)
-                .values(
-                    employee_id=employee_id,
-                    leave_type_id=leave_type_id,
-                    leave_year=carry.leave_year,
-                    entry_type=EntryType.CARRY_FORWARD_EXPIRY.value,
-                    amount=-amount,
-                    effective_date=expires_on,
-                    policy_id=policy.id,
-                    reason="Carried days not used in time",
-                )
-                .on_conflict_do_nothing(
-                    index_elements=[
-                        LeaveLedgerEntry.employee_id,
-                        LeaveLedgerEntry.leave_type_id,
-                        LeaveLedgerEntry.leave_year,
-                        LeaveLedgerEntry.entry_type,
-                    ],
-                    index_where=text(YEARLY_WHERE),
-                )
-                .returning(LeaveLedgerEntry.id)
-            )
-        ).scalar_one_or_none()
-        written += inserted is not None
+        entry = LeaveLedgerEntry(
+            employee_id=employee_id,
+            leave_type_id=leave_type_id,
+            leave_year=carry.leave_year,
+            entry_type=EntryType.CARRY_FORWARD_EXPIRY.value,
+            amount=-amount,
+            effective_date=expires_on,
+            policy_id=policy.id,
+            reason="Carried days not used in time",
+        )
+        written += await session.insert_if_absent(
+            entry, ["employee_id", "leave_type_id", "leave_year", "entry_type", "slot"]
+        )
     return written
 
 
-def register_leave_jobs(
-    job_app: procrastinate.App, database: Database, clock: Clock, audit: AuditWriter
-) -> None:
-    """Daily, one run at a time (`api-architecture.md` §10, `leave.accrue`)."""
+def register_leave_jobs(scheduler: Scheduler, database: Database, clock: Clock, audit: AuditWriter) -> None:
+    """Daily, one run at a time, for each organization (`api-architecture.md` §10, `leave.accrue`)."""
 
-    @job_app.periodic(cron=ACCRUAL_SCHEDULE, periodic_id=ACCRUAL_TASK)
-    @job_app.task(name=ACCRUAL_TASK, queue=QUEUE, lock=ACCRUAL_TASK)
-    async def accrue(timestamp: int) -> None:
+    @scheduler.periodic(ACCRUAL_TASK, ACCRUAL_SCHEDULE, per_organization=True)
+    async def accrue() -> None:
         result = await accrue_due(database, clock, audit)
         if result != AccrualResult():
             logger.info("leave.accrued", extra={"accrued": result.accrued, "expired": result.expired})
@@ -410,9 +376,7 @@ class LeaveYearService:
             leave_type = await session.get(LeaveType, leave_type_id)
             if leave_type is None:
                 raise field_error("leave_type_id", "leave.unknown_type", "Choose an existing leave type.")
-            colleagues, _ = await people.employed_colleagues(
-                session, people.employee_id_column().is_not(None), on=last_day
-            )
+            colleagues, _ = await people.employed_colleagues(session, {}, on=last_day)
             for colleague in colleagues:
                 rows.append(
                     await self._close_one(session, actor, colleague, leave_type.id, last_day, apply=apply)
@@ -440,7 +404,7 @@ class LeaveYearService:
 
     async def _close_one(  # noqa: PLR0911 (one outcome per reason an employee is not closed)
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         colleague: people.Colleague,
         leave_type_id: uuid.UUID,
@@ -469,24 +433,18 @@ class LeaveYearService:
         if following - timedelta(days=1) != last_day:
             return row("not_year_end")
         await _lock_employee(session, colleague.id)
-        same = (
-            LeaveLedgerEntry.employee_id == colleague.id,
-            LeaveLedgerEntry.leave_type_id == leave_type_id,
+        same = {"employee_id": colleague.id, "leave_type_id": leave_type_id}
+        done = await session.exists(
+            LeaveLedgerEntry,
+            {
+                **same,
+                "leave_year": year,
+                "entry_type": {"$in": [EntryType.CARRY_FORWARD_OUT.value, EntryType.LAPSE.value]},
+            },
         )
-        done = (
-            await session.execute(
-                select(LeaveLedgerEntry.id).where(
-                    *same,
-                    LeaveLedgerEntry.leave_year == year,
-                    LeaveLedgerEntry.entry_type.in_(
-                        [EntryType.CARRY_FORWARD_OUT.value, EntryType.LAPSE.value]
-                    ),
-                )
-            )
-        ).first()
-        if done is not None:
+        if done:
             return row("already_closed")
-        closing = await _sum(session, *same, LeaveLedgerEntry.leave_year <= year)
+        closing = await ledger_sum(session, {**same, "leave_year": {"$lte": year}})
         result = year_end(
             closing,
             mode=policy.carry_forward_mode,
@@ -538,7 +496,7 @@ class LeaveYearService:
             granted = await self._authz.require(session, actor, "leave.balance.adjust")
             types = {
                 code.lower(): type_id
-                for type_id, code in (await session.execute(select(LeaveType.id, LeaveType.code))).all()
+                for type_id, code in ((t.id, t.code) for t in await session.find(LeaveType, {}))
             }
             employees = await people.employee_ids_by_code(session, {row.employee_code for row in rows})
             for row in rows:
@@ -549,20 +507,22 @@ class LeaveYearService:
             batch_id = uuid.uuid4() if write else None
             if write:
                 session.add_all(
-                    LeaveLedgerEntry(
-                        employee_id=planned.employee_id,
-                        leave_type_id=planned.leave_type_id,
-                        leave_year=planned.leave_year,
-                        entry_type=EntryType.OPENING_BALANCE.value,
-                        amount=planned.days,
-                        effective_date=planned.effective_date,
-                        policy_id=planned.policy_id,
-                        reason=reason,
-                        created_by=actor.user_id,
-                        import_batch_id=batch_id,
-                    )
-                    for _, _, planned in checked
-                    if planned is not None
+                    [
+                        LeaveLedgerEntry(
+                            employee_id=planned.employee_id,
+                            leave_type_id=planned.leave_type_id,
+                            leave_year=planned.leave_year,
+                            entry_type=EntryType.OPENING_BALANCE.value,
+                            amount=planned.days,
+                            effective_date=planned.effective_date,
+                            policy_id=planned.policy_id,
+                            reason=reason,
+                            created_by=actor.user_id,
+                            import_batch_id=batch_id,
+                        )
+                        for _, _, planned in checked
+                        if planned is not None
+                    ]
                 )
                 await session.flush()
             outcomes = [
@@ -595,7 +555,7 @@ class LeaveYearService:
 
     async def _check_row(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         row: ImportRow,
         *,
@@ -631,17 +591,16 @@ class LeaveYearService:
             row.effective_date, policy.leave_year_start_month, policy.leave_year_start_day
         )
         await _lock_employee(session, employee_id)
-        exists = (
-            await session.execute(
-                select(LeaveLedgerEntry.id).where(
-                    LeaveLedgerEntry.employee_id == employee_id,
-                    LeaveLedgerEntry.leave_type_id == leave_type_id,
-                    LeaveLedgerEntry.leave_year == year,
-                    LeaveLedgerEntry.entry_type == EntryType.OPENING_BALANCE.value,
-                )
-            )
-        ).first()
-        if exists is not None:
+        exists = await session.exists(
+            LeaveLedgerEntry,
+            {
+                "employee_id": employee_id,
+                "leave_type_id": leave_type_id,
+                "leave_year": year,
+                "entry_type": EntryType.OPENING_BALANCE.value,
+            },
+        )
+        if exists:
             return row, "already_recorded", None
         return row, "ok", _Planned(employee_id, leave_type_id, year, row.days, row.effective_date, policy.id)
 

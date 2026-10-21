@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import httpx
 
+from app.modules.identity.models import TrustedDevice
 from app.platform.authz.roles import RoleKey
 from tests.api_support import PASSWORD, Account, Api
 
@@ -41,10 +42,9 @@ async def test_a_new_browser_is_reported_once_and_then_recognized(api: Api) -> N
         devices = (await browser.get("/api/v1/me/devices")).json()["items"]
         assert [d["current"] for d in devices] == [True]
         token = device_cookie(browser)
-    stored = await api.fetch(
-        "SELECT token_hash FROM identity.trusted_devices WHERE user_id = :id", id=account.user_id
-    )
-    assert all(token.encode() not in bytes(row[0]) for row in stored)
+    stored = await api.records(TrustedDevice, {"user_id": account.user_id})
+    assert stored
+    assert all(token.encode() not in item.token_hash for item in stored)
 
 
 async def test_a_trusted_device_never_skips_the_second_factor(api: Api) -> None:
@@ -102,11 +102,8 @@ async def test_password_and_mfa_changes_keep_only_the_current_device(api: Api) -
         assert (await current.post("/api/v1/me/mfa/recovery-codes")).status_code == 200
         devices = (await current.get("/api/v1/me/devices")).json()["items"]
         assert [d["current"] for d in devices] == [True]
-    rows = await api.fetch(
-        "SELECT revoked_reason FROM identity.trusted_devices WHERE user_id = :id AND revoked_at IS NOT NULL",
-        id=account.user_id,
-    )
-    assert rows == [("mfa_changed",)]
+    rows = await api.records(TrustedDevice, {"user_id": account.user_id, "revoked_at": {"$ne": None}})
+    assert [row.revoked_reason for row in rows] == ["mfa_changed"]
     sent = [m.subject for m in await api.deliver() if m.to == account.email]
     assert any("sign-in settings were changed" in subject for subject in sent)
 
@@ -120,10 +117,8 @@ async def test_an_admin_session_revocation_also_ends_device_trust(api: Api) -> N
         await api.sign_in(admin_client, admin)
         await api.step_up(admin_client, admin)
         assert (await admin_client.delete(f"/api/v1/users/{account.user_id}/sessions")).status_code == 200
-    rows = await api.fetch(
-        "SELECT revoked_reason FROM identity.trusted_devices WHERE user_id = :id", id=account.user_id
-    )
-    assert rows == [("revoked_by_admin",)]
+    rows = await api.records(TrustedDevice, {"user_id": account.user_id})
+    assert [row.revoked_reason for row in rows] == ["revoked_by_admin"]
 
 
 async def test_simultaneous_sign_ins_with_one_cookie_report_nothing_new(api: Api) -> None:
@@ -154,11 +149,7 @@ async def test_simultaneous_sign_ins_with_one_cookie_report_nothing_new(api: Api
         assert any(result.status_code == 200 for result in results)
     await api.deliver()
     assert len(new_device_mail(api, account)) == 1
-    rows = await api.fetch(
-        "SELECT count(*) FROM identity.trusted_devices WHERE user_id = :id AND revoked_at IS NULL",
-        id=account.user_id,
-    )
-    assert rows == [(1,)]
+    assert await api.count("trusted_devices", {"user_id": account.user_id, "revoked_at": None}) == 1
 
 
 async def test_a_lockout_sends_one_email_however_many_attempts_follow(api: Api) -> None:

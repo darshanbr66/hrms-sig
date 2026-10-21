@@ -81,13 +81,12 @@ async def test_no_secret_reaches_logs_audit_or_events(api: Api, caplog: pytest.L
     server_records = [r for r in caplog.records if not r.name.startswith(("httpx", "httpcore"))]
     logs = "\n".join(formatter.format(record) for record in server_records)
     assert logs, "the flow should have logged requests"
-    rows = await api.fetch(
-        "SELECT to_jsonb(a)::text FROM audit.audit_log a WHERE target_id = :id OR actor_user_id = :uid "
-        "UNION ALL SELECT to_jsonb(e)::text FROM audit.security_events e WHERE user_id = :uid",
-        id=str(user_id),
-        uid=user_id,
-    )
-    stored = "\n".join(row[0] for row in rows)
+    rows = [
+        *await api.find("audit_log", {"$or": [{"target_id": str(user_id)}, {"actor_user_id": user_id}]}),
+        *await api.find("security_events", {"user_id": user_id}),
+    ]
+    assert rows
+    stored = "\n".join(repr(row) for row in rows)
     assert "login.succeeded" in stored
     for secret in secrets_seen:
         assert secret not in logs, "a secret was logged"
@@ -153,12 +152,11 @@ async def test_email_flow_secrets_stay_in_the_email(api: Api, caplog: pytest.Log
     server_records = [r for r in caplog.records if not r.name.startswith(("httpx", "httpcore"))]
     logs = "\n".join(formatter.format(record) for record in server_records)
     stored = "\n".join(
-        row[0]
-        for row in await api.fetch(
-            "SELECT to_jsonb(a)::text FROM audit.audit_log a "
-            "UNION ALL SELECT to_jsonb(e)::text FROM audit.security_events e "
-            "UNION ALL SELECT to_jsonb(o)::text FROM notify.email_outbox o"
-        )
+        [
+            repr(row)
+            for collection in ("audit_log", "security_events", "email_outbox")
+            for row in await api.find(collection, {})
+        ]
     )
     for secret in secrets_seen:
         assert secret not in logs

@@ -4,7 +4,7 @@ A failed check emails every active super admin and auditor once per stream, scop
 and nobody else. The email names the stream and the number of problems, never the problems.
 """
 
-from app.modules.audit.public import alert_chain_mismatch
+from app.modules.audit.public import chain_mismatch_alert
 from app.modules.identity.models import UserStatus
 from app.platform.audit.canonical import Stream
 from app.platform.audit.verify import Finding, Report, Scope
@@ -26,9 +26,10 @@ async def test_super_admins_and_auditors_are_alerted_once(isolated_api: Api) -> 
             Finding("link_broken", "2026-10", "position 3"),
         ],
     )
+    # The database is the test's own, so the alert reaches only this organization's people.
+    alert = chain_mismatch_alert(api.worker_database)
     for _ in range(2):
-        async with api.worker_database.unit_of_work() as session:
-            await alert_chain_mismatch(session, report, api.clock.now())
+        await alert(report, api.clock.now())
 
     sent = await api.deliver()
     assert sorted(message.to for message in sent) == sorted([super_admin.email, auditor.email])

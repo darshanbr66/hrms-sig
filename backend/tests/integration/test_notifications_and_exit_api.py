@@ -1,12 +1,14 @@
 """In-app notifications and preferences (NTF-1 to NTF-3), the one-step exit (MVP item 11) and
 emergency contacts (EMP-3). All data is obviously fake."""
 
+import json
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import select
-
+from app.modules.identity.models import User
 from app.modules.notify.models import EmailOutbox
+from app.modules.people.models import EmployeeJob
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Api
 from tests.people_data import add_job, create_employee, create_org_units, fake_code
@@ -63,9 +65,8 @@ async def test_notifications_follow_the_recipients_preferences(api: Api) -> None
     manager_id, employee_id = await employee_with_manager(api)
     manager = await api.create_account(employee_id=manager_id)
     employee = await api.create_account(employee_id=employee_id)
-    [(location_id,)] = await api.fetch(
-        "SELECT location_id FROM people.employee_jobs WHERE employee_id = :id", id=employee_id
-    )
+    [job] = await api.records(EmployeeJob, {"employee_id": employee_id})
+    location_id = job.location_id
     leave_type_id = await leave_type_and_policy(api, location_id)
     start = api.clock.now().date() + timedelta(days=30)
 
@@ -110,15 +111,9 @@ async def test_notifications_follow_the_recipients_preferences(api: Api) -> None
             json={"changes": [{"type": "export.ready", "channel": "email", "enabled": False}]},
         )
         assert unavailable.status_code == 422
-    async with api.database.unit_of_work() as session:
-        before = len(
-            list(await session.scalars(select(EmailOutbox).where(EmailOutbox.user_id == manager.user_id)))
-        )
+    before = len(await api.records(EmailOutbox, {"user_id": manager.user_id}))
     await request_leave(2)
-    async with api.database.unit_of_work() as session:
-        after = len(
-            list(await session.scalars(select(EmailOutbox).where(EmailOutbox.user_id == manager.user_id)))
-        )
+    after = len(await api.records(EmailOutbox, {"user_id": manager.user_id}))
     assert after == before
     async with api.client() as client:
         await api.sign_in(client, manager)
@@ -155,14 +150,9 @@ async def test_exit_disables_the_account_and_revokes_every_session_in_one_step(a
             assert done.json()["sessions_revoked"] >= 1
             assert done.json()["status_change"]["to_status"] == "exited"
         assert (await leaver.get("/api/v1/me")).status_code == 401
-    [(status,)] = await api.fetch("SELECT status FROM identity.users WHERE id = :id", id=employee.user_id)
-    assert status == "disabled"
-    actions = {
-        row[0]
-        for row in await api.fetch(
-            "SELECT action FROM audit.audit_log WHERE subject_employee_id = :id", id=employee_id
-        )
-    }
+    [user] = await api.records(User, {"id": employee.user_id})
+    assert user.status == "disabled"
+    actions = {row.action for row in await api.records(AuditLogRecord, {"subject_employee_id": employee_id})}
     assert {"employee.status.changed", "identity.user.disabled"} <= actions
 
 
@@ -178,10 +168,8 @@ async def test_an_administrators_account_is_left_for_a_system_admin(api: Api) ->
             json={"last_working_day": api.clock.now().date().isoformat(), "reason": "Test: left"},
         )
         assert done.json()["account"] == "administrator_left_active"
-    [(status,)] = await api.fetch(
-        "SELECT status FROM identity.users WHERE id = :id", id=admin_account.user_id
-    )
-    assert status == "active"
+    [user] = await api.records(User, {"id": admin_account.user_id})
+    assert user.status == "active"
 
 
 async def test_emergency_contacts_are_personal_and_audited(api: Api) -> None:
@@ -211,11 +199,13 @@ async def test_emergency_contacts_are_personal_and_audited(api: Api) -> None:
         await api.sign_in(client, hr)
         read = await client.get(f"/api/v1/employees/{employee_id}/emergency-contacts")
         assert read.json()["items"][0]["name"] == "Test Contact"
-    rows = await api.fetch(
-        "SELECT action, changes::text FROM audit.audit_log WHERE subject_employee_id = :id "
-        "AND action LIKE 'employee.emergency_contacts.%'",
-        id=employee_id,
-    )
+    rows = [
+        (row.action, json.dumps(row.changes))
+        for row in await api.records(
+            AuditLogRecord,
+            {"subject_employee_id": employee_id, "action": {"$regex": "^employee[.]emergency_contacts[.]"}},
+        )
+    ]
     assert {row[0] for row in rows} == {
         "employee.emergency_contacts.updated",
         "employee.emergency_contacts.read",

@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Final
 
-from sqlalchemy import and_, select, text
-
 from app.modules.people import public as people
 from app.modules.reports.models import ExportJob, ExportStatus, ExportType
 from app.platform.audit.records import AuditEvent, RequestContext, ValueChange
@@ -64,14 +62,6 @@ def field_error(field: str, code: str, message: str) -> ProblemError:
     )
 
 
-def storage_missing() -> ProblemError:
-    return ProblemError(
-        ProblemType.TEMPORARILY_UNAVAILABLE,
-        detail="File storage is not set up, so exports cannot be produced. Ask your system administrator.",
-        extensions={"code": "files.not_configured"},
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class ExportRequest:
     export_type: ExportType
@@ -90,7 +80,7 @@ class ExportService:
         audit: AuditWriter,
         authorizer: Authorizer,
         rate_limiter: RateLimiter,
-        store: FileStore | None,
+        store: FileStore,
     ) -> None:
         self._db = database
         self._clock = clock
@@ -98,10 +88,6 @@ class ExportService:
         self._authz = authorizer
         self._limiter = rate_limiter
         self._store = store
-
-    @property
-    def configured(self) -> bool:
-        return self._store is not None
 
     def _period(self, spec: Spec, request: ExportRequest) -> tuple[date | None, date | None]:
         today = self._authz.today()
@@ -122,24 +108,18 @@ class ExportService:
         start, end = self._period(spec, request)
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, spec.permission)
-            if self._store is None:
-                raise storage_missing()
             await self._limiter.enforce(EXPORTS_PER_USER, str(actor.user_id))
             # One export in preparation per person at a time (api-architecture §9). The lock
-            # makes two simultaneous requests of one person wait for each other.
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtextextended('exports:' || :user_id, 0))"),
-                {"user_id": str(actor.user_id)},
+            # makes one of two simultaneous requests of one person fail with a conflict.
+            await session.lock(f"exports:{actor.user_id}")
+            preparing = await session.exists(
+                ExportJob,
+                {
+                    "requested_by": actor.user_id,
+                    "status": {"$in": [ExportStatus.QUEUED.value, ExportStatus.RUNNING.value]},
+                },
             )
-            preparing = await session.scalar(
-                select(ExportJob.id)
-                .where(
-                    ExportJob.requested_by == actor.user_id,
-                    ExportJob.status.in_((ExportStatus.QUEUED.value, ExportStatus.RUNNING.value)),
-                )
-                .limit(1)
-            )
-            if preparing is not None:
+            if preparing:
                 raise ProblemError(
                     ProblemType.CONFLICT,
                     detail="Your previous export is still being prepared. Wait until it is ready, "
@@ -155,13 +135,17 @@ class ExportService:
             covered = None
             if spec.scope is not None:
                 on = end or self._authz.today()
-                scope = self._authz.scope_filter(actor, spec.scope, people.employee_id_column(), on=on)
+                scope = await self._authz.scope_filter(
+                    session, actor, spec.scope, people.EMPLOYEE_ID_FIELD, on=on
+                )
                 if request.department_id or request.location_id:
-                    scope = and_(
-                        scope,
-                        people.employee_id_column().in_(
-                            people.placed_employee_ids_query(request.department_id, request.location_id, on)
-                        ),
+                    placed = await people.placed_employee_ids(
+                        session, request.department_id, request.location_id, on
+                    )
+                    scope = (
+                        {"$and": [scope, {people.EMPLOYEE_ID_FIELD: {"$in": sorted(placed)}}]}
+                        if scope
+                        else {people.EMPLOYEE_ID_FIELD: {"$in": sorted(placed)}}
                     )
                 ids = await people.ids_in_scope(session, scope)
                 parameters["employee_ids"] = [str(i) for i in ids]
@@ -193,20 +177,18 @@ class ExportService:
 
     async def mine(self, actor: Actor) -> list[ExportJob]:
         async with self._db.unit_of_work() as session:
-            return list(
-                await session.scalars(
-                    select(ExportJob)
-                    .where(ExportJob.requested_by == actor.user_id)
-                    .order_by(ExportJob.requested_at.desc(), ExportJob.id.desc())
-                    .limit(MAX_LISTED)
-                )
+            return await session.find(
+                ExportJob,
+                {"requested_by": actor.user_id},
+                sort=[("requested_at", -1), ("id", -1)],
+                limit=MAX_LISTED,
             )
 
     async def download(self, actor: Actor, context: RequestContext, job_id: uuid.UUID) -> tuple[str, int]:
         now = self._clock.now()
         await self._limiter.enforce(EXPORT_DOWNLOADS_PER_USER, str(actor.user_id))
         async with self._db.unit_of_work() as session:
-            job = await session.get(ExportJob, job_id, with_for_update=True, populate_existing=True)
+            job = await session.get(ExportJob, job_id, for_update=True)
             # Only the person who asked for an export can download it (RPT-3).
             if job is None or job.requested_by != actor.user_id:
                 raise ProblemError(ProblemType.NOT_FOUND)
@@ -222,8 +204,6 @@ class ExportService:
                     detail="This export has expired. Ask for a new one.",
                     extensions={"code": "export.expired"},
                 )
-            if self._store is None:
-                raise storage_missing()
             job.downloaded_at = now
             await self._audit.record(
                 session,

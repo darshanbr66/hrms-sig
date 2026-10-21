@@ -5,8 +5,11 @@
   the assignment's department/location constraint, `team` through the reporting chain on the
   relevant date, `self` by identity), then checks step-up. It returns the permission it
   relied on, so the caller can record it in the audit row.
-- `scope_filter` turns the scopes the actor holds into one SQL predicate on an employee ID
-  column, for list queries. With no scope held it refuses before any query runs.
+- `scope_filter` turns the scopes the actor holds into one MongoDB condition on an employee ID
+  field, for list queries: nothing for an unrestricted `all`, otherwise the employee IDs the
+  actor may see (`$in`), resolved from reporting lines and placements on the date. With no
+  scope held it refuses before any query runs. Queries run in the actor's organization (the
+  unit of work adds it), so a scope never reaches another organization's people.
 - Denial is the default: an unknown permission, an absent grant or an unmatched subject is
   refused.
 
@@ -18,15 +21,12 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Final, Protocol
-
-from sqlalchemy import ColumnElement, Select, false, or_, true
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import QueryableAttribute
+from typing import Any, Final, Protocol
 
 from app.platform.authz.catalog import PERMISSIONS, Permission, Scope, scoped_keys
 from app.platform.authz.context import Actor, Constraint
 from app.platform.clock import Clock
+from app.platform.db import Session, TenantScopeError
 from app.platform.errors import ProblemError, ProblemType
 
 # docs/security-architecture.md §3.6.
@@ -43,18 +43,18 @@ class Placement:
 
 class Relationships(Protocol):
     async def is_team_member(
-        self, session: AsyncSession, manager_employee_id: uuid.UUID, employee_id: uuid.UUID, on: date
+        self, session: Session, manager_employee_id: uuid.UUID, employee_id: uuid.UUID, on: date
     ) -> bool: ...
 
-    def team_member_ids_query(self, manager_employee_id: uuid.UUID, on: date) -> Select[uuid.UUID]: ...
+    async def team_member_ids(
+        self, session: Session, manager_employee_id: uuid.UUID, on: date
+    ) -> frozenset[uuid.UUID]: ...
 
-    async def placement(
-        self, session: AsyncSession, employee_id: uuid.UUID, on: date
-    ) -> Placement | None: ...
+    async def placement(self, session: Session, employee_id: uuid.UUID, on: date) -> Placement | None: ...
 
-    def placed_employee_ids_query(
-        self, department_id: uuid.UUID | None, location_id: uuid.UUID | None, on: date
-    ) -> Select[uuid.UUID]: ...
+    async def placed_employee_ids(
+        self, session: Session, department_id: uuid.UUID | None, location_id: uuid.UUID | None, on: date
+    ) -> frozenset[uuid.UUID]: ...
 
 
 class AccessDenied(ProblemError):
@@ -135,7 +135,7 @@ class Authorizer:
 
     async def require(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         base: str,
         *,
@@ -145,6 +145,7 @@ class Authorizer:
     ) -> Granted:
         """Allow or refuse one action. `on` is the date the subject relationship is judged
         on: today for current data, the record's own date for historical records."""
+        _check_tenant(session, actor)
         keys = self.candidate_keys(base)
         matched: Permission | None = None
         if subject_employee_id is None:
@@ -161,7 +162,7 @@ class Authorizer:
         return Granted(matched)
 
     async def _match_subject(
-        self, session: AsyncSession, actor: Actor, keys: Sequence[str], subject: uuid.UUID, on: date
+        self, session: Session, actor: Actor, keys: Sequence[str], subject: uuid.UUID, on: date
     ) -> Permission | None:
         held = [PERMISSIONS[key] for key in keys if actor.holds(key)]
         # Narrowest scope first, so the audit row names the least permission that sufficed.
@@ -173,7 +174,7 @@ class Authorizer:
         return None
 
     async def _subject_in_scope(
-        self, session: AsyncSession, actor: Actor, permission: Permission, subject: uuid.UUID, on: date
+        self, session: Session, actor: Actor, permission: Permission, subject: uuid.UUID, on: date
     ) -> bool:
         match permission.scope:
             case Scope.SELF:
@@ -196,43 +197,46 @@ class Authorizer:
 
     # --- list filter -----------------------------------------------------------------
 
-    def scope_filter(
+    async def scope_filter(
         self,
+        session: Session,
         actor: Actor,
         base: str,
-        employee_id_column: ColumnElement[uuid.UUID] | QueryableAttribute[uuid.UUID],
+        employee_id_field: str,
         *,
         on: date | None = None,
-    ) -> ColumnElement[bool]:
-        """A predicate on `employee_id_column` covering every scope the actor holds."""
+    ) -> dict[str, Any]:
+        """A condition on `employee_id_field` covering every scope the actor holds: empty when
+        an unrestricted `all` is held, otherwise `{field: {"$in": [...]}}` (possibly empty)."""
+        _check_tenant(session, actor)
         on = on or self.today()
         keys = [key for key in scoped_keys(base) if actor.holds(key)]
         if not keys:
             raise AccessDenied
-        clauses: list[ColumnElement[bool]] = []
+        allowed: set[uuid.UUID] = set()
         for key in keys:
             match PERMISSIONS[key].scope:
                 case Scope.ALL:
                     constraints = actor.grants[key]
                     if any(constraint.unrestricted for constraint in constraints):
-                        return true()
-                    clauses.extend(
-                        employee_id_column.in_(
-                            self._relationships.placed_employee_ids_query(c.department_id, c.location_id, on)
+                        return {}
+                    for c in constraints:
+                        allowed |= await self._relationships.placed_employee_ids(
+                            session, c.department_id, c.location_id, on
                         )
-                        for c in constraints
-                    )
                 case Scope.TEAM if actor.employee_id is not None:
-                    clauses.append(
-                        employee_id_column.in_(
-                            self._relationships.team_member_ids_query(actor.employee_id, on)
-                        )
-                    )
+                    allowed |= await self._relationships.team_member_ids(session, actor.employee_id, on)
                 case Scope.SELF if actor.employee_id is not None:
-                    clauses.append(employee_id_column == actor.employee_id)
+                    allowed.add(actor.employee_id)
                 case _:
                     pass
-        return or_(*clauses) if clauses else false()
+        return {employee_id_field: {"$in": sorted(allowed)}}
+
+
+def _check_tenant(session: Session, actor: Actor) -> None:
+    """Decisions are made only in the actor's own organization."""
+    if session.tenant != actor.organization_id:
+        raise TenantScopeError("an authorization decision was asked outside the actor's organization")
 
 
 def _fits(constraint: Constraint, placement: Placement) -> bool:

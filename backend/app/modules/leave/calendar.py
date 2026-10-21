@@ -11,25 +11,22 @@ from collections.abc import Collection
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.leave.models import (
     Holiday,
     HolidayCalendar,
     HolidayKind,
     LeaveRequest,
-    LeaveRequestDay,
     LocationHolidayCalendar,
     RequestStatus,
 )
+from app.platform.db import Session
 
 # Approved leave keeps its days while a cancellation waits for a decision.
 _TAKEN = (RequestStatus.APPROVED.value, RequestStatus.CANCELLATION_REQUESTED.value)
 
 
 async def holiday_dates(
-    session: AsyncSession, location_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, location_ids: Collection[uuid.UUID], start: date, end: date
 ) -> dict[uuid.UUID, set[date]]:
     """Holidays (not optional ones) of the active calendar assigned to each location for the
     year, between `start` and `end` inclusive."""
@@ -37,7 +34,7 @@ async def holiday_dates(
 
 
 async def working_day_dates(
-    session: AsyncSession, location_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, location_ids: Collection[uuid.UUID], start: date, end: date
 ) -> dict[uuid.UUID, set[date]]:
     """Declared working days of the active calendar assigned to each location for the year,
     between `start` and `end` inclusive."""
@@ -45,7 +42,7 @@ async def working_day_dates(
 
 
 async def _entry_dates(
-    session: AsyncSession,
+    session: Session,
     kind: HolidayKind,
     location_ids: Collection[uuid.UUID],
     start: date,
@@ -54,42 +51,57 @@ async def _entry_dates(
     found: dict[uuid.UUID, set[date]] = defaultdict(set)
     if not location_ids:
         return found
-    rows = await session.execute(
-        select(LocationHolidayCalendar.location_id, Holiday.date)
-        .join(HolidayCalendar, HolidayCalendar.id == LocationHolidayCalendar.calendar_id)
-        .join(Holiday, Holiday.calendar_id == HolidayCalendar.id)
-        .where(
-            LocationHolidayCalendar.location_id.in_(set(location_ids)),
-            HolidayCalendar.status == "active",
-            Holiday.kind == kind.value,
-            Holiday.is_optional.is_(False),
-            Holiday.date >= start,
-            Holiday.date <= end,
-        )
+    assignments = await session.find(
+        LocationHolidayCalendar,
+        {"location_id": {"$in": list(set(location_ids))}, "year": {"$gte": start.year, "$lte": end.year}},
     )
-    for location_id, day in rows.all():
-        found[location_id].add(day)
+    calendars = {
+        calendar.id
+        for calendar in await session.find(
+            HolidayCalendar,
+            {"id": {"$in": list({a.calendar_id for a in assignments})}, "status": "active"},
+        )
+    }
+    by_calendar: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+    for assignment in assignments:
+        if assignment.calendar_id in calendars:
+            by_calendar[assignment.calendar_id].add(assignment.location_id)
+    if not by_calendar:
+        return found
+    holidays = await session.find(
+        Holiday,
+        {
+            "calendar_id": {"$in": list(by_calendar)},
+            "kind": kind.value,
+            "is_optional": False,
+            "date": {"$gte": start, "$lte": end},
+        },
+    )
+    for holiday in holidays:
+        for location_id in by_calendar[holiday.calendar_id]:
+            found[location_id].add(holiday.date)
     return found
 
 
 async def leave_portions(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date
 ) -> dict[tuple[uuid.UUID, date], Decimal]:
     """The portion of each day (0.5 or 1) covered by approved leave, per employee and date."""
     if not employee_ids:
         return {}
-    rows = await session.execute(
-        select(LeaveRequest.employee_id, LeaveRequestDay.date, LeaveRequestDay.portion)
-        .join(LeaveRequestDay, LeaveRequestDay.leave_request_id == LeaveRequest.id)
-        .where(
-            LeaveRequest.employee_id.in_(set(employee_ids)),
-            LeaveRequest.status.in_(_TAKEN),
-            LeaveRequestDay.date >= start,
-            LeaveRequestDay.date <= end,
-        )
+    requests = await session.find(
+        LeaveRequest,
+        {
+            "employee_id": {"$in": list(set(employee_ids))},
+            "status": {"$in": list(_TAKEN)},
+            "start_date": {"$lte": end},
+            "end_date": {"$gte": start},
+        },
     )
     portions: dict[tuple[uuid.UUID, date], Decimal] = {}
-    for employee_id, day, portion in rows.all():
-        key = (employee_id, day)
-        portions[key] = min(Decimal("1"), portions.get(key, Decimal("0")) + Decimal(portion))
+    for request in requests:
+        for day in request.day_rows():
+            if start <= day.date <= end:
+                key = (request.employee_id, day.date)
+                portions[key] = min(Decimal("1"), portions.get(key, Decimal("0")) + day.portion)
     return portions

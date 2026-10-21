@@ -5,10 +5,10 @@ and retention, so the value that is sealed and the value that is checked are com
 same code.
 
 - **Row digest** (`digest_version` 1): SHA-256 of the two-byte version followed by the
-  RFC 8785 canonical JSON of the row: an object of every column of the stream (`COLUMNS`,
-  fixed per version) to its PostgreSQL text form, or null. Text forms are read with
-  `TimeZone` UTC, `DateStyle` ISO and hex `bytea` output (`ROW_TEXT_SETTINGS`), so they do
-  not depend on the driver or the session. A new column needs a new digest version.
+  RFC 8785 canonical JSON of the record: an object of every field of the stream (`COLUMNS`,
+  fixed per version) to its canonical form (`canonical_value`): UUIDs as lower-case text,
+  times as UTC ISO 8601 with milliseconds and `Z`, bytes as lower-case hex, objects as JSON,
+  absent values as null. A new field needs a new digest version.
 - **Genesis** of a partition: SHA-256 of `sv-audit-genesis`, the stream and the month key,
   NUL-separated. The chain restarts in every partition.
 - **Link**: SHA-256 of the previous link (or the genesis), the row digest and the position
@@ -16,28 +16,30 @@ same code.
 - **Checkpoint hash**: SHA-256 of `sv-audit-checkpoint`, NUL, and the canonical JSON of the
   checkpoint's fields (`checkpoint_document`); hashes are lower-case hex, the time is UTC
   ISO 8601 with microseconds. The Ed25519 signature is over the 32-byte checkpoint hash.
-- **Anchor**: the checkpoint document plus its hash and signature, as canonical JSON, stored
-  under `<stream>/<checkpoint_no, 12 digits>.json` in the write-once bucket.
+- **Export**: the checkpoint document plus its hash and signature, as canonical JSON
+  (`export_body`). `python -m app.cli audit-export-checkpoints` writes them out so an operator
+  can keep copies outside the database (docs/security-architecture.md §8.1: there is no
+  write-once storage in this deployment, so these copies are what detects a rewrite by someone
+  with database administrator access).
 """
 
 import base64
 import hashlib
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Any, Final
 
 import rfc8785
 
 DIGEST_VERSION: Final = 1
 HASH_BYTES: Final = 32
 ZERO_HASH: Final = bytes(HASH_BYTES)
-# A month partition can no longer receive rows one hour after the month ends: longer than any
-# runtime role's transaction_timeout (API 30 s, worker and retention 10 min).
+# A month can no longer receive records one hour after it ends: longer than any transaction
+# lives (MongoDB aborts transactions after 60 seconds).
 FINAL_MARGIN: Final = timedelta(hours=1)
-# Session settings under which rows are read as text for their digest.
-ROW_TEXT_SETTINGS: Final = {"TimeZone": "UTC", "DateStyle": "ISO, YMD", "bytea_output": "hex"}
 
 
 class Stream(StrEnum):
@@ -55,6 +57,7 @@ class CheckpointKind(StrEnum):
 COLUMNS: Final[Mapping[Stream, tuple[str, ...]]] = {
     Stream.AUDIT_LOG: (
         "id",
+        "organization_id",
         "recorded_at",
         "occurred_at",
         "actor_type",
@@ -75,6 +78,7 @@ COLUMNS: Final[Mapping[Stream, tuple[str, ...]]] = {
     ),
     Stream.SECURITY_EVENTS: (
         "id",
+        "organization_id",
         "recorded_at",
         "occurred_at",
         "event_type",
@@ -112,22 +116,6 @@ def month_end(key: str) -> datetime:
     return add_months(month_start(key), 1)
 
 
-def partition_name(stream: Stream, key: str) -> str:
-    return f"{stream.value}_p{key.replace('-', '_')}"
-
-
-def key_of_partition(stream: Stream, name: str) -> str | None:
-    """The month of a partition name made by `audit.ensure_partitions`, or None."""
-    prefix = f"{stream.value}_p"
-    suffix = name.removeprefix(prefix)
-    if suffix == name or len(suffix) != 7 or suffix[4] != "_":
-        return None
-    year, month = suffix[:4], suffix[5:]
-    if not (year.isdigit() and month.isdigit() and 1 <= int(month) <= 12):
-        return None
-    return f"{year}-{month}"
-
-
 # --- row chain ------------------------------------------------------------------------------
 
 
@@ -138,7 +126,29 @@ def _sha256(*parts: bytes) -> bytes:
     return digest.digest()
 
 
-def row_digest(stream: Stream, values: Mapping[str, str | None], version: int = DIGEST_VERSION) -> bytes:
+def canonical_value(value: Any) -> Any:  # noqa: PLR0911 (one form per stored type)
+    """A stored value in the form the row digest covers."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, Mapping):
+        return {str(key): canonical_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [canonical_value(item) for item in value]
+    return str(value)
+
+
+def row_values(stream: Stream, stored: Mapping[str, Any]) -> dict[str, Any]:
+    """The digest input of a stored record: every field of the stream, canonical."""
+    return {name: canonical_value(stored.get("_id" if name == "id" else name)) for name in COLUMNS[stream]}
+
+
+def row_digest(stream: Stream, values: Mapping[str, Any], version: int = DIGEST_VERSION) -> bytes:
     if version != DIGEST_VERSION:
         raise ValueError(f"unknown digest version {version}")
     columns = COLUMNS[stream]
@@ -181,14 +191,6 @@ class CheckpointFields:
     archive_sha256: bytes | None = None
     retention_policy_version: str | None = None
 
-    @property
-    def anchor_object_key(self) -> str:
-        return anchor_object_key(self.stream, self.checkpoint_no)
-
-
-def anchor_object_key(stream: Stream, checkpoint_no: int) -> str:
-    return f"{stream.value}/{checkpoint_no:012d}.json"
-
 
 def checkpoint_document(fields: CheckpointFields) -> dict[str, str | int | None]:
     return {
@@ -212,8 +214,8 @@ def checkpoint_hash(fields: CheckpointFields) -> bytes:
     return _sha256(b"sv-audit-checkpoint\x00", rfc8785.dumps(checkpoint_document(fields)))
 
 
-def anchor_body(fields: CheckpointFields, signature: bytes) -> bytes:
-    """The write-once copy of a checkpoint: what it states, its hash and its signature."""
+def export_body(fields: CheckpointFields, signature: bytes) -> bytes:
+    """A checkpoint as kept outside the database: what it states, its hash and its signature."""
     document = checkpoint_document(fields) | {
         "checkpoint_hash": checkpoint_hash(fields).hex(),
         "signature": base64.b64encode(signature).decode(),

@@ -1,30 +1,29 @@
-"""Rate limiter against a real Redis configured with the production ACL (infra/redis)."""
+"""Rate limiter against a real MongoDB, connected as the API's database user."""
 
 import asyncio
 import logging
 import secrets
-import socket
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-import redis.asyncio as aioredis
-from redis.exceptions import AuthenticationError, NoPermissionError, ResponseError
+from pymongo import AsyncMongoClient
 
+from app.platform.db import CODEC_OPTIONS, ID, Database
 from app.platform.errors import ProblemType
 from app.platform.ratelimit import (
     MAX_WINDOW,
     STORE_UNAVAILABLE_RETRY_AFTER_SECONDS,
     FailureMode,
+    RateLimitCounter,
     RateLimiter,
     RateLimitExceeded,
     RateLimitRule,
     RateLimitScope,
     RateLimitStoreUnavailable,
-    create_redis_client,
 )
-from tests.conftest import RedisServer
+from tests.conftest import MongoServer, database_as
 
 HMAC_KEY = b"test-hmac-key-for-rate-limit-keys"
 
@@ -52,10 +51,9 @@ def rule(
 
 
 @pytest.fixture
-async def redis_client(redis: RedisServer) -> AsyncIterator[aioredis.Redis]:
-    client = create_redis_client(redis.url())
-    yield client
-    await client.aclose()
+async def database(migrated_mongo: MongoServer) -> AsyncIterator[Database]:
+    async with database_as(migrated_mongo, "hrms_app") as connected:
+        yield connected
 
 
 @pytest.fixture
@@ -64,8 +62,18 @@ def clock() -> SteppingClock:
 
 
 @pytest.fixture
-def limiter(redis_client: aioredis.Redis, clock: SteppingClock) -> RateLimiter:
-    return RateLimiter(redis_client, hmac_key=HMAC_KEY, clock=clock)
+def limiter(database: Database, clock: SteppingClock) -> RateLimiter:
+    return RateLimiter(database, hmac_key=HMAC_KEY, clock=clock)
+
+
+async def stored(
+    database: Database, limiter: RateLimiter, limit_rule: RateLimitRule, subject: str
+) -> dict[str, object]:
+    found = await database.collection(RateLimitCounter.__collection__).find_one(
+        {ID: limiter.key_for(limit_rule, subject)}
+    )
+    assert found is not None
+    return found
 
 
 async def test_hit_allows_up_to_the_limit_then_denies(limiter: RateLimiter) -> None:
@@ -117,75 +125,70 @@ async def test_enforce_raises_rate_limited_problem(limiter: RateLimiter) -> None
     assert raised.value.headers == {"Retry-After": "60"}
 
 
-async def test_keys_hold_no_subject(limiter: RateLimiter, redis_client: aioredis.Redis) -> None:
+async def test_concurrent_hits_are_all_counted(limiter: RateLimiter) -> None:
+    """The update is atomic: twenty simultaneous requests never let more than the limit through."""
+    limit_rule = rule(limit=5)
+    decisions = await asyncio.gather(*(limiter.hit(limit_rule, "s") for _ in range(20)))
+    assert sum(decision.allowed for decision in decisions) == 5
+
+
+async def test_keys_hold_no_subject_and_documents_hold_no_data(
+    limiter: RateLimiter, database: Database, clock: SteppingClock
+) -> None:
     limit_rule = rule()
     subject = "person@example.test"
     key = limiter.key_for(limit_rule, subject)
     assert subject not in key
     assert key.startswith(f"rl:auth:{limit_rule.name}:")
-    assert key != RateLimiter(redis_client, hmac_key=b"another-key", clock=SteppingClock()).key_for(
+    assert key != RateLimiter(database, hmac_key=b"another-key", clock=SteppingClock()).key_for(
         limit_rule, subject
     )
+    await limiter.hit(limit_rule, subject)
+    document = await stored(database, limiter, limit_rule, subject)
+    assert set(document) == {ID, "hits", "allowed", "expires_at"}
+    assert subject not in str(document)
 
 
-async def test_keys_expire_one_window_after_the_last_entry(
-    limiter: RateLimiter, redis_client: aioredis.Redis
+async def test_counters_are_bounded_and_expire_one_window_after_the_last_entry(
+    limiter: RateLimiter, database: Database, clock: SteppingClock
 ) -> None:
-    limit_rule = rule(window_seconds=1)
-    await limiter.hit(limit_rule, "s")
-    key = limiter.key_for(limit_rule, "s")
-    assert await redis_client.zcard(key) == 1
-    await asyncio.sleep(1.3)
-    assert await redis_client.zcard(key) == 0
+    limit_rule = rule(limit=3, window_seconds=60)
+    for _ in range(10):
+        await limiter.record(limit_rule, "s")
+        clock.advance(timedelta(seconds=1))
+    document = await stored(database, limiter, limit_rule, "s")
+    # The log never grows past the limit, however many attempts are recorded.
+    assert len(document["hits"]) == 3  # type: ignore[arg-type]
+    assert document["expires_at"] == clock.now() - timedelta(seconds=1) + limit_rule.window
 
 
-@pytest.mark.parametrize(
-    "commands",
-    [
-        ("SET", "rl:x", "1"),
-        ("GET", "rl:x"),
-        ("KEYS", "*"),
-        ("FLUSHALL",),
-        ("CONFIG", "GET", "save"),
-        ("ZADD", "other:x", "1", "m"),
-        ("EVAL", "return 1", "0"),
-    ],
-)
-async def test_acl_user_is_limited_to_rate_limit_commands_and_keys(
-    redis_client: aioredis.Redis, commands: tuple[str, ...]
-) -> None:
-    with pytest.raises((NoPermissionError, ResponseError)):
-        await redis_client.execute_command(*commands)  # type: ignore[no-untyped-call]
+async def test_expired_counters_are_removed_by_a_ttl_index(migrated_mongo: MongoServer) -> None:
+    # Read as the migration user: the API's user may not even list indexes.
+    async with database_as(migrated_mongo, "hrms_migrator") as migrator:
+        cursor = await migrator.collection(RateLimitCounter.__collection__).list_indexes()
+        indexes = {item["name"]: item async for item in cursor}
+    ttl = indexes["ttl_rate_limit_counters_expires_at"]
+    assert ttl["expireAfterSeconds"] == 0
+    assert dict(ttl["key"]) == {"expires_at": 1}
 
 
-async def test_default_user_is_disabled(redis: RedisServer) -> None:
-    client = aioredis.Redis(host=redis.host, port=redis.port, socket_timeout=1)
-    try:
-        with pytest.raises(AuthenticationError):
-            await client.ping()
-    finally:
-        await client.aclose()
-
-
-def test_server_does_not_run_as_root(redis: RedisServer) -> None:
-    result = redis.container.exec(["cat", "/proc/1/status"])
-    uid_line = next(line for line in result.output.decode().splitlines() if line.startswith("Uid:"))
-    # Real, effective, saved and filesystem UIDs of the server process.
-    assert "0" not in uid_line.split()[1:]
-
-
-def closed_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port: int = sock.getsockname()[1]
-    return port
+# A name that never resolves (RFC 6761). Name resolution fails before any socket exists: a closed
+# local port would leave PyMongo's monitor connecting when the client closes, and PyMongo 4.19
+# does not close a socket whose connect is cancelled, so it would be reported later against
+# whichever test the garbage collector runs in.
+UNREACHABLE_URI = "mongodb://hrms_app:pw@hrms-test-database.invalid:27017/?directConnection=true"
 
 
 @pytest.fixture
 async def unreachable_limiter(clock: SteppingClock) -> AsyncIterator[RateLimiter]:
-    client = create_redis_client(f"redis://hrms_ratelimit:pw@127.0.0.1:{closed_port()}/0")
-    yield RateLimiter(client, hmac_key=HMAC_KEY, clock=clock)
-    await client.aclose()
+    client: AsyncMongoClient[dict[str, object]] = AsyncMongoClient(
+        UNREACHABLE_URI,
+        serverSelectionTimeoutMS=300,
+    )
+    database = Database(client, "hrms")
+    assert database.db.codec_options == CODEC_OPTIONS
+    yield RateLimiter(database, hmac_key=HMAC_KEY, clock=clock)
+    await client.close()
 
 
 @pytest.mark.parametrize("scope", [RateLimitScope.AUTH, RateLimitScope.DOWNLOAD, RateLimitScope.EXPORT])
@@ -222,6 +225,7 @@ async def test_store_down_fails_open_for_general_api_limits(
     [
         ("Upper", 1, timedelta(seconds=10)),
         ("ok", 0, timedelta(seconds=10)),
+        ("ok", 1001, timedelta(seconds=10)),
         ("ok", 1, timedelta(milliseconds=500)),
         ("ok", 1, MAX_WINDOW + timedelta(seconds=1)),
     ],

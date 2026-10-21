@@ -4,10 +4,9 @@ import csv
 import io
 from datetime import timedelta
 
-import httpx
-
 from app.modules.reports.job import produce, purge
 from app.platform.authz.roles import RoleKey
+from app.platform.db import tenant_scope
 from tests.api_support import Api
 from tests.people_data import add_job, create_employee, create_org_units
 
@@ -51,8 +50,9 @@ async def test_an_export_covers_only_what_the_requester_reads_and_only_they_down
         )
         assert too_long.json()["errors"][0]["code"] == "range.too_long"
 
-    assert api.files is not None
-    assert await produce(api.worker_database, api.files, api.clock) >= 1
+    # As the worker runs them: once per organization, inside its scope.
+    with tenant_scope(api.organization_id):
+        assert await produce(api.worker_database, api.files, api.clock) >= 1
     async with api.client() as client:
         await api.sign_in(client, hr)
         mine = (await client.get("/api/v1/me/exports")).json()
@@ -60,7 +60,7 @@ async def test_an_export_covers_only_what_the_requester_reads_and_only_they_down
         assert done["status"] == "done"
         assert done["row_count"] == 1
         link = (await client.post(f"/api/v1/me/exports/{export['id']}/download")).json()
-        async with httpx.AsyncClient() as plain:
+        async with api.client(csrf=False) as plain:
             body = (await plain.get(link["url"])).content.decode("utf-8-sig")
         rows = list(csv.DictReader(io.StringIO(body)))
         assert len(rows) == 1
@@ -70,15 +70,14 @@ async def test_an_export_covers_only_what_the_requester_reads_and_only_they_down
     async with api.client() as client:
         await api.sign_in(client, other)
         assert (await client.post(f"/api/v1/me/exports/{export['id']}/download")).status_code == 404
-    [(audited,)] = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log "
-        "WHERE target_id = :id AND action IN ('export.requested', 'export.downloaded')",
-        id=export["id"],
+    audited = await api.count(
+        "audit_log", {"target_id": export["id"], "action": {"$in": ["export.requested", "export.downloaded"]}}
     )
     assert audited == 2
 
     api.clock.advance(timedelta(hours=25))
-    assert await purge(api.worker_database, api.files, api.clock) >= 1
+    with tenant_scope(api.organization_id):
+        assert await purge(api.worker_database, api.files, api.clock) >= 1
     async with api.client() as client:
         await api.sign_in(client, hr)
         expired = await client.post(f"/api/v1/me/exports/{export['id']}/download")

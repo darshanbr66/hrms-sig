@@ -21,10 +21,6 @@ from datetime import date
 from typing import Any, Final
 from zoneinfo import available_timezones
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.org.models import Department, Designation, Location, OrgUnitStatus
 from app.modules.people import public as people
 from app.platform.audit.records import AuditEvent, RequestContext, change_of
@@ -33,7 +29,7 @@ from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import CASE_INSENSITIVE, Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 
 type OrgRecord = Location | Department | Designation
@@ -76,11 +72,9 @@ class OrgService:
     # --- reads ---------------------------------------------------------------------------------
 
     async def records(self, model: type[OrgRecord], *, include_archived: bool) -> list[Any]:
-        query = select(model).order_by(func.lower(model.name), model.id)
-        if not include_archived:
-            query = query.where(model.status == OrgUnitStatus.ACTIVE.value)
+        query = {} if include_archived else {"status": OrgUnitStatus.ACTIVE.value}
         async with self._db.unit_of_work() as session:
-            return list(await session.scalars(query))
+            return await session.find(model, query, sort=[("name", 1), ("id", 1)], collation=CASE_INSENSITIVE)
 
     async def head_names(self, departments: Sequence[Department]) -> dict[uuid.UUID, str]:
         heads = {d.head_employee_id for d in departments if d.head_employee_id is not None}
@@ -142,7 +136,7 @@ class OrgService:
             _check_time_zone(values["time_zone"])
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "org.manage")
-            record: Any = await session.get(model, record_id, with_for_update=True, populate_existing=True)
+            record: Any = await session.get(model, record_id, for_update=True)
             if record is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             check_version(record.version, expected_version)
@@ -182,7 +176,7 @@ class OrgService:
                 )
         return record
 
-    async def _check_unused(self, session: AsyncSession, record: OrgRecord) -> None:
+    async def _check_unused(self, session: Session, record: OrgRecord) -> None:
         kind = _KINDS[type(record)]
         placed = await people.placed_in_unit_count(
             session, _JOB_COLUMNS[type(record)], record.id, self._authz.today()
@@ -195,10 +189,8 @@ class OrgService:
                 "Record a job change for them first, then archive it.",
             )
         if isinstance(record, Department):
-            children = await session.scalar(
-                select(func.count())
-                .select_from(Department)
-                .where(Department.parent_id == record.id, Department.status == OrgUnitStatus.ACTIVE.value)
+            children = await session.count(
+                Department, {"parent_id": record.id, "status": OrgUnitStatus.ACTIVE.value}
             )
             if children:
                 raise _conflict(
@@ -207,7 +199,7 @@ class OrgService:
                 )
 
 
-async def _check_head(session: AsyncSession, employee_id: uuid.UUID, today: date) -> None:
+async def _check_head(session: Session, employee_id: uuid.UUID, today: date) -> None:
     exists, left_on = await people.exit_date(session, employee_id)
     if not exists:
         raise field_error("head_employee_id", "org.unknown_employee", "Choose an existing employee.")
@@ -224,7 +216,7 @@ def _check_time_zone(value: str) -> None:
         )
 
 
-async def _check_parent(session: AsyncSession, department_id: uuid.UUID | None, parent_id: uuid.UUID) -> None:
+async def _check_parent(session: Session, department_id: uuid.UUID | None, parent_id: uuid.UUID) -> None:
     """The parent exists and is not the department itself or one of its descendants."""
     current: uuid.UUID | None = parent_id
     for _ in range(MAX_DEPARTMENT_DEPTH):
@@ -247,10 +239,10 @@ async def _check_parent(session: AsyncSession, department_id: uuid.UUID | None, 
     raise field_error("parent_id", "department.too_deep", "This department structure is too deep.")
 
 
-async def _flush_unique(session: AsyncSession) -> None:
+async def _flush_unique(session: Session) -> None:
     try:
         await session.flush()
-    except IntegrityError as exc:
-        if "uq_" in str(exc.orig) and "_code" in str(exc.orig):
+    except UniqueViolationError as exc:
+        if exc.index.startswith("uq_") and exc.index.endswith("_code"):
             raise _conflict("org.code_in_use", "Another record already uses this code.") from exc
         raise

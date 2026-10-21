@@ -32,14 +32,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-import procrastinate
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.access import notifications
 from app.modules.access import repository as repo
-from app.modules.access.models import GrantKind, GrantStatus, Role, RoleGrantRequest, UserRole
+from app.modules.access.models import GrantKind, GrantStatus, RoleGrantRequest, UserRole
+from app.modules.access.repository import Role
 from app.modules.identity import public as identity
+from app.modules.org import public as org
 from app.platform.audit.records import (
     AuditActor,
     AuditEvent,
@@ -55,8 +53,9 @@ from app.platform.authz.engine import AccessDenied, Authorizer, Granted
 from app.platform.authz.roles import DATA_ROLES, RoleKey
 from app.platform.authz.sod import SodRule
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
+from app.platform.jobs import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +66,6 @@ DECISION_WINDOW: Final = timedelta(hours=24)
 
 TASK_NAME: Final = "access.expire_grants"
 SCHEDULE: Final = "* * * * *"
-QUEUE: Final = "access"
 EXPIRY_BATCH: Final = 100
 
 
@@ -142,7 +140,7 @@ _HIGH_SEVERITY: Final = frozenset({SecurityEventType.ELEVATION_BREAK_GLASS})
 
 
 async def _record(
-    session: AsyncSession,
+    session: Session,
     audit: AuditWriter,
     *,
     request: RoleGrantRequest,
@@ -286,7 +284,7 @@ class GrantRequestService:
 
     async def request_super_admin(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         context: RequestContext,
         *,
@@ -327,9 +325,7 @@ class GrantRequestService:
         await notifications.grant_event(session, request, "requested", now, exclude=actor.user_id)
         return request
 
-    async def _check_super_admin_candidate(
-        self, session: AsyncSession, user_id: uuid.UUID, now: datetime
-    ) -> None:
+    async def _check_super_admin_candidate(self, session: Session, user_id: uuid.UUID, now: datetime) -> None:
         status = await identity.user_status(session, user_id)
         if status is None:
             raise ProblemError(ProblemType.NOT_FOUND)
@@ -425,7 +421,7 @@ class GrantRequestService:
             return request
 
     async def _decidable(
-        self, session: AsyncSession, request_id: uuid.UUID, actor: Actor, now: datetime
+        self, session: Session, request_id: uuid.UUID, actor: Actor, now: datetime
     ) -> RoleGrantRequest:
         request = await repo.lock_request(session, request_id)
         if request is None:
@@ -437,9 +433,7 @@ class GrantRequestService:
             raise _not_pending()
         return request
 
-    async def _check_elevation_subject(
-        self, session: AsyncSession, user_id: uuid.UUID, now: datetime
-    ) -> None:
+    async def _check_elevation_subject(self, session: Session, user_id: uuid.UUID, now: datetime) -> None:
         """An elevation goes only to an active account that is still a super admin."""
         status = await identity.user_status(session, user_id)
         held = {key for _, key in await repo.active_assignments(session, user_id, now)}
@@ -451,15 +445,15 @@ class GrantRequestService:
 
     async def _assign(
         self,
-        session: AsyncSession,
+        session: Session,
         request: RoleGrantRequest,
         *,
         granted_by: uuid.UUID,
         valid_until: datetime | None,
         now: datetime,
     ) -> None:
-        """The assignment a request grants, exactly as the request says (a database trigger
-        checks the match). A lapsed assignment of the same role is closed first."""
+        """The assignment a request grants, exactly as the request says (checked against the
+        request before the commit). A lapsed assignment of the same role is closed first."""
         await repo.close_lapsed(
             session,
             now,
@@ -471,6 +465,7 @@ class GrantRequestService:
         record = UserRole(
             user_id=request.subject_user_id,
             role_id=request.role_id,
+            role_key=request.role_key,
             department_id=request.department_id,
             location_id=request.location_id,
             valid_from=_required(request.starts_at),
@@ -480,11 +475,10 @@ class GrantRequestService:
             grant_request_id=request.id,
         )
         try:
-            async with session.begin_nested():
-                session.add(record)
-                await session.flush()
-        except IntegrityError as exc:
-            if _constraint(exc) == "uq_user_roles_active_assignment":
+            repo.add_assignment(session, record)
+            await session.flush()
+        except UniqueViolationError as exc:
+            if exc.index == "uq_user_roles_active_assignment":
                 raise _conflict("role.already_assigned", "This person already has this role.") from exc
             raise
 
@@ -584,7 +578,7 @@ class GrantRequestService:
             return request
 
     async def end_for_former_super_admin(
-        self, session: AsyncSession, actor: Actor, context: RequestContext, user_id: uuid.UUID
+        self, session: Session, actor: Actor, context: RequestContext, user_id: uuid.UUID
     ) -> None:
         """Called when someone's `super_admin` role is removed (in that transaction): their
         elevation or break-glass ends now and their pending requests are withdrawn, because
@@ -711,14 +705,12 @@ async def expire_due(database: Database, clock: Clock, audit: AuditWriter) -> Ex
     return ExpiryResult(expired, ended, len(lapsed))
 
 
-def register_grant_expiry(
-    job_app: procrastinate.App, database: Database, clock: Clock, audit: AuditWriter
-) -> None:
-    """Every minute, one run at a time (`api-architecture.md` §10, `access.expire_grants`)."""
+def register_grant_expiry(scheduler: Scheduler, database: Database, clock: Clock, audit: AuditWriter) -> None:
+    """Every minute, one run at a time, for each organization (`api-architecture.md` §10,
+    `access.expire_grants`)."""
 
-    @job_app.periodic(cron=SCHEDULE, periodic_id=TASK_NAME)
-    @job_app.task(name=TASK_NAME, queue=QUEUE, lock=TASK_NAME)
-    async def expire_grants(timestamp: int) -> None:
+    @scheduler.periodic(TASK_NAME, SCHEDULE, per_organization=True)
+    async def expire_grants() -> None:
         result = await expire_due(database, clock, audit)
         if result != ExpiryResult():
             logger.info(
@@ -756,13 +748,19 @@ def _require_super_admin(actor: Actor) -> None:
         raise AccessDenied(code="grant_request.super_admin_only")
 
 
-async def _flush_request(session: AsyncSession, request: RoleGrantRequest) -> None:
+async def _flush_request(session: Session, request: RoleGrantRequest) -> None:
+    missing = await org.missing_units(
+        session, department_id=request.department_id, location_id=request.location_id
+    )
+    if "department_id" in missing:
+        raise _field("department_id", "org.unknown_department", "Choose an existing department.")
+    if "location_id" in missing:
+        raise _field("location_id", "org.unknown_location", "Choose an existing location.")
     try:
-        async with session.begin_nested():
-            session.add(request)
-            await session.flush()
-    except IntegrityError as exc:
-        constraint = _constraint(exc)
+        session.add(request)
+        await session.flush()
+    except UniqueViolationError as exc:
+        constraint = exc.index
         if constraint == "uq_role_grant_requests_pending":
             raise _conflict(
                 "grant_request.pending_exists",
@@ -774,16 +772,7 @@ async def _flush_request(session: AsyncSession, request: RoleGrantRequest) -> No
                 "grant_request.already_elevated",
                 "This person already has temporary access. End it before starting another.",
             ) from exc
-        if constraint == "fk_role_grant_requests_department_id":
-            raise _field("department_id", "org.unknown_department", "Choose an existing department.") from exc
-        if constraint == "fk_role_grant_requests_location_id":
-            raise _field("location_id", "org.unknown_location", "Choose an existing location.") from exc
         raise
-
-
-def _constraint(exc: IntegrityError) -> str | None:
-    name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    return name if isinstance(name, str) else None
 
 
 def _minutes(duration: timedelta) -> int:

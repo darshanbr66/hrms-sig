@@ -1,11 +1,17 @@
-"""Sending one email over SMTP (the worker's outbox dispatcher is the only caller).
+"""Sending one email (the worker's outbox dispatcher and the audit witness are the callers).
 
-Uses the standard library's `smtplib` in a worker thread with a timeout. With `starttls` the
-connection must upgrade to TLS or the send fails; with `tls` it is TLS from the start;
-`none` exists for the local mail catcher and is refused outside local and test
-(`WorkerSettings`). Failures are reported as `EmailDeliveryError` carrying only the
-exception's class name: SMTP server replies can echo addresses, which must not reach logs or
-the outbox row.
+Two transports (`EMAIL_TRANSPORT`, ADR-030):
+
+- **Resend** (`ResendSender`), the transport of every deployed environment: one HTTPS request
+  to Resend's API (`POST /emails`) with the API key as a bearer token, over verified TLS, with a
+  timeout. HTTPS works where outbound SMTP ports are blocked (Render's free instances).
+- **SMTP** (`SmtpSender`), for the local mail catcher and tests only: the standard library's
+  `smtplib` in a worker thread with a timeout. With `starttls` the connection must upgrade to
+  TLS or the send fails; with `tls` it is TLS from the start; `none` is plain.
+
+Failures are reported as `EmailDeliveryError` carrying only an exception class name or an HTTP
+status: server replies can echo addresses, which must not reach logs or the outbox row. No
+transport retries by itself; the outbox retries with backoff, so delivery is at least once.
 """
 
 import asyncio
@@ -16,11 +22,14 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from typing import Final, Protocol
 
+import httpx
 from pydantic import SecretStr
 
 from app.platform.config import SmtpSecurity
 
 SMTP_TIMEOUT_SECONDS: Final = 20
+RESEND_TIMEOUT_SECONDS: Final = 20
+RESEND_EMAILS_URL: Final = "https://api.resend.com/emails"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,3 +97,32 @@ class SmtpSender:
             if self._username is not None and self._password is not None:
                 client.login(self._username, self._password.get_secret_value())
             client.send_message(message)
+
+
+class ResendSender:
+    """Resend's HTTPS API. The HTTP client is the caller's (closed by whoever created it)."""
+
+    def __init__(self, *, client: httpx.AsyncClient, api_key: SecretStr, sender: str) -> None:
+        self._client = client
+        self._api_key = api_key
+        self._sender = sender
+
+    async def send(self, email: OutgoingEmail) -> None:
+        try:
+            response = await self._client.post(
+                RESEND_EMAILS_URL,
+                headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"},
+                json={
+                    "from": self._sender,
+                    "to": [email.to],
+                    "subject": email.subject,
+                    "text": email.body,
+                    "headers": {"Auto-Submitted": "auto-generated"},
+                },
+                timeout=RESEND_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            raise EmailDeliveryError(type(exc).__name__) from None
+        if not response.is_success:
+            # The body can name the recipient or the sending domain; only the status is kept.
+            raise EmailDeliveryError(f"ResendHttp{response.status_code}")

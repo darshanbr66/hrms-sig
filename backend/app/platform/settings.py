@@ -18,32 +18,34 @@ The defaults are the values written in the security architecture, except the tru
 lifetime, which the architecture leaves open (90 days is the chosen default, adjustable).
 """
 
+import dataclasses
 import logging
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, func, select, text
-from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.platform.db import Base
+from app.platform.db import Index, Record, Session, asc, utcnow
+from app.platform.tenancy import Organization
 
 logger = logging.getLogger(__name__)
 
-SCHEMA = "app"
 
-settings_table = Table(
-    "settings",
-    Base.metadata,
-    Column("key", Text(), primary_key=True),
-    Column("value", JSONB(), nullable=False),
-    Column("version", Integer(), nullable=False, server_default=text("1")),
-    Column("updated_by", ForeignKey("identity.users.id", ondelete="RESTRICT")),
-    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    schema=SCHEMA,
-)
+@dataclasses.dataclass(kw_only=True, eq=False)
+class SettingOverride(Record):
+    """`organization_settings`: one changed value of one organization."""
+
+    __collection__ = "organization_settings"
+    __indexes__ = (Index(asc("organization_id", "key"), name="uq_organization_settings_key", unique=True),)
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {"key": {"maxLength": 100}}
+
+    key: str
+    value: int
+    version: int = 1
+    updated_by: uuid.UUID | None = None
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
 _SECRET_PARTS: Final = frozenset(
@@ -213,47 +215,47 @@ class Settings:
         return self.values[setting.key]
 
 
-async def load(session: AsyncSession) -> Settings:
-    rows = (await session.execute(select(settings_table.c.key, settings_table.c.value))).all()
+async def load(session: Session) -> Settings:
+    """The effective values of the session's organization; the defaults when the request has no
+    organization yet (a sign-in attempt for an unknown email)."""
     values = {key: setting.default for key, setting in REGISTRY.items()}
     overridden: set[str] = set()
-    for key, value in rows:
-        setting = REGISTRY.get(key)
+    if session.tenant is None:
+        return Settings(values, frozenset())
+    for row in await session.find(SettingOverride):
+        setting = REGISTRY.get(row.key)
         if setting is None:
             # A key removed from the registry: ignored, never applied.
-            logger.warning("settings.unknown_key_ignored", extra={"setting": key})
+            logger.warning("settings.unknown_key_ignored", extra={"setting": row.key})
             continue
         try:
-            values[key] = setting.check(value)
+            values[row.key] = setting.check(row.value)
         except SettingValueError:
-            logger.error("settings.invalid_value_ignored", extra={"setting": key})
+            logger.error("settings.invalid_value_ignored", extra={"setting": row.key})
             continue
-        overridden.add(key)
+        overridden.add(row.key)
     return Settings(values, frozenset(overridden))
 
 
-async def store(session: AsyncSession, setting: IntSetting, value: int | None, user_id: Any) -> None:
+async def store(session: Session, setting: IntSetting, value: int | None, user_id: uuid.UUID | None) -> None:
     """Write an override (or remove it with None). The caller has authorized and validated it,
     and holds the settings lock (`lock`)."""
+    existing = await session.find_one(SettingOverride, {"key": setting.key})
     if value is None:
-        await session.execute(settings_table.delete().where(settings_table.c.key == setting.key))
+        if existing is not None:
+            await session.delete(existing)
         return
-    statement = insert(settings_table).values(key=setting.key, value=value, updated_by=user_id)
-    await session.execute(
-        statement.on_conflict_do_update(
-            index_elements=[settings_table.c.key],
-            set_={
-                "value": statement.excluded.value,
-                "updated_by": statement.excluded.updated_by,
-                "updated_at": func.now(),
-                "version": settings_table.c.version + 1,
-            },
-        )
-    )
+    if existing is None:
+        session.add(SettingOverride(key=setting.key, value=value, updated_by=user_id))
+        return
+    existing.value = value
+    existing.updated_by = user_id
+    existing.updated_at = utcnow()
+    existing.version += 1
 
 
-SETTINGS_LOCK: Final = 0x5356_5354  # "SVST": one settings change at a time, so combined rules hold
-
-
-async def lock(session: AsyncSession) -> None:
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SETTINGS_LOCK})
+async def lock(session: Session) -> None:
+    """One settings change per organization at a time, so the combined rules hold: changes
+    lock the organization's document."""
+    if session.tenant is None or await session.get(Organization, session.tenant, for_update=True) is None:
+        raise LookupError("settings are changed inside an existing organization")

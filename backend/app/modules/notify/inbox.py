@@ -17,17 +17,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Final
-
-from sqlalchemy import func, literal, select, tuple_, update
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any, Final
 
 from app.modules.notify.models import Notification, NotificationPreference
 from app.platform.authz.context import Actor
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session
 from app.platform.errors import ProblemError, ProblemType
+from app.platform.ids import uuid7
 
 MAX_TITLE: Final = 120
 MAX_BODY: Final = 300
@@ -99,30 +96,22 @@ def _display(value: str, name: str, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
-async def _enabled(
-    session: AsyncSession, user_id: uuid.UUID, kind: NotificationType, channel: Channel
-) -> bool:
+async def _enabled(session: Session, user_id: uuid.UUID, kind: NotificationType, channel: Channel) -> bool:
     if channel not in CATALOG[kind].channels:
         return False
-    stored = (
-        await session.execute(
-            select(NotificationPreference.enabled).where(
-                NotificationPreference.user_id == user_id,
-                NotificationPreference.type == kind.value,
-                NotificationPreference.channel == channel.value,
-            )
-        )
-    ).scalar_one_or_none()
-    return stored is None or stored
+    stored = await session.find_one(
+        NotificationPreference, {"user_id": user_id, "type": kind.value, "channel": channel.value}
+    )
+    return stored is None or stored.enabled
 
 
-async def email_wanted(session: AsyncSession, user_id: uuid.UUID, kind: NotificationType) -> bool:
+async def email_wanted(session: Session, user_id: uuid.UUID, kind: NotificationType) -> bool:
     """Whether the recipient wants this type by email (callers queue the email themselves)."""
     return await _enabled(session, user_id, kind, Channel.EMAIL)
 
 
 async def notify(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     kind: NotificationType,
@@ -143,22 +132,17 @@ async def notify(
         raise ValueError("idempotency_key must be 1 to 200 characters")
     if not await _enabled(session, user_id, kind, Channel.IN_APP):
         return False
-    statement = (
-        insert(Notification)
-        .values(
-            recipient_user_id=user_id,
-            type=kind.value,
-            subject_type=subject[0] if subject else None,
-            subject_id=subject[1] if subject else None,
-            title=title,
-            body=body,
-            link=link,
-            idempotency_key=idempotency_key,
-        )
-        .on_conflict_do_nothing(index_elements=[Notification.idempotency_key])
-        .returning(Notification.id)
+    notification = Notification(
+        recipient_user_id=user_id,
+        type=kind.value,
+        subject_type=subject[0] if subject else None,
+        subject_id=subject[1] if subject else None,
+        title=title,
+        body=body,
+        link=link,
+        idempotency_key=idempotency_key,
     )
-    return (await session.execute(statement)).scalar_one_or_none() is not None
+    return await session.insert_if_absent(notification, ["idempotency_key"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,44 +171,33 @@ class InboxService:
             return await self._unread(session, actor.user_id)
 
     @staticmethod
-    async def _unread(session: AsyncSession, user_id: uuid.UUID) -> int:
-        return int(
-            (
-                await session.execute(
-                    select(func.count()).where(
-                        Notification.recipient_user_id == user_id,
-                        Notification.deleted_at.is_(None),
-                        Notification.read_at.is_(None),
-                    )
-                )
-            ).scalar_one()
+    async def _unread(session: Session, user_id: uuid.UUID) -> int:
+        return await session.count(
+            Notification, {"recipient_user_id": user_id, "deleted_at": None, "read_at": None}
         )
 
     async def page(
         self, actor: Actor, *, unread_only: bool, after: tuple[datetime, uuid.UUID] | None, limit: int
     ) -> Page:
-        query = select(Notification).where(
-            Notification.recipient_user_id == actor.user_id, Notification.deleted_at.is_(None)
-        )
+        query: dict[str, Any] = {"recipient_user_id": actor.user_id, "deleted_at": None}
         if unread_only:
-            query = query.where(Notification.read_at.is_(None))
+            query["read_at"] = None
         if after is not None:
-            query = query.where(
-                tuple_(Notification.created_at, Notification.id)
-                < tuple_(literal(after[0]), literal(after[1]))
-            )
-        query = query.order_by(Notification.created_at.desc(), Notification.id.desc()).limit(limit + 1)
+            query["$or"] = [
+                {"created_at": {"$lt": after[0]}},
+                {"created_at": after[0], "id": {"$lt": after[1]}},
+            ]
         async with self._db.unit_of_work() as session:
-            rows = list(await session.scalars(query))
+            rows = await session.find(
+                Notification, query, sort=[("created_at", -1), ("id", -1)], limit=limit + 1
+            )
             unread = await self._unread(session, actor.user_id)
         last = rows[limit - 1] if len(rows) > limit else None
         return Page(rows[:limit], unread, (last.created_at, last.id) if last else None)
 
     async def mark_read(self, actor: Actor, notification_id: uuid.UUID) -> Notification:
         async with self._db.unit_of_work() as session:
-            row = await session.get(
-                Notification, notification_id, with_for_update=True, populate_existing=True
-            )
+            row = await session.get(Notification, notification_id, for_update=True)
             if row is None or row.recipient_user_id != actor.user_id or row.deleted_at is not None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if row.read_at is None:
@@ -234,23 +207,15 @@ class InboxService:
 
     async def mark_all_read(self, actor: Actor) -> int:
         async with self._db.unit_of_work() as session:
-            result = await session.execute(
-                update(Notification)
-                .where(
-                    Notification.recipient_user_id == actor.user_id,
-                    Notification.deleted_at.is_(None),
-                    Notification.read_at.is_(None),
-                )
-                .values(read_at=self._clock.now())
-                .returning(Notification.id)
+            return await session.update_many(
+                Notification,
+                {"recipient_user_id": actor.user_id, "deleted_at": None, "read_at": None},
+                {"$set": {"read_at": self._clock.now()}},
             )
-            return len(result.all())
 
     async def remove(self, actor: Actor, notification_id: uuid.UUID) -> None:
         async with self._db.unit_of_work() as session:
-            row = await session.get(
-                Notification, notification_id, with_for_update=True, populate_existing=True
-            )
+            row = await session.get(Notification, notification_id, for_update=True)
             if row is None or row.recipient_user_id != actor.user_id or row.deleted_at is not None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             row.deleted_at = self._clock.now()
@@ -261,12 +226,10 @@ class InboxService:
             return await self._preferences(session, actor.user_id)
 
     @staticmethod
-    async def _preferences(session: AsyncSession, user_id: uuid.UUID) -> list[Preference]:
+    async def _preferences(session: Session, user_id: uuid.UUID) -> list[Preference]:
         stored = {
             (row.type, row.channel): row.enabled
-            for row in await session.scalars(
-                select(NotificationPreference).where(NotificationPreference.user_id == user_id)
-            )
+            for row in await session.find(NotificationPreference, {"user_id": user_id})
         }
         return [
             Preference(
@@ -297,22 +260,10 @@ class InboxService:
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
             for kind, channel, enabled in changes:
-                await session.execute(
-                    insert(NotificationPreference)
-                    .values(
-                        user_id=actor.user_id,
-                        type=kind.value,
-                        channel=channel.value,
-                        enabled=enabled,
-                        updated_at=now,
-                    )
-                    .on_conflict_do_update(
-                        index_elements=[
-                            NotificationPreference.user_id,
-                            NotificationPreference.type,
-                            NotificationPreference.channel,
-                        ],
-                        set_={"enabled": enabled, "updated_at": now},
-                    )
+                await session.find_one_and_update(
+                    NotificationPreference,
+                    {"user_id": actor.user_id, "type": kind.value, "channel": channel.value},
+                    {"$set": {"enabled": enabled, "updated_at": now}, "$setOnInsert": {"_id": uuid7()}},
+                    upsert=True,
                 )
             return await self._preferences(session, actor.user_id)

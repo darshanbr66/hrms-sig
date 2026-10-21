@@ -1,25 +1,21 @@
 [project]
 name = "hrms-backend"
 version = "0.1.0"
-description = "Sigvitas HRMS API, worker and migrations"
+description = "Sigvitas HRMS API, worker and MongoDB migrations"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "alembic>=1.20,<2",
     "argon2-cffi>=25.1,<26",
-    "boto3>=1.40,<2",
     "cryptography>=50.0.2,<51",
     "email-validator>=2.3,<3",
     "fastapi>=0.142,<0.143",
     "httpx>=0.28,<0.29",
-    "procrastinate==3.10.0",
-    "psycopg[binary,pool]>=3.3,<4",
     "pydantic>=2.13,<3",
     "pydantic-settings>=2.15,<3",
+    "pymongo>=4.15,<5",
     "pyotp>=2.9,<3",
-    "redis>=8.1,<9",
     "rfc8785>=0.1.4,<0.2",
     "segno>=1.6,<2",
-    "sqlalchemy[asyncio]>=2.1,<2.2",
+    "tzdata>=2025.2",
     "uvicorn[standard]>=0.54,<0.55",
 ]
 
@@ -40,7 +36,6 @@ package = false
 [tool.ruff]
 line-length = 110
 target-version = "py313"
-extend-exclude = ["migrations/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "S", "C4", "RUF", "ASYNC", "PT", "T20", "DTZ", "PL"]
@@ -52,8 +47,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests compose SQL only from their own constants (table names, fixed statements), never input.
 "tests/**" = ["S101", "S105", "S106", "S608", "PLR2004"]
-# Revisions build DDL from identifiers quoted by the dialect and constants defined in code.
-"migrations/**" = ["S608"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "migrations"]
@@ -62,10 +55,10 @@ known-first-party = ["app", "migrations"]
 strict = true
 python_version = "3.13"
 plugins = ["pydantic.mypy"]
-exclude = ['^migrations/vendor/', '^\.venv/']
+exclude = ['^\.venv/']
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "procrastinate.*", "boto3.*", "botocore.*"]
+module = ["testcontainers.*"]
 ignore_missing_imports = true
 
 # Module boundaries (docs/architecture.md §4): a module is imported by other modules only

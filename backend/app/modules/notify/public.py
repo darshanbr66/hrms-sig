@@ -23,12 +23,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import update
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.notify.inbox import NotificationType, email_wanted, notify
 from app.modules.notify.models import EmailOutbox, EmailTemplate, OutboxStatus
+from app.platform.db import Session
 from app.platform.email import OutgoingEmail
 from app.platform.logging import is_sensitive_key
 
@@ -67,7 +64,7 @@ class OutboxItem:
 # A renderer builds the email at send time, inside a transaction it may write to (for example
 # to create the link token whose hash it stores). It returns None when the email no longer
 # applies (the account was disabled, the invite was already accepted); the row is cancelled.
-type Renderer = Callable[[AsyncSession, OutboxItem], Awaitable[OutgoingEmail | None]]
+type Renderer = Callable[[Session, OutboxItem], Awaitable[OutgoingEmail | None]]
 
 
 def _check_data(data: Mapping[str, DataValue]) -> dict[str, DataValue]:
@@ -92,7 +89,7 @@ def _check_data(data: Mapping[str, DataValue]) -> dict[str, DataValue]:
 
 
 async def enqueue(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     template: EmailTemplate,
@@ -103,34 +100,27 @@ async def enqueue(
     """Queue an email in the caller's transaction; False if this event was already queued."""
     if not 1 <= len(idempotency_key) <= 200:
         raise ValueError("idempotency_key must be 1 to 200 characters")
-    statement = (
-        insert(EmailOutbox)
-        .values(
-            user_id=user_id,
-            template=template.value,
-            template_data=_check_data(data) if data else None,
-            idempotency_key=idempotency_key,
-            next_attempt_at=now,
-        )
-        .on_conflict_do_nothing(index_elements=[EmailOutbox.idempotency_key])
-        .returning(EmailOutbox.id)
+    message = EmailOutbox(
+        user_id=user_id,
+        template=template.value,
+        template_data=_check_data(data) if data else None,
+        idempotency_key=idempotency_key,
+        next_attempt_at=now,
     )
-    return (await session.execute(statement)).scalar_one_or_none() is not None
+    return await session.insert_if_absent(message, ["idempotency_key"])
 
 
 async def cancel_pending(
-    session: AsyncSession, *, user_id: uuid.UUID, templates: Collection[EmailTemplate], now: datetime
+    session: Session, *, user_id: uuid.UUID, templates: Collection[EmailTemplate], now: datetime
 ) -> int:
     """Cancel queued, not yet claimed emails (for example an invite that was resent or revoked).
     An email already being sent is not stopped; its renderer re-checks eligibility."""
-    statement = (
-        update(EmailOutbox)
-        .where(
-            EmailOutbox.user_id == user_id,
-            EmailOutbox.template.in_([template.value for template in templates]),
-            EmailOutbox.status == OutboxStatus.PENDING.value,
-        )
-        .values(status=OutboxStatus.CANCELLED.value, updated_at=now)
-        .returning(EmailOutbox.id)
+    return await session.update_many(
+        EmailOutbox,
+        {
+            "user_id": user_id,
+            "template": {"$in": [template.value for template in templates]},
+            "status": OutboxStatus.PENDING.value,
+        },
+        {"$set": {"status": OutboxStatus.CANCELLED.value, "updated_at": now}},
     )
-    return len((await session.execute(statement)).all())

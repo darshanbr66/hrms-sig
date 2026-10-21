@@ -6,10 +6,9 @@ decision note stay in the application, where only the people allowed to see them
 
 from collections.abc import Mapping
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import public as identity
 from app.modules.notify.public import EmailTemplate, OutboxItem, Renderer
+from app.platform.db import Session
 from app.platform.email import OutgoingEmail
 
 PRODUCT = "Sigvitas HRMS"
@@ -58,7 +57,7 @@ class AttendanceEmails:
     def renderers(self) -> Mapping[EmailTemplate, Renderer]:
         return {EmailTemplate.ATTENDANCE_CORRECTION: self.correction}
 
-    async def correction(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def correction(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         address = await identity.active_email(session, item.user_id)
         text = message(item.data)
         if address is None or text is None:

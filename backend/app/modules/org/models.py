@@ -1,20 +1,16 @@
-"""SQLAlchemy models for the `org` schema (docs/database-design.md §4.3, revision 0003).
+"""Organization units: locations, departments and designations (docs/database-design.md §4.3).
 
-Length limits and allowed values are CHECK constraints in the migration; the enums below
-mirror the allowed values for code that reads these tables.
+Codes are unique per organization, compared without regard to case. Allowed values and
+lengths are part of each collection's validator (`__field_rules__`).
 """
 
+import dataclasses
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any, ClassVar
 
-from sqlalchemy import CHAR, ForeignKey, Index, func, text
-from sqlalchemy.dialects.postgresql import CITEXT
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.platform.db import Base
-
-SCHEMA = "org"
+from app.platform.db import CASE_INSENSITIVE, Index, Record, asc, utcnow
 
 
 class OrgUnitStatus(StrEnum):
@@ -22,55 +18,89 @@ class OrgUnitStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-class Location(Base):
-    __tablename__ = "locations"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
+_CODE = {"minLength": 1, "maxLength": 32}
+_NAME = {"minLength": 1, "maxLength": 200}
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    code: Mapped[str] = mapped_column(CITEXT(), unique=True)
-    name: Mapped[str]
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class Location(Record):
+    __collection__ = "locations"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "code"), name="uq_locations_code", unique=True, collation=CASE_INSENSITIVE
+        ),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "code": _CODE,
+        "name": _NAME,
+        "time_zone": {"maxLength": 64},
+        "country_code": {"pattern": "^[A-Z]{2}$"},
+        "address": {"maxLength": 1000},
+    }
+
+    code: str
+    name: str
     # IANA zone name; validated by the service that writes locations.
-    time_zone: Mapped[str]
-    country_code: Mapped[str] = mapped_column(CHAR(2))
-    address: Mapped[str | None]
-    status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    time_zone: str
+    country_code: str
+    address: str | None = None
+    status: OrgUnitStatus = OrgUnitStatus.ACTIVE
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class Department(Base):
-    __tablename__ = "departments"
-    __table_args__ = (
-        Index("ix_departments_parent_id", "parent_id"),
-        {"schema": SCHEMA},
+@dataclasses.dataclass(kw_only=True, eq=False)
+class Department(Record):
+    __collection__ = "departments"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "code"),
+            name="uq_departments_code",
+            unique=True,
+            collation=CASE_INSENSITIVE,
+        ),
+        Index(asc("organization_id", "parent_id"), name="ix_departments_parent_id"),
     )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "code": _CODE,
+        "name": _NAME,
+        "description": {"minLength": 1, "maxLength": 1000},
+    }
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    code: Mapped[str] = mapped_column(CITEXT(), unique=True)
-    name: Mapped[str]
-    # What the department does (revision 0017).
-    description: Mapped[str | None]
-    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("org.departments.id", ondelete="RESTRICT"))
-    # Foreign key to people.employees; added by revision 0004 because that table is created there.
-    head_employee_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("people.employees.id", ondelete="RESTRICT", use_alter=True)
+    code: str
+    name: str
+    # What the department does.
+    description: str | None = None
+    parent_id: uuid.UUID | None = None
+    head_employee_id: uuid.UUID | None = None
+    status: OrgUnitStatus = OrgUnitStatus.ACTIVE
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class Designation(Record):
+    __collection__ = "designations"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "code"),
+            name="uq_designations_code",
+            unique=True,
+            collation=CASE_INSENSITIVE,
+        ),
     )
-    status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "code": _CODE,
+        "name": _NAME,
+        "level": {"minimum": 0},
+    }
 
-
-class Designation(Base):
-    __tablename__ = "designations"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    code: Mapped[str] = mapped_column(CITEXT(), unique=True)
-    name: Mapped[str]
-    level: Mapped[int | None]
-    status: Mapped[str] = mapped_column(server_default=OrgUnitStatus.ACTIVE.value)
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    code: str
+    name: str
+    level: int | None = None
+    status: OrgUnitStatus = OrgUnitStatus.ACTIVE
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)

@@ -8,14 +8,13 @@ locked the account row and writes the audit records.
 import uuid
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import devices, notifications
 from app.modules.identity import repository as repo
 from app.modules.identity.models import DeviceRevokedReason, OneTimePurpose, RevokedReason, User, UserStatus
+from app.platform.db import Session
 
 
-async def disable(session: AsyncSession, user: User, now: datetime) -> list[uuid.UUID]:
+async def disable(session: Session, user: User, now: datetime) -> list[uuid.UUID]:
     """Disable a locked account; returns the sessions revoked."""
     user.status = UserStatus.DISABLED.value
     revoked = await repo.revoke_sessions(

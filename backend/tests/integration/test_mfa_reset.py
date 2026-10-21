@@ -12,9 +12,10 @@ from datetime import timedelta
 import httpx
 import pyotp
 import pytest
-from sqlalchemy.exc import DBAPIError
 
-from app.modules.identity.models import UserStatus
+from app.modules.identity.invariants import MfaInvariantError, require_mfa
+from app.modules.identity.models import AuthSession, User, UserStatus
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from app.platform.security import totp
 from tests.api_support import PASSWORD, Account, Api, link_token
@@ -68,7 +69,7 @@ async def enrol(api: Api, client: httpx.AsyncClient) -> tuple[str, httpx.Respons
     return secret, confirmed
 
 
-async def test_reset_and_re_enrolment_end_to_end(api: Api) -> None:
+async def test_reset_and_re_enrolment_end_to_end(api: Api) -> None:  # noqa: PLR0915
     target = await api.create_account(roles=(RoleKey.HR.value,))
     async with api.client() as admin_client, api.client() as target_client:
         admin = await system_admin(api, admin_client)
@@ -82,26 +83,25 @@ async def test_reset_and_re_enrolment_end_to_end(api: Api) -> None:
 
         assert (await listed_user(admin_client, target))["mfa_reenrolment_required"] is True
 
-    [(factors, codes, flag)] = await api.fetch(
-        "SELECT (SELECT count(*) FROM identity.mfa_factors WHERE user_id = :id AND revoked_at IS NULL), "
-        "(SELECT count(*) FROM identity.recovery_codes WHERE user_id = :id AND revoked_at IS NULL "
-        " AND used_at IS NULL), mfa_reenrolment_required FROM identity.users WHERE id = :id",
-        id=target.user_id,
+    factors = await api.count("mfa_factors", {"user_id": target.user_id, "revoked_at": None})
+    codes = await api.count(
+        "recovery_codes", {"user_id": target.user_id, "revoked_at": None, "used_at": None}
     )
-    assert (factors, codes, flag) == (0, 0, True)
-    [(action, permission, reason, changes)] = await api.fetch(
-        "SELECT action, permission_used, reason, changes FROM audit.audit_log "
-        "WHERE actor_user_id = :admin AND target_id = :target",
-        admin=admin.user_id,
-        target=str(target.user_id),
+    [user] = await api.records(User, {"id": target.user_id})
+    assert (factors, codes, user.mfa_reenrolment_required) == (0, 0, True)
+    [audited] = await api.records(
+        AuditLogRecord, {"actor_user_id": admin.user_id, "target_id": str(target.user_id)}
+    )
+    action, permission, reason, changes = (
+        audited.action,
+        audited.permission_used,
+        audited.reason,
+        audited.changes or {},
     )
     assert (action, permission, reason) == ("identity.mfa.reset", "security.mfa.reset", REASON)
     assert changes == {"mfa_reenrolment_required": {"old": False, "new": True}}
-    [(severity, details)] = await api.fetch(
-        "SELECT severity, details FROM audit.security_events "
-        "WHERE user_id = :id AND event_type = 'mfa.reset'",
-        id=target.user_id,
-    )
+    [event] = await api.find("security_events", {"user_id": target.user_id, "event_type": "mfa.reset"})
+    severity, details = event["severity"], event["details"]
     assert severity == "high"
     assert details["by_user_id"] == str(admin.user_id)
     assert details["sessions_revoked"] == 1
@@ -137,20 +137,18 @@ async def test_reset_and_re_enrolment_end_to_end(api: Api) -> None:
         used = await start(client, token)
         assert used.status_code == 409
         assert used.json()["code"] == "mfa_reenrolment.invalid"
-    [(flag,)] = await api.fetch(
-        "SELECT mfa_reenrolment_required FROM identity.users WHERE id = :id", id=target.user_id
-    )
-    assert flag is False
+    [user] = await api.records(User, {"id": target.user_id})
+    assert user.mfa_reenrolment_required is False
     # The new authenticator signs in as usual.
     async with api.client() as client:
         target.totp_secret = secret
         await api.sign_in(client, target)
     events = [
-        event
-        for (event,) in await api.fetch(
-            "SELECT event_type FROM audit.security_events WHERE user_id = :id "
-            "AND event_type LIKE 'mfa.reenrolment%' ORDER BY recorded_at, id",
-            id=target.user_id,
+        event["event_type"]
+        for event in await api.find(
+            "security_events",
+            {"user_id": target.user_id, "event_type": {"$regex": "^mfa[.]reenrolment"}},
+            sort=[("recorded_at", 1), ("_id", 1)],
         )
     ]
     assert events == ["mfa.reenrolment_started", "mfa.reenrolment_completed"]
@@ -198,7 +196,7 @@ async def test_a_locked_account_cannot_check_its_password_through_re_enrolment(a
         assert locked.status_code == 422
         assert locked.json()["errors"][0]["code"] == "account.locked"
     # The link was not used up by the refused attempts.
-    await api.execute("UPDATE identity.users SET locked_until = NULL WHERE id = :id", id=target.user_id)
+    await api.update("users", {"_id": target.user_id}, {"locked_until": None})
     async with api.client() as client:
         assert (await start(client, token)).status_code == 200
 
@@ -230,29 +228,44 @@ async def test_the_link_expires(api: Api) -> None:
         assert (await start(client, token)).json()["code"] == "mfa_reenrolment.invalid"
 
 
-async def test_the_database_keeps_the_mfa_invariants_during_re_enrolment(api: Api) -> None:
+async def test_the_mfa_invariants_hold_during_re_enrolment(api: Api) -> None:
+    """The MFA backstop (identity/invariants.py): every change that could break the rules
+    registers the check, which runs before the commit; a violation stores nothing."""
     target = await api.create_account()
     async with api.client() as client:
         await system_admin(api, client)
         await reset(client, target)
     # Clearing the flag without a confirmed factor is refused.
-    with pytest.raises(DBAPIError, match="must keep a confirmed MFA factor"):
-        await api.execute(
-            "UPDATE identity.users SET mfa_reenrolment_required = false WHERE id = :id", id=target.user_id
-        )
+    with pytest.raises(MfaInvariantError, match="needs a confirmed MFA factor"):  # noqa: PT012
+        async with api.database.unit_of_work() as session:
+            user = await session.get(User, target.user_id)
+            assert user is not None
+            user.mfa_reenrolment_required = False
+            require_mfa(session, target.user_id)
     # No full session can be opened for an account waiting to re-enrol, or without a factor.
-    with pytest.raises(DBAPIError, match="a full session needs a confirmed MFA factor"):
-        await api.execute(
-            "INSERT INTO identity.sessions (user_id, client_type, scope, last_activity_at, "
-            "idle_expires_at, absolute_expires_at) VALUES (:id, 'web', 'full', now(), "
-            "now() + interval '1 hour', now() + interval '2 hours')",
-            id=target.user_id,
-        )
+    now = api.clock.now()
+    with pytest.raises(MfaInvariantError, match="a full session needs a confirmed MFA factor"):  # noqa: PT012
+        async with api.database.unit_of_work() as session:
+            session.add(
+                AuthSession(
+                    user_id=target.user_id,
+                    client_type="web",
+                    scope="full",
+                    last_activity_at=now,
+                    idle_expires_at=now + timedelta(hours=1),
+                    absolute_expires_at=now + timedelta(hours=2),
+                )
+            )
+            require_mfa(session, target.user_id)
     # An account with an open full session cannot be marked as waiting to re-enrol.
     other = await api.create_account()
     async with api.client() as client:
         await api.sign_in(client, other)
-    with pytest.raises(DBAPIError, match="cannot keep a full session"):
-        await api.execute(
-            "UPDATE identity.users SET mfa_reenrolment_required = true WHERE id = :id", id=other.user_id
-        )
+    with pytest.raises(MfaInvariantError, match="a full session needs a confirmed MFA factor"):  # noqa: PT012
+        async with api.database.unit_of_work() as session:
+            user = await session.get(User, other.user_id)
+            assert user is not None
+            user.mfa_reenrolment_required = True
+            require_mfa(session, other.user_id)
+    [stored] = await api.records(User, {"id": other.user_id})
+    assert stored.mfa_reenrolment_required is False

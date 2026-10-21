@@ -1,15 +1,12 @@
-"""SQLAlchemy model for `app.export_jobs` (docs/database-design.md §4.11, revision 0023)."""
+"""Export jobs (docs/database-design.md §4.11): one document per export someone asked for."""
 
+import dataclasses
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
-from sqlalchemy import ForeignKey, Index, SmallInteger, func, text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.platform.db import Base
+from app.platform.db import Index, Record, allowed, asc, utcnow
 
 
 class ExportType(StrEnum):
@@ -29,31 +26,55 @@ class ExportStatus(StrEnum):
     EXPIRED = "expired"
 
 
-class ExportJob(Base):
-    __tablename__ = "export_jobs"
-    __table_args__ = (
+@dataclasses.dataclass(kw_only=True, eq=False)
+class ExportJob(Record):
+    __collection__ = "export_jobs"
+    __deletable__ = False
+    __indexes__ = (
+        Index(asc("organization_id", "status", "requested_at", "_id"), name="ix_export_jobs_due"),
+        Index(asc("organization_id", "requested_by", "requested_at"), name="ix_export_jobs_requested_by"),
         Index(
-            "ix_export_jobs_due",
-            "requested_at",
-            postgresql_where=text("status IN ('queued', 'running', 'done')"),
+            asc("storage_key"),
+            name="uq_export_jobs_storage_key",
+            unique=True,
+            partial={"storage_key": {"$type": "string"}},
         ),
-        Index("ix_export_jobs_requested_by_requested_at", "requested_by", "requested_at"),
-        {"schema": "app"},
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "export_type": allowed(ExportType),
+        "status": allowed(ExportStatus),
+        "storage_key": {"pattern": "^exports/[0-9a-f-]{36}$"},
+        "file_name": {"minLength": 1, "maxLength": 120},
+        "error_code": {"minLength": 1, "maxLength": 100},
+        "attempts": {"minimum": 0, "maximum": 100},
+    }
+    __expr_rules__ = (
+        {
+            "$or": [
+                {"$ne": ["$status", "done"]},
+                {
+                    "$and": [
+                        {"$ne": ["$storage_key", None]},
+                        {"$ne": ["$completed_at", None]},
+                        {"$ne": ["$expires_at", None]},
+                    ]
+                },
+            ]
+        },
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    export_type: Mapped[str]
+    requested_by: uuid.UUID
+    export_type: str
     # The period and filters, and the employees the requester could read when asking.
-    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB())
-    status: Mapped[str] = mapped_column(server_default=ExportStatus.QUEUED.value)
-    attempts: Mapped[int] = mapped_column(SmallInteger(), server_default=text("0"))
-    row_count: Mapped[int | None]
-    storage_key: Mapped[str | None] = mapped_column(unique=True)
-    file_name: Mapped[str | None]
-    error_code: Mapped[str | None]
-    requested_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    started_at: Mapped[datetime | None]
-    completed_at: Mapped[datetime | None]
-    expires_at: Mapped[datetime | None]
-    downloaded_at: Mapped[datetime | None]
+    parameters: dict[str, Any]
+    status: str = ExportStatus.QUEUED.value
+    attempts: int = 0
+    row_count: int | None = None
+    storage_key: str | None = None
+    file_name: str | None = None
+    error_code: str | None = None
+    requested_at: datetime = dataclasses.field(default_factory=utcnow)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    expires_at: datetime | None = None
+    downloaded_at: datetime | None = None

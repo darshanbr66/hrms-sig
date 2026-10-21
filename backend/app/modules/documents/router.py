@@ -115,8 +115,11 @@ class DocumentList(_Response):
     items: list[DocumentView]
     # Sensitive documents left out until the reader verifies with their authenticator.
     sensitive_hidden: int
-    # False when file storage is not set up: nothing can be uploaded or downloaded.
+    # Whether file storage is available. Files live in the database (GridFS, ADR-030), so it
+    # always is; kept so clients of the published contract need no change.
     storage_ready: bool
+    # False when uploads are refused: turned off while virus scanning is not set up (DOC-5).
+    uploads_ready: bool
 
 
 class DocumentUpdate(_Request):
@@ -192,7 +195,8 @@ def _listing(listing: Listing, documents: DocumentService) -> DocumentList:
     return DocumentList(
         items=[_document(r) for r in listing.records],
         sensitive_hidden=listing.sensitive_hidden,
-        storage_ready=documents.configured,
+        storage_ready=True,
+        uploads_ready=documents.uploads_ready,
     )
 
 

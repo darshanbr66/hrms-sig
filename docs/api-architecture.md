@@ -3,6 +3,8 @@
 Status: Draft v0.1
 Related: `architecture.md` §4–5, `authorization-model.md`, `security-architecture.md` §3, §5
 
+> **2026-10-20, ADR-030:** the API is unchanged by the move to MongoDB. Behind it, rate-limit counters (§9) are in MongoDB, jobs (§10) run on the MongoDB lease scheduler, and download links are same-origin (`/api/v1/files/<token>`, 60 seconds).
+
 ## 1. Style
 
 - JSON over HTTPS, resource-oriented REST. Actions that are not CRUD (approve, clock in, finalize) are explicit sub-resources: `POST /leave-requests/{id}/approve`, not `PATCH {status: "approved"}`. This keeps each state transition a separate, individually authorized and audited operation.
@@ -194,7 +196,7 @@ Implemented so far (2026-10-15): identity, access, audit, settings (M1), and fro
 - `POST /leave/opening-balances/imports` (CSV → validation report → confirm; writes `opening_balance` ledger entries with an import batch ID)
 - `GET/POST /holiday-calendars` · `POST /holiday-calendars/{id}/holidays` · `GET /me/holidays?year=`
 
-**Documents** (built 2026-10-15, revision 0022: `GET/POST /document-categories` · `PATCH /document-categories/{id}` (`document.category.manage`) · `GET /me/documents` · `POST /me/documents` (self-upload categories) · `GET /employees/{id}/documents` · `POST /employees/{id}/documents` (`document.manage.all`) · `GET /company-documents` · `POST /company-documents` · `GET/PATCH /documents/{id}` · `POST /documents/{id}/versions` · `POST /documents/{id}/versions/{version_id}/download`. Multipart uploads of at most 10 MB, PDF, PNG or JPEG decided from the content. A version downloads only once the scan marked it clean: `409 document.scan_pending` while it is checked, `409 document.unavailable` if infected or failed. The answer is `{ "url", "expires_in_seconds": 60 }`; the download is audited first. Without a files bucket, uploads and downloads answer `503 files.not_configured`; checks that need no storage (permissions, categories, lists) still answer first.)
+**Documents** (built 2026-10-15, revision 0022: `GET/POST /document-categories` · `PATCH /document-categories/{id}` (`document.category.manage`) · `GET /me/documents` · `POST /me/documents` (self-upload categories) · `GET /employees/{id}/documents` · `POST /employees/{id}/documents` (`document.manage.all`) · `GET /company-documents` · `POST /company-documents` · `GET/PATCH /documents/{id}` · `POST /documents/{id}/versions` · `POST /documents/{id}/versions/{version_id}/download`. Multipart uploads of at most 10 MB, PDF, PNG or JPEG decided from the content. A version downloads only once the scan marked it clean: `409 document.scan_pending` while it is checked, `409 document.unavailable` if infected or failed. The answer is `{ "url", "expires_in_seconds": 60 }`; the download is audited first. Without a files bucket, uploads and downloads answer `503 files.not_configured`; checks that need no storage (permissions, categories, lists) still answer first. With `DOCUMENT_UPLOADS_ENABLED=false` (a deployment without ClamAV), uploads and new versions answer `503 documents.uploads_disabled` and nothing is stored, while files already scanned clean still download; lists carry `storage_ready` and `uploads_ready` so the UI offers only what works.)
 - `GET /employees/{id}/documents` · `POST /employees/{id}/documents` (multipart, 20 MB)
 - `POST /documents/{id}/versions`
 - `POST /documents/{id}/download` — returns `{ "url": "...", "expires_in": 60 }`. `POST` rather than `GET` so it is never prefetched or cached, and so the audit write is a clear side effect.
@@ -257,7 +259,7 @@ Jobs are defined in the owning module and enqueued inside the business transacti
 | `identity.apply_scheduled_deactivations()` | every 5 min | user status |
 | `retention.*` (non-audit data) | daily | date-based |
 
-Built so far beyond the audit and email jobs (2026-10-15): `documents.scan` (every minute, up to 20 pending versions, at most 5 attempts before `failed`; not registered, so files stay pending, when `CLAMAV_HOST` or `FILES_BUCKET` is not set), `reports.exports` (every minute, up to 5 queued exports, at most 3 attempts; also deletes files past their 24 hours and marks them `expired`) and `leave.accrue` (daily at 00:15 UTC: due periodic accruals and carried-day expiry). Attendance days are derived when read, so the `attendance.*` recompute jobs above are not needed yet.
+Built so far beyond the audit and email jobs (2026-10-15): `documents.scan` (every minute, up to 20 pending versions, at most 5 attempts before `failed`; not registered, so files stay pending, when `CLAMAV_HOST` or `FILES_BUCKET` is not set; deployed workers refuse to start without `CLAMAV_HOST` unless uploads are turned off), `reports.exports` (every minute, up to 5 queued exports, at most 3 attempts; also deletes files past their 24 hours and marks them `expired`) and `leave.accrue` (daily at 00:15 UTC: due periodic accruals and carried-day expiry). Attendance days are derived when read, so the `attendance.*` recompute jobs above are not needed yet.
 
 Failed jobs retry with backoff (max 5); permanent failures raise an operational alert and are visible to system admins.
 

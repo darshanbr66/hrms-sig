@@ -3514,6 +3514,8 @@ export interface components {
             sensitive_hidden: number;
             /** Storage Ready */
             storage_ready: boolean;
+            /** Uploads Ready */
+            uploads_ready: boolean;
         };
         /** DocumentUpdate */
         DocumentUpdate: {

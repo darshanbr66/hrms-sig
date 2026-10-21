@@ -13,14 +13,19 @@ shared test database holds the super admins other tests create.
 
 import uuid
 from datetime import timedelta
+from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy.exc import DBAPIError
+from pymongo.errors import OperationFailure, WriteError
 
 from app.modules.access.grant_requests import expire_due
+from app.modules.access.invariants import AssignmentGrantError, require_grant_match
+from app.modules.access.models import GrantKind, GrantStatus, RoleGrantRequest, UserRole, role_id
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.roles import RoleKey
+from app.platform.db import AppendOnlyError, GuardedUpdateError, to_document
 from tests.api_support import Account, Api
 
 REQUESTS = "/api/v1/role-grant-requests"
@@ -86,12 +91,10 @@ async def test_an_elevation_is_approved_by_another_super_admin_and_ends_on_time(
         assert banner["role_key"] == "system_admin"
 
         # Every action under the elevation carries its ID in the audit log.
-        [(grant_request_id,)] = await api.fetch(
-            "SELECT grant_request_id FROM audit.audit_log WHERE actor_user_id = :id "
-            "AND action = 'identity.sessions.read'",
-            id=requester.user_id,
+        [read] = await api.records(
+            AuditLogRecord, {"actor_user_id": requester.user_id, "action": "identity.sessions.read"}
         )
-        assert str(grant_request_id) == request["id"]
+        assert str(read.grant_request_id) == request["id"]
 
         # It stops applying at its end, before any job runs.
         api.clock.advance(timedelta(minutes=5, seconds=1))
@@ -102,29 +105,23 @@ async def test_an_elevation_is_approved_by_another_super_admin_and_ends_on_time(
 
     # The job records the end and closes the assignment.
     await expire(api)
-    [(status,)] = await api.fetch(
-        "SELECT status FROM access.role_grant_requests WHERE id = :id", id=request["id"]
-    )
-    assert status == "ended"
-    [(revoked_at, valid_until)] = await api.fetch(
-        "SELECT revoked_at, valid_until FROM access.user_roles WHERE grant_request_id = :id", id=request["id"]
-    )
-    assert revoked_at == valid_until
+    assert await request_status(api, request["id"]) == "ended"
+    [granted] = await api.records(UserRole, {"grant_request_id": uuid.UUID(request["id"])})
+    assert granted.revoked_at == granted.valid_until
 
     actions = [
-        action
-        for (action,) in await api.fetch(
-            "SELECT action FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id",
-            id=request["id"],
+        row.action
+        for row in await api.records(
+            AuditLogRecord, {"target_id": request["id"]}, sort=[("recorded_at", 1), ("id", 1)]
         )
     ]
     assert actions == ["access.elevation.requested", "access.elevation.approved", "access.elevation.ended"]
     events = [
-        event
-        for (event,) in await api.fetch(
-            "SELECT event_type FROM audit.security_events WHERE details->>'grant_request_id' = :id "
-            "ORDER BY recorded_at, id",
-            id=request["id"],
+        item["event_type"]
+        for item in await api.find(
+            "security_events",
+            {"details.grant_request_id": request["id"]},
+            sort=[("recorded_at", 1), ("_id", 1)],
         )
     ]
     assert events == ["elevation.requested", "elevation.approved", "elevation.ended"]
@@ -157,10 +154,7 @@ async def test_a_request_not_decided_within_24_hours_expires(api: Api) -> None:
         assert late.status_code == 409
         assert late.json()["code"] == "grant_request.not_pending"
     await expire(api)
-    [(status,)] = await api.fetch(
-        "SELECT status FROM access.role_grant_requests WHERE id = :id", id=request["id"]
-    )
-    assert status == "expired"
+    assert await request_status(api, request["id"]) == "expired"
 
 
 async def test_reject_withdraw_and_end_early(api: Api) -> None:
@@ -186,9 +180,8 @@ async def test_reject_withdraw_and_end_early(api: Api) -> None:
         await requester_client.post("/api/v1/auth/refresh")
         assert await can_read_sessions(requester_client, other.user_id) == 200
         # The assignment is ended through its request, never removed as a role.
-        [(assignment_id,)] = await api.fetch(
-            "SELECT id FROM access.user_roles WHERE grant_request_id = :id", id=third["id"]
-        )
+        [temporary] = await api.records(UserRole, {"grant_request_id": uuid.UUID(third["id"])})
+        assignment_id = temporary.id
         removal = await other_client.delete(f"/api/v1/users/{requester.user_id}/roles/{assignment_id}")
         assert removal.json()["code"] == "role.temporary_access"
         ended = await other_client.post(f"{REQUESTS}/{third['id']}/revoke")
@@ -254,12 +247,10 @@ async def test_break_glass_reaches_only_system_admin_for_an_hour_and_needs_revie
         assert reviewed.json()["acknowledged_by"]["id"] == str(other.user_id)
         assert (await other_client.post(f"{REQUESTS}/{glass['id']}/acknowledge")).status_code == 409
 
-    [(severity,)] = await api.fetch(
-        "SELECT severity FROM audit.security_events WHERE event_type = 'elevation.break_glass' "
-        "AND details->>'grant_request_id' = :id",
-        id=glass["id"],
+    [event] = await api.find(
+        "security_events", {"event_type": "elevation.break_glass", "details.grant_request_id": glass["id"]}
     )
-    assert severity == "high"
+    assert event["severity"] == "high"
     sent = await api.deliver()
     assert any("Break-glass access was used" in m.subject for m in sent if m.to == auditor.email)
     assert any("Break-glass access was used" in m.subject for m in sent if m.to == other.email)
@@ -281,9 +272,7 @@ async def test_super_admin_assignment_needs_a_second_super_admin(api: Api) -> No
         assert created.status_code == 202, created.text
         request = created.json()
         assert (request["kind"], request["status"]) == ("super_admin_assignment", "pending")
-        assert (
-            await api.fetch("SELECT 1 FROM access.user_roles WHERE user_id = :id", id=candidate.user_id)
-        ) == []
+        assert (await api.records(UserRole, {"user_id": candidate.user_id})) == []
 
         own = await assigner_client.post(f"{REQUESTS}/{request['id']}/approve", json={})
         assert own.json()["code"] == "sod.own_request"
@@ -332,81 +321,106 @@ async def test_listing_needs_role_read_and_is_newest_first(api: Api) -> None:
 
 
 async def test_the_database_enforces_the_grant_request_rules(api: Api) -> None:
+    """The validators, update rules and the assignment backstop refuse every invalid state."""
     subject = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
     other = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
+    now = api.clock.now()
 
-    def insert(kind: str, role: str, status: str, extra: str = "", values: str = "") -> str:
-        return (
-            "INSERT INTO access.role_grant_requests (kind, subject_user_id, role_id, role_key, reason, "
-            f"requested_duration, requested_by, status{extra}) SELECT '{kind}', :s, id, key, 'r', "
-            f":d, :s, '{status}'{values} FROM access.roles WHERE key = '{role}' RETURNING id"
+    def request(
+        kind: GrantKind, role: str, status: GrantStatus, duration: timedelta, **extra: Any
+    ) -> RoleGrantRequest:
+        return RoleGrantRequest(
+            organization_id=api.organization_id,
+            kind=kind.value,
+            subject_user_id=subject.user_id,
+            role_id=role_id(role),
+            role_key=role,
+            reason="r",
+            requested_duration=duration,
+            requested_by=subject.user_id,
+            status=status.value,
+            **extra,
         )
 
-    for statement, duration, match in (
-        (insert("elevation", "hr", "pending"), timedelta(hours=9), "ck_role_grant_requests_duration"),
-        (insert("break_glass", "hr", "pending"), timedelta(minutes=30), "ck_role_grant_requests"),
-        (
-            insert(
-                "break_glass",
-                "system_admin",
-                "active",
-                ", starts_at, ends_at",
-                ", now(), now() + interval '2 hours'",
-            ),
+    requests = api.database.collection("role_grant_requests")
+    for invalid in (
+        request(GrantKind.ELEVATION, "hr", GrantStatus.PENDING, timedelta(hours=9)),
+        request(GrantKind.BREAK_GLASS, "hr", GrantStatus.PENDING, timedelta(minutes=30)),
+        request(
+            GrantKind.BREAK_GLASS,
+            "system_admin",
+            GrantStatus.ACTIVE,
             timedelta(hours=2),
-            "ck_role_grant_requests_duration",
+            starts_at=now,
+            ends_at=now + timedelta(hours=2),
         ),
-        (insert("elevation", "super_admin", "pending"), timedelta(hours=1), "ck_role_grant_requests_role"),
+        request(GrantKind.ELEVATION, "super_admin", GrantStatus.PENDING, timedelta(hours=1)),
     ):
-        with pytest.raises(DBAPIError, match=match):
-            await api.execute(statement, s=subject.user_id, d=duration)
+        with pytest.raises(WriteError, match="Document failed validation"):
+            await requests.insert_one(to_document(invalid))
 
-    [(request_id,)] = await api.fetch(
-        insert("elevation", "hr", "pending"), s=subject.user_id, d=timedelta(hours=1)
-    )
-    # Self-approval, changing what was asked, going backwards and deleting are all refused.
-    with pytest.raises(DBAPIError, match="ck_role_grant_requests_decider"):
-        await api.execute(
-            "UPDATE access.role_grant_requests SET status = 'rejected', decided_by = requested_by, "
-            "decided_at = now() WHERE id = :id",
-            id=request_id,
+    pending = request(GrantKind.ELEVATION, "hr", GrantStatus.PENDING, timedelta(hours=1))
+    async with api.database.unit_of_work() as session:
+        session.add(pending)
+    # Self-approval is refused by the validator; changing what was asked, going backwards and
+    # deleting by the update rules.
+    with pytest.raises(WriteError, match="Document failed validation"):
+        await requests.update_one(
+            {"_id": pending.id, "organization_id": api.organization_id},
+            {"$set": {"status": "rejected", "decided_by": subject.user_id, "decided_at": now}},
         )
-    with pytest.raises(DBAPIError, match="cannot change"):
-        await api.execute(
-            "UPDATE access.role_grant_requests SET reason = 'other' WHERE id = :id", id=request_id
-        )
-    with pytest.raises(DBAPIError, match="history"):
-        await api.execute("DELETE FROM access.role_grant_requests WHERE id = :id", id=request_id)
-    await api.execute(
-        "UPDATE access.role_grant_requests SET status = 'rejected', decided_by = :o, decided_at = now() "
-        "WHERE id = :id",
-        id=request_id,
-        o=other.user_id,
-    )
-    with pytest.raises(DBAPIError, match="cannot move"):
-        await api.execute(
-            "UPDATE access.role_grant_requests SET status = 'pending' WHERE id = :id", id=request_id
-        )
+    for change in ({"reason": "other"}, {"requested_duration": timedelta(hours=2)}):
+        with pytest.raises(GuardedUpdateError):  # noqa: PT012 (the commit raises)
+            async with api.database.unit_of_work() as session:
+                loaded = await session.get(RoleGrantRequest, pending.id)
+                assert loaded is not None
+                for name, value in change.items():
+                    setattr(loaded, name, value)
+    async with api.database.unit_of_work() as session:
+        loaded = await session.get(RoleGrantRequest, pending.id)
+        assert loaded is not None
+        with pytest.raises(AppendOnlyError):
+            await session.delete(loaded)
+        loaded.status, loaded.decided_by, loaded.decided_at = GrantStatus.REJECTED.value, other.user_id, now
+    with pytest.raises(GuardedUpdateError):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            loaded = await session.get(RoleGrantRequest, pending.id)
+            assert loaded is not None
+            loaded.status = GrantStatus.PENDING.value
+    # The API's database user cannot delete requests or assignments at all (history).
+    for collection in ("role_grant_requests", "user_roles"):
+        with pytest.raises(OperationFailure, match="not authorized"):
+            await api.database.collection(collection).delete_many({"organization_id": api.organization_id})
 
     # An assignment must match an approved request: a rejected one grants nothing, and
     # super_admin is never assigned by someone without a request.
-    with pytest.raises(DBAPIError, match="does not allow"):
-        await api.execute(
-            "INSERT INTO access.user_roles (user_id, role_id, granted_by, grant_reason, grant_request_id, "
-            "valid_until) SELECT :s, id, :o, 'r', :r, now() + interval '1 hour' "
-            "FROM access.roles WHERE key = 'hr'",
-            s=subject.user_id,
-            o=other.user_id,
-            r=request_id,
-        )
+    with pytest.raises(AssignmentGrantError, match="grant request"):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            assignment = UserRole(
+                user_id=subject.user_id,
+                role_id=role_id("hr"),
+                role_key="hr",
+                granted_by=other.user_id,
+                grant_reason="r",
+                grant_request_id=pending.id,
+                valid_from=now,
+                valid_until=now + timedelta(hours=1),
+            )
+            session.add(assignment)
+            require_grant_match(session, assignment)
     candidate = await api.create_account()
-    with pytest.raises(DBAPIError, match="SOD-8"):
-        await api.execute(
-            "INSERT INTO access.user_roles (user_id, role_id, granted_by, grant_reason) "
-            "SELECT :c, id, :o, 'r' FROM access.roles WHERE key = 'super_admin'",
-            c=candidate.user_id,
-            o=other.user_id,
-        )
+    with pytest.raises(AssignmentGrantError, match="SOD-8"):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            assignment = UserRole(
+                user_id=candidate.user_id,
+                role_id=role_id("super_admin"),
+                role_key="super_admin",
+                granted_by=other.user_id,
+                grant_reason="r",
+                valid_from=now,
+            )
+            session.add(assignment)
+            require_grant_match(session, assignment)
 
 
 async def test_removing_a_super_admin_ends_their_temporary_access(api: Api) -> None:
@@ -419,16 +433,15 @@ async def test_removing_a_super_admin_ends_their_temporary_access(api: Api) -> N
         await requester_client.post("/api/v1/auth/refresh")
         assert await can_read_sessions(requester_client, other.user_id) == 200
 
-        [(assignment_id,)] = await api.fetch(
-            "SELECT ur.id FROM access.user_roles ur JOIN access.roles r ON r.id = ur.role_id "
-            "WHERE ur.user_id = :id AND r.key = 'super_admin'",
-            id=requester.user_id,
-        )
+        [held] = await api.records(UserRole, {"user_id": requester.user_id, "role_key": "super_admin"})
+        assignment_id = held.id
         removed = await other_client.delete(f"/api/v1/users/{requester.user_id}/roles/{assignment_id}")
         assert removed.status_code == 204
         await requester_client.post("/api/v1/auth/refresh")
         assert await can_read_sessions(requester_client, other.user_id) == 403
-    [(status,)] = await api.fetch(
-        "SELECT status FROM access.role_grant_requests WHERE id = :id", id=request["id"]
-    )
-    assert status == "revoked"
+    assert await request_status(api, request["id"]) == "revoked"
+
+
+async def request_status(api: Api, request_id: str) -> str:
+    [stored] = await api.records(RoleGrantRequest, {"id": uuid.UUID(request_id)})
+    return stored.status

@@ -83,8 +83,8 @@ async def test_an_unreachable_scanner_is_an_error_never_clean() -> None:
 
 
 def test_download_and_export_limits_fail_closed() -> None:
-    """api-architecture §9: downloads 60 and exports 5 per user per hour; when Redis cannot
-    be asked, they are refused (503) rather than allowed (architecture §3.1)."""
+    """api-architecture §9: downloads 60 and exports 5 per user per hour; when the rate-limit
+    counters (MongoDB) cannot be read, they are refused (503) rather than allowed (architecture §3.1)."""
     assert (DOWNLOADS_PER_USER.limit, DOWNLOADS_PER_USER.window) == (60, timedelta(hours=1))
     assert (EXPORT_DOWNLOADS_PER_USER.limit, EXPORT_DOWNLOADS_PER_USER.window) == (60, timedelta(hours=1))
     assert (EXPORTS_PER_USER.limit, EXPORTS_PER_USER.window) == (5, timedelta(hours=1))

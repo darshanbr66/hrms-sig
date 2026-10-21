@@ -1,20 +1,20 @@
-"""SQLAlchemy models for the `identity` schema (docs/database-design.md §4.1, revision 0007).
+"""Accounts, credentials, factors, sessions and tokens (docs/database-design.md §4.1).
 
-Length limits, allowed values and the MFA invariant are enforced by the migration; the enums
-below mirror the allowed values. No model here is ever serialized directly into a response.
+Allowed values and lengths are part of each collection's validator. Email addresses and token
+digests are unique across all organizations (an account is found by its email, a request by
+its token, before its organization is known); everything else is owned by the account's
+organization. The two MFA rules that span collections (an active account has a confirmed
+factor; a full session needs one) are checked before every commit that could break them
+(`invariants.py`). No model here is ever serialized directly into a response.
 """
 
+import dataclasses
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any, ClassVar
 
-from sqlalchemy import BigInteger, ForeignKey, Index, LargeBinary, SmallInteger, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import CITEXT, INET
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.platform.db import Base
-
-SCHEMA = "identity"
+from app.platform.db import CASE_INSENSITIVE, Document, Index, Record, allowed, asc, utcnow
 
 
 class UserStatus(StrEnum):
@@ -65,149 +65,205 @@ class DeviceRevokedReason(StrEnum):
     ACCOUNT_DISABLED = "account_disabled"
 
 
-class User(Base):
-    __tablename__ = "users"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
+_USER_AGENT = {"maxLength": 512}
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    email: Mapped[str] = mapped_column(CITEXT(), unique=True)
-    email_verified_at: Mapped[datetime | None]
-    status: Mapped[str]
-    employee_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("people.employees.id", ondelete="RESTRICT"), unique=True
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class User(Record):
+    __collection__ = "users"
+    __indexes__ = (
+        # One account per email address across every organization: sign-in needs no organization.
+        Index(asc("email"), name="uq_users_email", unique=True, collation=CASE_INSENSITIVE),
+        Index(
+            asc("organization_id", "employee_id"),
+            name="uq_users_employee_id",
+            unique=True,
+            partial={"employee_id": {"$type": "binData"}},
+        ),
+        Index(asc("organization_id", "status"), name="ix_users_status"),
     )
-    last_login_at: Mapped[datetime | None]
-    failed_login_count: Mapped[int] = mapped_column(SmallInteger(), server_default=text("0"))
-    failed_login_window_started_at: Mapped[datetime | None]
-    last_failed_login_at: Mapped[datetime | None]
-    locked_until: Mapped[datetime | None]
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "email": {"maxLength": 254, "pattern": r"^[^@\s]+@[^@\s]+$"},
+        "status": allowed(UserStatus),
+        "failed_login_count": {"minimum": 0},
+        "version": {"minimum": 1},
+    }
+    __expr_rules__ = ({"$or": [{"$ne": ["$status", "active"]}, {"$ne": ["$email_verified_at", None]}]},)
+
+    email: str
+    email_verified_at: datetime | None = None
+    status: str
+    employee_id: uuid.UUID | None = None
+    last_login_at: datetime | None = None
+    failed_login_count: int = 0
+    failed_login_window_started_at: datetime | None = None
+    last_failed_login_at: datetime | None = None
+    locked_until: datetime | None = None
     # Set by an administrator's MFA reset: the account has no factor and can reach only the
-    # re-enrolment flow until a new authenticator is confirmed (revision 0012).
-    mfa_reenrolment_required: Mapped[bool] = mapped_column(server_default=text("false"))
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # re-enrolment flow until a new authenticator is confirmed.
+    mfa_reenrolment_required: bool = False
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class Credential(Base):
-    __tablename__ = "credentials"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
+@dataclasses.dataclass(kw_only=True, eq=False)
+class Credential(Document):
+    """`credentials`: the account's password hash. Its `_id` is the account's."""
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("identity.users.id", ondelete="RESTRICT"), primary_key=True
-    )
-    password_hash: Mapped[str]
-    password_changed_at: Mapped[datetime]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    __collection__ = "credentials"
+    __id_field__ = "user_id"
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "password_hash": {"maxLength": 512, "pattern": r"^\$argon2id\$"},
+    }
 
-
-class MfaFactor(Base):
-    __tablename__ = "mfa_factors"
-    __table_args__ = (
-        Index("ix_mfa_factors_user_id", "user_id", postgresql_where=text("revoked_at IS NULL")),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    type: Mapped[str]
-    label: Mapped[str]
-    secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary())
-    secret_key_version: Mapped[int] = mapped_column(SmallInteger())
-    last_used_step: Mapped[int | None] = mapped_column(BigInteger())
-    last_used_at: Mapped[datetime | None]
-    confirmed_at: Mapped[datetime | None]
-    revoked_at: Mapped[datetime | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    user_id: uuid.UUID
+    organization_id: uuid.UUID | None = None
+    password_hash: str
+    password_changed_at: datetime
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class RecoveryCode(Base):
-    __tablename__ = "recovery_codes"
-    __table_args__ = (UniqueConstraint("user_id", "code_hash"), {"schema": SCHEMA})
+@dataclasses.dataclass(kw_only=True, eq=False)
+class MfaFactor(Record):
+    __collection__ = "mfa_factors"
+    __indexes__ = (Index(asc("organization_id", "user_id", "revoked_at"), name="ix_mfa_factors_user_id"),)
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "type": allowed(FactorType),
+        "label": {"minLength": 1, "maxLength": 64},
+        "secret_key_version": {"minimum": 1},
+    }
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    code_hash: Mapped[bytes] = mapped_column(LargeBinary())
-    used_at: Mapped[datetime | None]
-    revoked_at: Mapped[datetime | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    user_id: uuid.UUID
+    type: str
+    label: str
+    secret_ciphertext: bytes
+    secret_key_version: int
+    last_used_step: int | None = None
+    last_used_at: datetime | None = None
+    confirmed_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class AuthSession(Base):
-    """A signed-in session (`identity.sessions`)."""
-
-    __tablename__ = "sessions"
-    __table_args__ = (
-        Index("ix_sessions_user_id", "user_id", postgresql_where=text("revoked_at IS NULL")),
-        {"schema": SCHEMA},
+@dataclasses.dataclass(kw_only=True, eq=False)
+class RecoveryCode(Record):
+    __collection__ = "recovery_codes"
+    __indexes__ = (
+        Index(asc("organization_id", "user_id", "code_hash"), name="uq_recovery_codes_code", unique=True),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    client_type: Mapped[str]
-    scope: Mapped[str]
-    ip: Mapped[str | None] = mapped_column(INET())
-    user_agent: Mapped[str | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    last_activity_at: Mapped[datetime]
-    idle_expires_at: Mapped[datetime]
-    absolute_expires_at: Mapped[datetime]
-    step_up_at: Mapped[datetime | None]
-    revoked_at: Mapped[datetime | None]
-    revoked_reason: Mapped[str | None]
+    user_id: uuid.UUID
+    code_hash: bytes
+    used_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class SessionToken(Base):
-    __tablename__ = "session_tokens"
-    __table_args__ = (Index("ix_session_tokens_session_id", "session_id"), {"schema": SCHEMA})
+@dataclasses.dataclass(kw_only=True, eq=False)
+class AuthSession(Record):
+    """A signed-in session (`sessions`)."""
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.sessions.id", ondelete="CASCADE"))
-    kind: Mapped[str]
-    token_hash: Mapped[bytes] = mapped_column(LargeBinary(), unique=True)
-    expires_at: Mapped[datetime]
-    used_at: Mapped[datetime | None]
-    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("identity.session_tokens.id", ondelete="SET NULL")
+    __collection__ = "sessions"
+    __indexes__ = (Index(asc("organization_id", "user_id", "revoked_at"), name="ix_sessions_user_id"),)
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "client_type": allowed(ClientType),
+        "scope": allowed(("full", "mfa_enrolment")),
+        "user_agent": _USER_AGENT,
+        "revoked_reason": allowed(RevokedReason),
+    }
+    __expr_rules__ = (
+        {"$lte": ["$idle_expires_at", "$absolute_expires_at"]},
+        {"$eq": [{"$eq": ["$revoked_at", None]}, {"$eq": ["$revoked_reason", None]}]},
     )
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    user_id: uuid.UUID
+    client_type: str
+    scope: str
+    ip: str | None = None
+    user_agent: str | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    last_activity_at: datetime
+    idle_expires_at: datetime
+    absolute_expires_at: datetime
+    step_up_at: datetime | None = None
+    revoked_at: datetime | None = None
+    revoked_reason: str | None = None
 
 
-class OneTimeToken(Base):
-    __tablename__ = "one_time_tokens"
-    __table_args__ = (Index("ix_one_time_tokens_user_id", "user_id"), {"schema": SCHEMA})
+@dataclasses.dataclass(kw_only=True, eq=False)
+class SessionToken(Record):
+    __collection__ = "session_tokens"
+    __indexes__ = (
+        Index(asc("token_hash"), name="uq_session_tokens_token_hash", unique=True),
+        Index(asc("organization_id", "session_id"), name="ix_session_tokens_session_id"),
+        # Expired tokens go once a day after their expiry; nothing reads them after that.
+        Index(asc("expires_at"), name="ttl_session_tokens_expires_at", expire_after_seconds=86400),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "kind": allowed(TokenKind),
+    }
+    __expr_rules__ = ({"$or": [{"$eq": ["$used_at", None]}, {"$eq": ["$kind", "refresh"]}]},)
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    purpose: Mapped[str]
-    token_hash: Mapped[bytes] = mapped_column(LargeBinary(), unique=True)
-    expires_at: Mapped[datetime]
-    used_at: Mapped[datetime | None]
-    failed_attempts: Mapped[int] = mapped_column(SmallInteger(), server_default=text("0"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    session_id: uuid.UUID
+    kind: str
+    token_hash: bytes
+    expires_at: datetime
+    used_at: datetime | None = None
+    replaced_by_id: uuid.UUID | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
 
 
-class TrustedDevice(Base):
+@dataclasses.dataclass(kw_only=True, eq=False)
+class OneTimeToken(Record):
+    __collection__ = "one_time_tokens"
+    __indexes__ = (
+        Index(asc("token_hash"), name="uq_one_time_tokens_token_hash", unique=True),
+        Index(asc("organization_id", "user_id", "purpose"), name="ix_one_time_tokens_user_id"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "purpose": allowed(OneTimePurpose),
+        "failed_attempts": {"minimum": 0},
+    }
+
+    user_id: uuid.UUID
+    purpose: str
+    token_hash: bytes
+    expires_at: datetime
+    used_at: datetime | None = None
+    failed_attempts: int = 0
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class TrustedDevice(Record):
     """A browser the user has signed in from (docs/security-architecture.md §3.4).
 
     Identified by a random 256-bit cookie, stored only as its SHA-256 digest. Trust never
     replaces MFA or step-up; it decides only whether a sign-in is reported as from a new device.
     """
 
-    __tablename__ = "trusted_devices"
-    __table_args__ = (
-        Index("ix_trusted_devices_user_id", "user_id", postgresql_where=text("revoked_at IS NULL")),
-        {"schema": SCHEMA},
+    __collection__ = "trusted_devices"
+    __indexes__ = (
+        Index(asc("token_hash"), name="uq_trusted_devices_token_hash", unique=True),
+        Index(asc("organization_id", "user_id", "revoked_at"), name="ix_trusted_devices_user_id"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "user_agent": _USER_AGENT,
+        "revoked_reason": allowed(DeviceRevokedReason),
+    }
+    __expr_rules__ = (
+        {"$gt": ["$expires_at", "$created_at"]},
+        {"$eq": [{"$eq": ["$revoked_at", None]}, {"$eq": ["$revoked_reason", None]}]},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    token_hash: Mapped[bytes] = mapped_column(LargeBinary(), unique=True)
-    user_agent: Mapped[str | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    last_seen_at: Mapped[datetime]
-    expires_at: Mapped[datetime]
-    revoked_at: Mapped[datetime | None]
-    revoked_reason: Mapped[str | None]
+    user_id: uuid.UUID
+    token_hash: bytes
+    user_agent: str | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    last_seen_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    revoked_reason: str | None = None

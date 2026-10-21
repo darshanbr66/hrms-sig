@@ -25,12 +25,8 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Final
+from typing import Any, Final
 from zoneinfo import ZoneInfo
-
-from sqlalchemy import ColumnElement, and_, func, literal, select, text, tuple_
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.attendance import notifications
 from app.modules.attendance.correction_rules import Add, CorrectionRuleError, Existing, resulting_day
@@ -56,7 +52,7 @@ from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer
 from app.platform.authz.sod import SodRule
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.ratelimit import RateLimiter, RateLimitRule, RateLimitScope
 
@@ -142,25 +138,18 @@ class _DayState:
         ]
 
 
-async def _lock_employee(session: AsyncSession, employee_id: uuid.UUID) -> None:
+async def _lock_employee(session: Session, employee_id: uuid.UUID) -> None:
     """The same lock clocking takes, so live events and corrections never interleave."""
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"attendance:{employee_id}"}
+    await session.lock(f"attendance:{employee_id}")
+
+
+async def locked_on(session: Session, day: date) -> bool:
+    return await session.exists(
+        AttendanceLock, {"released_at": None, "period_start": {"$lte": day}, "period_end": {"$gte": day}}
     )
 
 
-async def locked_on(session: AsyncSession, day: date) -> bool:
-    found = await session.execute(
-        select(AttendanceLock.id).where(
-            AttendanceLock.released_at.is_(None),
-            AttendanceLock.period_start <= day,
-            AttendanceLock.period_end >= day,
-        )
-    )
-    return found.first() is not None
-
-
-async def _zone(session: AsyncSession, employee_id: uuid.UUID, on: date) -> str:
+async def _zone(session: Session, employee_id: uuid.UUID, on: date) -> str:
     facts = await people.job_facts(session, employee_id, on)
     if facts is None or facts.location_id is None:
         return "UTC"
@@ -168,31 +157,34 @@ async def _zone(session: AsyncSession, employee_id: uuid.UUID, on: date) -> str:
     return zones.get(facts.location_id, "UTC")
 
 
-async def _day_state(session: AsyncSession, employee_id: uuid.UUID, work_date: date) -> _DayState:
-    rows = list(
-        await session.scalars(
-            select(AttendanceEvent)
-            .where(AttendanceEvent.employee_id == employee_id, AttendanceEvent.work_date == work_date)
-            .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
-        )
+async def _nearest_unvoided(
+    session: Session, employee_id: uuid.UUID, work_dates: dict[str, date], *, latest: bool
+) -> datetime | None:
+    """The time of the latest (or earliest) event no correction voided on the given work dates."""
+    pipeline = [
+        {
+            "$match": {
+                "employee_id": employee_id,
+                "work_date": {op: value.isoformat() for op, value in work_dates.items()},
+            }
+        },
+        session.tenant_lookup(AttendanceEventVoid, local="_id", foreign="event_id", into="void"),
+        {"$match": {"void": {"$size": 0}}},
+        {"$sort": {"occurred_at": -1 if latest else 1}},
+        {"$limit": 1},
+    ]
+    found = await session.aggregate(AttendanceEvent, pipeline)
+    return found[0]["occurred_at"] if found else None
+
+
+async def _day_state(session: Session, employee_id: uuid.UUID, work_date: date) -> _DayState:
+    rows = await session.find(
+        AttendanceEvent,
+        {"employee_id": employee_id, "work_date": work_date},
+        sort=[("occurred_at", 1), ("id", 1)],
     )
-    not_voided = (
-        ~select(AttendanceEventVoid.id).where(AttendanceEventVoid.event_id == AttendanceEvent.id).exists()
-    )
-    earlier_last = (
-        await session.execute(
-            select(func.max(AttendanceEvent.occurred_at)).where(
-                AttendanceEvent.employee_id == employee_id, AttendanceEvent.work_date < work_date, not_voided
-            )
-        )
-    ).scalar_one_or_none()
-    later_first = (
-        await session.execute(
-            select(func.min(AttendanceEvent.occurred_at)).where(
-                AttendanceEvent.employee_id == employee_id, AttendanceEvent.work_date > work_date, not_voided
-            )
-        )
-    ).scalar_one_or_none()
+    earlier_last = await _nearest_unvoided(session, employee_id, {"$lt": work_date}, latest=True)
+    later_first = await _nearest_unvoided(session, employee_id, {"$gt": work_date}, latest=False)
     return _DayState(
         zone_name=await _zone(session, employee_id, work_date),
         existing=rows,
@@ -305,7 +297,7 @@ class CorrectionService:
 
     async def _create(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         context: RequestContext,
         *,
@@ -317,14 +309,9 @@ class CorrectionService:
     ) -> CorrectionDetail:
         now = self._clock.now()
         await _lock_employee(session, employee_id)
-        replay = (
-            await session.scalars(
-                select(AttendanceCorrection).where(
-                    AttendanceCorrection.employee_id == employee_id,
-                    AttendanceCorrection.idempotency_key == idempotency_key,
-                )
-            )
-        ).one_or_none()
+        replay = await session.find_one(
+            AttendanceCorrection, {"employee_id": employee_id, "idempotency_key": idempotency_key}
+        )
         if replay is not None:
             if replay.work_date != proposal.work_date or replay.kind != kind.value:
                 raise field_error(
@@ -365,16 +352,24 @@ class CorrectionService:
             locked_period=locked,
             idempotency_key=idempotency_key,
         )
+        pending_exists = conflict(
+            "correction.pending_exists",
+            "A correction for this date is already waiting for a decision. Withdraw it or wait for it first.",
+        )
+        if not hr and await session.exists(
+            AttendanceCorrection,
+            {
+                "employee_id": employee_id,
+                "work_date": proposal.work_date,
+                "status": CorrectionStatus.PENDING.value,
+            },
+        ):
+            raise pending_exists
         session.add(correction)
         try:
-            async with session.begin_nested():
-                await session.flush()
-        except IntegrityError as exc:
-            raise conflict(
-                "correction.pending_exists",
-                "A correction for this date is already waiting for a decision. "
-                "Withdraw it or wait for it first.",
-            ) from exc
+            await session.flush()
+        except UniqueViolationError as exc:
+            raise pending_exists from exc
         items = [
             AttendanceCorrectionItem(
                 correction_id=correction.id,
@@ -423,7 +418,7 @@ class CorrectionService:
 
     async def _apply(
         self,
-        session: AsyncSession,
+        session: Session,
         correction: AttendanceCorrection,
         items: Sequence[AttendanceCorrectionItem],
         *,
@@ -452,9 +447,7 @@ class CorrectionService:
                 )
         await session.flush()
 
-    async def _require_locked_access(
-        self, session: AsyncSession, actor: Actor, employee_id: uuid.UUID
-    ) -> None:
+    async def _require_locked_access(self, session: Session, actor: Actor, employee_id: uuid.UUID) -> None:
         """ATT-11: a locked date needs the `all` scope over the employee."""
         if not actor.holds("attendance.correction.approve.all"):
             raise AccessDenied(code=LOCKED_CODE)
@@ -476,9 +469,7 @@ class CorrectionService:
                 session, actor, "attendance.correction.request.self", subject_employee_id=employee_id
             )
             await _lock_employee(session, employee_id)
-            correction = await session.get(
-                AttendanceCorrection, correction_id, with_for_update=True, populate_existing=True
-            )
+            correction = await session.get(AttendanceCorrection, correction_id, for_update=True)
             if correction is None or correction.employee_id != employee_id:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if correction.status != CorrectionStatus.PENDING:
@@ -518,13 +509,10 @@ class CorrectionService:
             )
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
-            subject = (
-                await session.execute(
-                    select(AttendanceCorrection.employee_id).where(AttendanceCorrection.id == correction_id)
-                )
-            ).scalar_one_or_none()
-            if subject is None:
+            found = await session.get(AttendanceCorrection, correction_id)
+            if found is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            subject = found.employee_id
             granted = await self._authz.require(
                 session,
                 actor,
@@ -535,9 +523,7 @@ class CorrectionService:
             if actor.employee_id == subject:
                 raise AccessDenied(code=SodRule.OWN_REQUEST.value)
             await _lock_employee(session, subject)
-            correction = await session.get(
-                AttendanceCorrection, correction_id, with_for_update=True, populate_existing=True
-            )
+            correction = await session.get(AttendanceCorrection, correction_id, for_update=True)
             if correction is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if correction.requested_by == actor.user_id:
@@ -550,12 +536,8 @@ class CorrectionService:
             locked = await locked_on(session, correction.work_date)
             if locked:
                 await self._require_locked_access(session, actor, subject)
-            items = list(
-                await session.scalars(
-                    select(AttendanceCorrectionItem)
-                    .where(AttendanceCorrectionItem.correction_id == correction.id)
-                    .order_by(AttendanceCorrectionItem.id)
-                )
+            items = await session.find(
+                AttendanceCorrectionItem, {"correction_id": correction.id}, sort=[("id", 1)]
             )
             if approve:
                 adds, voids = _adds_and_voids(items)
@@ -594,13 +576,10 @@ class CorrectionService:
         self, actor: Actor, context: RequestContext, correction_id: uuid.UUID
     ) -> CorrectionDetail:
         async with self._db.unit_of_work() as session:
-            subject = (
-                await session.execute(
-                    select(AttendanceCorrection.employee_id).where(AttendanceCorrection.id == correction_id)
-                )
-            ).scalar_one_or_none()
-            if subject is None:
+            found = await session.get(AttendanceCorrection, correction_id)
+            if found is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            subject = found.employee_id
             await self._authz.require(
                 session, actor, "attendance.read", subject_employee_id=subject, hide_existence=True
             )
@@ -620,9 +599,7 @@ class CorrectionService:
                 )
             return detail
 
-    async def _may_decide(
-        self, session: AsyncSession, actor: Actor, correction: AttendanceCorrection
-    ) -> bool:
+    async def _may_decide(self, session: Session, actor: Actor, correction: AttendanceCorrection) -> bool:
         if (
             actor.employee_id == correction.employee_id
             or correction.requested_by == actor.user_id
@@ -637,32 +614,23 @@ class CorrectionService:
             return False
         return True
 
-    async def _detail(
-        self, session: AsyncSession, actor: Actor, correction_id: uuid.UUID
-    ) -> CorrectionDetail:
-        correction = await session.get(AttendanceCorrection, correction_id, populate_existing=True)
+    async def _detail(self, session: Session, actor: Actor, correction_id: uuid.UUID) -> CorrectionDetail:
+        correction = await session.get(AttendanceCorrection, correction_id)
         if correction is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         own = actor.employee_id == correction.employee_id
         may_decide = await self._may_decide(session, actor, correction)
-        items = list(
-            await session.scalars(
-                select(AttendanceCorrectionItem)
-                .where(AttendanceCorrectionItem.correction_id == correction.id)
-                .order_by(AttendanceCorrectionItem.id)
-            )
+        items = await session.find(
+            AttendanceCorrectionItem, {"correction_id": correction.id}, sort=[("id", 1)]
         )
         state = await _day_state(session, correction.employee_id, correction.work_date)
         void_owner = (
-            dict(
-                (
-                    await session.execute(
-                        select(AttendanceEventVoid.event_id, AttendanceEventVoid.correction_id).where(
-                            AttendanceEventVoid.event_id.in_([e.id for e in state.existing])
-                        )
-                    )
-                ).all()
-            )
+            {
+                void.event_id: void.correction_id
+                for void in await session.find(
+                    AttendanceEventVoid, {"event_id": {"$in": [e.id for e in state.existing]}}
+                )
+            }
             if state.existing
             else {}
         )
@@ -716,7 +684,7 @@ class CorrectionService:
         )
 
     @staticmethod
-    async def _records(session: AsyncSession, rows: Sequence[AttendanceCorrection]) -> list[CorrectionRecord]:
+    async def _records(session: Session, rows: Sequence[AttendanceCorrection]) -> list[CorrectionRecord]:
         names = await people.employee_names(session, {row.employee_id for row in rows})
         return [CorrectionRecord(row, names.get(row.employee_id, "")) for row in rows]
 
@@ -733,36 +701,42 @@ class CorrectionService:
     ) -> CorrectionListing:
         """Corrections in the actor's scope, newest work date first; their own; or, with
         `for_decision`, those waiting for a decision they may make (oldest first)."""
-        if own:
-            scope: ColumnElement[bool] = AttendanceCorrection.employee_id == _own_employee(actor)
-        elif for_decision:
-            scope = and_(
-                self._authz.scope_filter(
-                    actor, "attendance.correction.approve", AttendanceCorrection.employee_id
-                ),
-                AttendanceCorrection.status == CorrectionStatus.PENDING.value,
-                AttendanceCorrection.requested_by != actor.user_id,
-                *([AttendanceCorrection.employee_id != actor.employee_id] if actor.employee_id else []),
-            )
-        else:
-            scope = self._authz.scope_filter(actor, "attendance.read", AttendanceCorrection.employee_id)
-        query = select(AttendanceCorrection).where(scope)
-        if statuses:
-            query = query.where(AttendanceCorrection.status.in_(statuses))
-        if employee_id is not None:
-            query = query.where(AttendanceCorrection.employee_id == employee_id)
-        key = func.to_char(AttendanceCorrection.work_date, "YYYY-MM-DD")
-        if after is not None:
-            position, bound = (
-                tuple_(key, AttendanceCorrection.id),
-                tuple_(literal(after[0]), literal(after[1])),
-            )
-            query = query.where(position > bound if for_decision else position < bound)
-        order = (
-            (key, AttendanceCorrection.id) if for_decision else (key.desc(), AttendanceCorrection.id.desc())
-        )
         async with self._db.unit_of_work() as session:
-            rows = list(await session.scalars(query.order_by(*order).limit(limit + 1)))
+            conditions: list[dict[str, Any]] = []
+            if own:
+                conditions.append({"employee_id": _own_employee(actor)})
+            elif for_decision:
+                conditions.append(
+                    await self._authz.scope_filter(
+                        session, actor, "attendance.correction.approve", "employee_id"
+                    )
+                )
+                conditions.append(
+                    {"status": CorrectionStatus.PENDING.value, "requested_by": {"$ne": actor.user_id}}
+                )
+                if actor.employee_id:
+                    conditions.append({"employee_id": {"$ne": actor.employee_id}})
+            else:
+                conditions.append(
+                    await self._authz.scope_filter(session, actor, "attendance.read", "employee_id")
+                )
+            if statuses:
+                conditions.append({"status": {"$in": list(statuses)}})
+            if employee_id is not None:
+                conditions.append({"employee_id": employee_id})
+            if after is not None:
+                beyond = "$gt" if for_decision else "$lt"
+                bound = date.fromisoformat(after[0])
+                conditions.append(
+                    {"$or": [{"work_date": {beyond: bound}}, {"work_date": bound, "id": {beyond: after[1]}}]}
+                )
+            direction = 1 if for_decision else -1
+            rows = await session.find(
+                AttendanceCorrection,
+                {"$and": [condition for condition in conditions if condition]} if any(conditions) else {},
+                sort=[("work_date", direction), ("id", direction)],
+                limit=limit + 1,
+            )
             records = await self._records(session, rows[:limit])
         last = rows[limit - 1] if len(rows) > limit else None
         return CorrectionListing(records, (last.work_date.isoformat(), last.id) if last else None)

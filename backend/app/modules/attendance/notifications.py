@@ -13,19 +13,18 @@ email and the notification carry the work date and a link: never the reason or a
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance.emails import message
 from app.modules.attendance.models import AttendanceCorrection
 from app.modules.identity import public as identity
 from app.modules.notify.public import EmailTemplate, NotificationType, email_wanted, enqueue, notify
 from app.modules.people import public as people
+from app.platform.db import Session
 
 _FOR_MANAGER = frozenset({"submitted", "recorded_for_team"})
 
 
 async def _send(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID | None,
     correction: AttendanceCorrection,
@@ -75,7 +74,7 @@ async def _send(
 
 
 async def to_manager(
-    session: AsyncSession, correction: AttendanceCorrection, event: str, *, now: datetime, today: date
+    session: Session, correction: AttendanceCorrection, event: str, *, now: datetime, today: date
 ) -> None:
     facts = await people.job_facts(session, correction.employee_id, today)
     if facts is None or facts.manager_employee_id is None:
@@ -89,9 +88,7 @@ async def to_manager(
     )
 
 
-async def to_employee(
-    session: AsyncSession, correction: AttendanceCorrection, event: str, now: datetime
-) -> None:
+async def to_employee(session: Session, correction: AttendanceCorrection, event: str, now: datetime) -> None:
     await _send(
         session,
         user_id=await identity.account_for_employee(session, correction.employee_id),

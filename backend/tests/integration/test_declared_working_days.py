@@ -8,6 +8,7 @@ from datetime import date, timedelta
 
 import httpx
 
+from app.platform.audit.tables import AuditLogRecord
 from tests.api_support import Api
 from tests.integration.test_attendance_rules_api import Team, days, local_today, policy_body, team
 from tests.people_data import fake_code
@@ -174,10 +175,9 @@ async def test_a_declared_working_saturday_is_judged_and_counted_while_other_sat
         assert preview.json()["days_requested"] == "6.00"
         assert [d["not_counted_reason"] for d in preview.json()["days"] if not d["counted"]] == ["weekly_off"]
 
-    [(changes,)] = await api.fetch(
-        "SELECT changes FROM audit.audit_log WHERE action = 'holiday.added' AND target_id = :id "
-        "AND changes->'date'->>'new' = :day",
-        id=first,
-        day=worked.isoformat(),
+    [added] = await api.records(
+        AuditLogRecord,
+        {"action": "holiday.added", "target_id": str(first), "changes.date.new": worked.isoformat()},
     )
+    changes = added.changes or {}
     assert changes["kind"] == {"old": None, "new": "working_day"}

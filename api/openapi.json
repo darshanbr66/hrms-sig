@@ -11890,6 +11890,10 @@
           "storage_ready": {
             "type": "boolean",
             "title": "Storage Ready"
+          },
+          "uploads_ready": {
+            "type": "boolean",
+            "title": "Uploads Ready"
           }
         },
         "additionalProperties": false,
@@ -11897,7 +11901,8 @@
         "required": [
           "items",
           "sensitive_hidden",
-          "storage_ready"
+          "storage_ready",
+          "uploads_ready"
         ],
         "title": "DocumentList"
       },

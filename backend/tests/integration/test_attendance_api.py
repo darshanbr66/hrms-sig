@@ -9,9 +9,11 @@ from datetime import datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy.exc import DBAPIError
+from pymongo.errors import OperationFailure
 
+from app.modules.attendance.models import AttendanceEvent
 from app.platform.authz.roles import RoleKey
+from app.platform.db import AppendOnlyError
 from tests.api_support import Account, Api
 from tests.people_data import add_job, create_employee, create_org_units
 
@@ -132,12 +134,22 @@ async def test_events_cannot_be_changed_or_deleted(api: Api) -> None:
     async with api.client() as client:
         await api.sign_in(client, account)
         await clock(client, "CLOCK_IN")
-    for statement in (
-        "UPDATE attendance.attendance_events SET occurred_at = now() WHERE employee_id = :id",
-        "DELETE FROM attendance.attendance_events WHERE employee_id = :id",
-    ):
-        with pytest.raises(DBAPIError, match="append-only"):
-            await api.execute(statement, id=account.employee_id)
+    # The application refuses it ...
+    with pytest.raises(AppendOnlyError):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            [event] = await session.find(AttendanceEvent, {"employee_id": account.employee_id})
+            event.occurred_at = api.clock.now() + timedelta(minutes=5)
+    with pytest.raises(AppendOnlyError):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            [event] = await session.find(AttendanceEvent, {"employee_id": account.employee_id})
+            await session.delete(event)
+    # ... and so does the database: the API's user may only insert into this collection.
+    events = api.database.collection("attendance_events")
+    scoped = {"organization_id": api.organization_id, "employee_id": account.employee_id}
+    with pytest.raises(OperationFailure, match="not authorized"):
+        await events.update_one(scoped, {"$set": {"occurred_at": api.clock.now()}})
+    with pytest.raises(OperationFailure, match="not authorized"):
+        await events.delete_many(scoped)
 
 
 async def test_managers_see_their_team_today_and_nobody_else(api: Api) -> None:

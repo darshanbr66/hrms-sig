@@ -1,7 +1,7 @@
 """Scopes over real data (docs/authorization-model.md §2, §5, §7).
 
 Actors are built the way every request builds them (`effective_grants` over role assignments,
-employment and reporting lines in PostgreSQL), then the engine decides single records and
+employment and reporting lines in MongoDB), then the engine decides single records and
 produces list filters that are executed against the database.
 """
 
@@ -10,9 +10,8 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.access.models import UserRole, role_id
 from app.modules.access.public import effective_grants
 from app.modules.people import public as people
 from app.modules.people.models import Employee
@@ -20,6 +19,7 @@ from app.platform.authz.context import Actor, SessionScope
 from app.platform.authz.engine import AccessDenied, Authorizer, StepUpRequired
 from app.platform.authz.roles import RoleKey
 from app.platform.clock import Clock
+from app.platform.db import Session
 from tests.api_support import Api
 from tests.people_data import OrgUnits, add_job, create_employee, create_org_units
 
@@ -37,10 +37,12 @@ class At(Clock):
 
 
 async def actor_for(
-    session: AsyncSession, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime = NOW
+    session: Session, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime = NOW
 ) -> Actor:
     grants, role_keys = await effective_grants(session, user_id, employee_id, now)
+    assert session.tenant is not None
     return Actor(
+        organization_id=session.tenant,
         user_id=user_id,
         session_id=uuid.uuid4(),
         session_scope=SessionScope.FULL,
@@ -51,15 +53,15 @@ async def actor_for(
 
 
 async def visible(
-    session: AsyncSession, engine: Authorizer, actor: Actor, base: str, among: set[uuid.UUID]
+    session: Session, engine: Authorizer, actor: Actor, base: str, among: set[uuid.UUID]
 ) -> set[uuid.UUID]:
     """Run a list query with the engine's scope filter, restricted to the test's employees."""
-    query = select(Employee.id).where(Employee.id.in_(among), engine.scope_filter(actor, base, Employee.id))
-    return set(await session.scalars(query))
+    condition = await engine.scope_filter(session, actor, base, "id")
+    return {employee.id for employee in await session.find(Employee, condition) if employee.id in among}
 
 
 async def allowed(
-    session: AsyncSession,
+    session: Session,
     engine: Authorizer,
     actor: Actor,
     base: str,
@@ -74,7 +76,7 @@ async def allowed(
     return True
 
 
-async def team_with_two_departments(session: AsyncSession) -> tuple[OrgUnits, OrgUnits, dict[str, uuid.UUID]]:
+async def team_with_two_departments(session: Session) -> tuple[OrgUnits, OrgUnits, dict[str, uuid.UUID]]:
     a, b = await create_org_units(session), await create_org_units(session)
     people_ids = {
         name: await create_employee(session, joined=JOINED) for name in ("head", "lead", "dev", "other")
@@ -158,13 +160,17 @@ async def test_two_assignments_combine(api: Api, engine: Authorizer) -> None:
     async with api.database.unit_of_work() as session:
         a, b, ids = await team_with_two_departments(session)
     hr = await api.create_account(roles=(RoleKey.HR.value,), role_scope={"department_id": a.department_id})
-    await api.execute(
-        "INSERT INTO access.user_roles (user_id, role_id, department_id, valid_from, grant_reason) "
-        "SELECT :user, id, :department, now() - interval '1 minute', 'Cover' "
-        "FROM access.roles WHERE key = 'hr_admin'",
-        user=hr.user_id,
-        department=b.department_id,
-    )
+    async with api.database.unit_of_work() as session:
+        session.add(
+            UserRole(
+                user_id=hr.user_id,
+                role_id=role_id(RoleKey.HR_ADMIN.value),
+                role_key=RoleKey.HR_ADMIN.value,
+                department_id=b.department_id,
+                valid_from=api.clock.now() - timedelta(minutes=1),
+                grant_reason="Cover",
+            )
+        )
     async with api.database.unit_of_work() as session:
         actor = await actor_for(session, hr.user_id, None)
         assert await visible(session, engine, actor, "employee.profile.read", set(ids.values())) == set(

@@ -16,30 +16,31 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 import pyotp
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from pydantic import SecretStr
-from sqlalchemy import select, text
 
 from app.main import create_app
-from app.modules.access.models import Role, UserRole
+from app.modules.access.models import UserRole, role_id
 from app.modules.identity.models import Credential, FactorType, MfaFactor, User, UserStatus
 from app.modules.notify.dispatcher import BATCH, DispatchResult, OutboxDispatcher
 from app.platform.audit.signing import CheckpointSigner, SignatureVerifier, public_key_bytes
 from app.platform.config import ApiSettings, AppEnv, WorkerSettings
-from app.platform.db import Database, create_engine
+from app.platform.db import Database, Document, Session, create_client, current_tenant
 from app.platform.email import EmailDeliveryError, EmailSender, OutgoingEmail
-from app.platform.files import S3FileStore
+from app.platform.files import GridFsFileStore
 from app.platform.security import passwords, totp
 from app.platform.security.crypto import FieldCipher
+from app.platform.tenancy import Organization
 from app.worker import email_renderers
-from tests.conftest import DATABASE_NAME, PostgresServer, RedisServer
+from tests.conftest import DATABASE_NAME, MongoServer
 
 APP_ORIGIN = "https://hrms.test"
+DocumentT = TypeVar("DocumentT", bound=Document)
 BASE_URL = APP_ORIGIN
 FIELD_KEY = b"t" * 32
 EMAIL_LOOKUP_KEY = b"e" * 32
@@ -68,13 +69,14 @@ def audit_verifier(*signers: CheckpointSigner) -> SignatureVerifier:
     return SignatureVerifier.from_json(audit_verify_keys_json(*signers))
 
 
-def api_settings(database_url: SecretStr, **overrides: Any) -> ApiSettings:
+def api_settings(mongodb_uri: SecretStr, database_name: str = DATABASE_NAME, **overrides: Any) -> ApiSettings:
     values: dict[str, Any] = {
         "app_env": AppEnv.TEST,
-        "database_url_app": database_url,
-        "redis_url": SecretStr("redis://hrms_ratelimit:unused@127.0.0.1:1/0"),
+        "mongodb_uri": mongodb_uri,
+        "mongodb_database": database_name,
         "rate_limit_key_hmac_key": SecretStr(base64.b64encode(b"k" * 32).decode()),
         "email_lookup_hmac_key": SecretStr(base64.b64encode(EMAIL_LOOKUP_KEY).decode()),
+        "download_link_hmac_key": SecretStr(base64.b64encode(b"d" * 32).decode()),
         "app_base_url": APP_ORIGIN,
         "field_encryption_keys": SecretStr(f'{{"1": "{base64.b64encode(FIELD_KEY).decode()}"}}'),
         "field_encryption_active_version": 1,
@@ -161,26 +163,42 @@ def link_token(email: OutgoingEmail) -> str:
     return match.group(2)
 
 
+class ScopedDatabase(Database):
+    """A database whose units of work belong to the test organization unless a scope says
+    otherwise, as the API requests and the worker per-organization tasks do."""
+
+    def __init__(self, uri: SecretStr, name: str, organization_id: uuid.UUID, application: str) -> None:
+        super().__init__(create_client(uri, application_name=application), name)
+        self.organization_id = organization_id
+
+    @asynccontextmanager
+    async def unit_of_work(self, *, tenant: uuid.UUID | None = None) -> AsyncIterator[Session]:
+        async with super().unit_of_work(tenant=tenant or current_tenant() or self.organization_id) as session:
+            yield session
+
+
 class Api:
-    """A running application with a controllable clock, plus helpers to create accounts."""
+    """A running application for one organization of its own, with a controllable clock, plus
+    helpers to create accounts."""
 
     def __init__(
         self,
         app: FastAPI,
         clock: FakeClock,
         sleep: RecordingSleep,
-        database: Database,
-        worker_database: Database,
+        database: ScopedDatabase,
+        worker_database: ScopedDatabase,
     ) -> None:
         self.app = app
         self.clock = clock
         self.sleep = sleep
         self.database = database
         self.worker_database = worker_database
+        self.organization_id = database.organization_id
         self.cipher = FieldCipher({1: FIELD_KEY}, 1)
         self.mail = RecordingSender()
-        # The private file bucket, when the API was started with one (conftest `files_api`).
-        self.files: S3FileStore | None = None
+        # The private file bucket as the worker uses it.
+        self.files = GridFsFileStore(worker_database)
 
     def dispatcher(self, sender: EmailSender | None = None) -> OutboxDispatcher:
         """The outbox dispatcher as the worker runs it (worker database role)."""
@@ -198,18 +216,16 @@ class Api:
         queued and never delivered go out here too: the bound allows one pass per batch of them.
         """
         before = len(self.mail.sent)
-        [(waiting,)] = await self.fetch(
-            "SELECT count(*) FROM notify.email_outbox WHERE status IN ('pending', 'sending')"
-        )
+        waiting = await self.count("email_outbox", {"status": {"$in": ["pending", "sending"]}})
         passes = DELIVER_PASSES + waiting // BATCH
         # Bounded, so a dispatcher that keeps finding work fails the test instead of hanging it.
         for _ in range(passes):
             if await self.dispatcher().run_once() == DispatchResult():
                 return self.mail.sent[before:]
-        left = await self.fetch(
-            "SELECT template, count(*) FROM notify.email_outbox "
-            "WHERE status IN ('pending', 'sending') GROUP BY template ORDER BY template"
-        )
+        left = [
+            item["template"]
+            for item in await self.find("email_outbox", {"status": {"$in": ["pending", "sending"]}})
+        ]
         raise AssertionError(f"the outbox still had due emails after {passes} dispatch passes: {left}")
 
     def mail_to(self, email: str) -> list[OutgoingEmail]:
@@ -258,11 +274,11 @@ class Api:
                 )
             )
             for role_key in roles:
-                role_id = (await session.execute(select(Role.id).where(Role.key == role_key))).scalar_one()
                 session.add(
                     UserRole(
                         user_id=user.id,
-                        role_id=role_id,
+                        role_id=role_id(role_key),
+                        role_key=role_key,
                         valid_from=now - timedelta(minutes=1),
                         grant_reason="Test assignment",
                         **(role_scope or {}),
@@ -289,29 +305,64 @@ class Api:
         assert response.status_code == 200, response.text
         return response
 
-    async def fetch(self, statement: str, **params: Any) -> list[Any]:
-        async with self.database.unit_of_work() as session:
-            return list((await session.execute(text(statement), params)).all())
+    async def find(self, collection: str, query: dict[str, Any], **options: Any) -> list[dict[str, Any]]:
+        """Raw stored documents of this organization (read as the worker database user), for
+        asserting what was stored."""
+        scoped = {"organization_id": self.organization_id, **query}
+        cursor = self.worker_database.collection(collection).find(scoped, **options)
+        return [item async for item in cursor]
 
-    async def execute(self, statement: str, **params: Any) -> None:
-        async with self.database.unit_of_work() as session:
-            await session.execute(text(statement), params)
+    async def records(
+        self,
+        cls: type[DocumentT],
+        query: dict[str, Any] | None = None,
+        *,
+        sort: list[tuple[str, int]] | None = None,
+    ) -> list[DocumentT]:
+        """Stored records of this organization, decoded into their models (read as the worker
+        database user), for asserting what was stored. Queries use model field names."""
+        async with self.worker_database.unit_of_work() as session:
+            return await session.find(cls, query, sort=sort)
+
+    async def update(self, collection: str, query: dict[str, Any], values: dict[str, Any]) -> int:
+        """Set stored fields of this organization's documents directly (as the worker database
+        user), for arranging a state a test needs; returns how many documents changed. Stored
+        field names (`_id`), and the validators still apply."""
+        result = await self.worker_database.collection(collection).update_many(
+            {"organization_id": self.organization_id, **query}, {"$set": values}
+        )
+        return result.modified_count
+
+    async def count(self, collection: str, query: dict[str, Any]) -> int:
+        return await self.worker_database.collection(collection).count_documents(
+            {"organization_id": self.organization_id, **query}
+        )
+
+
+async def create_organization(uri: SecretStr, name: str) -> uuid.UUID:
+    database = Database(create_client(uri, application_name="test-organization"), name)
+    try:
+        organization = Organization(name="Test organization", slug=f"test-{secrets.token_hex(6)}")
+        async with database.unit_of_work() as session:
+            session.add(organization)
+        return organization.id
+    finally:
+        await database.dispose()
 
 
 @asynccontextmanager
 async def running_api(
-    postgres: PostgresServer, redis: RedisServer, *, database_name: str = DATABASE_NAME, **settings: Any
+    mongo: MongoServer, *, database_name: str = DATABASE_NAME, **settings: Any
 ) -> AsyncIterator[Api]:
-    """The API on `database_name`: the shared test database unless a test needs one of its own."""
+    """The API on `database_name` (the shared test database unless a test needs one of its own),
+    with an organization of its own."""
     clock, sleep = FakeClock(), RecordingSleep()
-    settings.setdefault("redis_url", SecretStr(redis.url()))
-    app_url = postgres.url("hrms_app", database_name)
-    app = create_app(api_settings(app_url, **settings), clock=clock, sleep=sleep)
+    app_uri = mongo.uri("hrms_app")
+    organization_id = await create_organization(app_uri, database_name)
+    app = create_app(api_settings(app_uri, database_name, **settings), clock=clock, sleep=sleep)
     async with app.router.lifespan_context(app):
-        database = Database(create_engine(app_url, application_name="test-support"))
-        worker = Database(
-            create_engine(postgres.url("hrms_worker", database_name), application_name="test-worker")
-        )
+        database = ScopedDatabase(app_uri, database_name, organization_id, "test-support")
+        worker = ScopedDatabase(mongo.uri("hrms_worker"), database_name, organization_id, "test-worker")
         try:
             yield Api(app, clock, sleep, database, worker)
         finally:
@@ -319,25 +370,23 @@ async def running_api(
             await worker.dispose()
 
 
-def worker_settings(database_url: SecretStr, **overrides: Any) -> WorkerSettings:
-    """Worker settings for tests: plain SMTP and an anchor bucket at addresses nothing listens
-    on, and the fixed test signing key, unless overridden."""
+def worker_settings(
+    mongodb_uri: SecretStr, database_name: str = DATABASE_NAME, **overrides: Any
+) -> WorkerSettings:
+    """Worker settings for tests: plain SMTP at an address nothing listens on, and the fixed
+    test signing key, unless overridden."""
     values: dict[str, Any] = {
         "app_env": AppEnv.TEST,
-        "database_url_worker": database_url,
-        "database_url_audit_retention": database_url,
+        "mongodb_uri": mongodb_uri,
+        "mongodb_database": database_name,
         "audit_signing_key_id": AUDIT_KEY_ID,
         "audit_signing_private_key": SecretStr(base64.b64encode(AUDIT_SIGNING_SEED).decode()),
         "audit_verify_public_keys": audit_verify_keys_json(),
-        "s3_endpoint_url": "http://127.0.0.1:1",
-        "s3_region": "us-east-1",
-        "audit_anchor_bucket": "unused-anchors",
-        "audit_anchor_access_key_id": SecretStr("unused"),
-        "audit_anchor_secret_access_key": SecretStr("unused"),
         "app_base_url": APP_ORIGIN,
+        "email_transport": "smtp",
+        "email_from": "HRMS <hrms@dev.example>",
         "smtp_host": "127.0.0.1",
         "smtp_port": 1,
-        "smtp_from": "HRMS <hrms@dev.example>",
         "smtp_security": "none",
     }
     values.update(overrides)

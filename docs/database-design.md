@@ -3,6 +3,8 @@
 Status: Draft v0.1. This is the logical design; column types and names will be finalized in migrations during each phase.
 Engine: PostgreSQL 18.
 
+> **2026-10-20, ADR-030:** the system now runs on MongoDB Atlas only. The logical model, the retention rules (§9) and the invariants below still hold; tables are collections, and CHECK constraints, exclusion constraints, triggers and grants are replaced by `$jsonSchema` validators, unique indexes, named locks, commit checks and Atlas custom roles (`app/platform/db.py`, `app/platform/schema.py`, `scripts/mongo_roles.py`). Migrations (§11) are `python -m app.cli migrate`. Where this document names PostgreSQL features, ADR-030 and the code win.
+
 ## 1. Conventions
 
 | Topic | Rule |

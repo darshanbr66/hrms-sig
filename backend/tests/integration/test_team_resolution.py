@@ -7,8 +7,6 @@ future joiners, a reporting-line cycle, and embedding the team query in a scope 
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import select
-
 from app.modules.people import public as people
 from app.modules.people.models import Employee, JobChangeReason
 from app.platform.db import Database
@@ -159,11 +157,9 @@ async def test_team_query_embeds_in_a_scope_filter(app_database: Database) -> No
         await add_job(session, units, outsider, manager_id=None, effective_from=JOINED)
 
     async with app_database.unit_of_work() as session:
-        in_scope = select(Employee.id).where(
-            Employee.id.in_(people.team_member_ids_query(manager, ON)),
-            Employee.id.in_([report, outsider]),
-        )
-        assert set(await session.scalars(in_scope)) == {report}
+        team = await people.team_member_ids(session, manager, ON)
+        in_scope = await session.find(Employee, {"id": {"$in": sorted(team)}})
+        assert {employee.id for employee in in_scope} & {report, outsider} == {report}
 
 
 async def test_unknown_employees_have_no_team(app_database: Database) -> None:

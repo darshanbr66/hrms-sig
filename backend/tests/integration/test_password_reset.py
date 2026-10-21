@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import httpx
 
-from app.modules.identity.models import UserStatus
+from app.modules.identity.models import OneTimeToken, UserStatus
 from app.platform.security.emails import EmailHasher
 from tests.api_support import EMAIL_LOOKUP_KEY, PASSWORD, Account, Api, link_token, refresh_cookie
 
@@ -49,13 +49,18 @@ async def test_unknown_addresses_are_recorded_only_as_a_keyed_hash(api: Api) -> 
     unknown = "Nobody-Here@Dev.Example"
     async with api.client() as client:
         await request_reset(client, unknown)
-    rows = await api.fetch(
-        "SELECT email_attempted_hash, to_jsonb(e)::text FROM audit.security_events e "
-        "WHERE event_type = 'password_reset.requested' AND email_attempted_hash = :h",
-        h=EmailHasher(EMAIL_LOOKUP_KEY).digest(unknown),
+    found = (
+        await api.worker_database.collection("security_events")
+        .find(
+            {
+                "event_type": "password_reset.requested",
+                "email_attempted_hash": EmailHasher(EMAIL_LOOKUP_KEY).digest(unknown),
+            }
+        )
+        .to_list()
     )
-    assert len(rows) == 1
-    digest, text = rows[0]
+    assert len(found) == 1
+    digest, text = bytes(found[0]["email_attempted_hash"]), repr(found[0])
     assert "nobody-here" not in text.lower()
     assert bytes(digest) != hashlib.sha256(b"nobody-here@dev.example").digest()
 
@@ -78,16 +83,13 @@ async def test_the_link_token_exists_only_in_the_email_and_as_a_hash(api: Api) -
     account = await api.create_account()
     async with api.client() as client:
         await request_reset(client, account.email)
-    stored = await api.fetch(
-        "SELECT to_jsonb(o)::text FROM notify.email_outbox o WHERE user_id = :id", id=account.user_id
-    )
+    stored = await api.find("email_outbox", {"user_id": account.user_id})
     token = await reset_link(api, account)
-    assert all(token not in row[0] for row in stored)
-    rows = await api.fetch(
-        "SELECT token_hash FROM identity.one_time_tokens WHERE user_id = :id AND purpose = 'password_reset'",
-        id=account.user_id,
-    )
-    assert all(token.encode() not in bytes(row[0]) for row in rows)
+    assert stored
+    assert all(token not in repr(row) for row in stored)
+    rows = await api.records(OneTimeToken, {"user_id": account.user_id, "purpose": "password_reset"})
+    assert rows
+    assert all(token.encode() not in row.token_hash for row in rows)
 
 
 async def test_reset_ends_sessions_and_devices_but_keeps_mfa(api: Api) -> None:
@@ -105,12 +107,10 @@ async def test_reset_ends_sessions_and_devices_but_keeps_mfa(api: Api) -> None:
         assert (await signed_in.get("/api/v1/me")).status_code == 401
         signed_in.cookies.set("__Secure-sv_rt", stale_refresh, path="/api/v1/auth/refresh")
         assert (await signed_in.post("/api/v1/auth/refresh")).status_code == 401
-    [(revoked,)] = await api.fetch(
-        "SELECT count(*) FROM identity.trusted_devices "
-        "WHERE user_id = :id AND revoked_reason = 'password_reset'",
-        id=account.user_id,
+    assert (
+        await api.count("trusted_devices", {"user_id": account.user_id, "revoked_reason": "password_reset"})
+        == 1
     )
-    assert revoked == 1
     async with api.client() as client:
         old = await client.post("/api/v1/auth/login", json={"email": account.email, "password": PASSWORD})
         assert old.status_code == 401
@@ -179,7 +179,7 @@ async def test_a_reset_ends_a_sign_in_in_progress(api: Api) -> None:
 async def test_a_disabled_account_cannot_complete_a_reset(api: Api) -> None:
     account = await api.create_account()
     token = await reset_link(api, account)
-    await api.execute("UPDATE identity.users SET status = 'disabled' WHERE id = :id", id=account.user_id)
+    assert await api.update("users", {"_id": account.user_id}, {"status": "disabled"}) == 1
     async with api.client() as client:
         assert (await complete(client, token)).json()["code"] == "password_reset.invalid"
 

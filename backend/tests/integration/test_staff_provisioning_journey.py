@@ -13,6 +13,7 @@ from datetime import timedelta
 import httpx
 import pyotp
 
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from app.platform.security import totp
 from tests.api_support import PASSWORD, Account, Api, fake_email, link_token
@@ -150,17 +151,16 @@ async def test_hr_and_hr_admin_accounts_are_invited_activated_and_then_given_the
         assert (await hr_browser.get("/api/v1/me")).status_code == 401
         assert (await hr_browser.post("/api/v1/auth/refresh")).status_code == 401
 
-    rows = await api.fetch(
-        "SELECT action, permission_used, reason FROM audit.audit_log "
-        "WHERE target_id IN (:a, :b) ORDER BY recorded_at, id",
-        a=str(hr_admin_id),
-        b=str(hr_id),
+    rows = await api.records(
+        AuditLogRecord,
+        {"target_id": {"$in": [str(hr_admin_id), str(hr_id)]}},
+        sort=[("recorded_at", 1), ("id", 1)],
     )
-    actions = [row[0] for row in rows]
+    actions = [row.action for row in rows]
     assert actions.count("identity.user.invited") == 2
     assert actions.count("identity.user.activated") == 2
-    assigned_rows = [row for row in rows if row[0] == "access.role.assigned"]
-    assert [(row[1], row[2]) for row in assigned_rows] == [
+    assigned_rows = [row for row in rows if row.action == "access.role.assigned"]
+    assert [(row.permission_used, row.reason) for row in assigned_rows] == [
         ("role.assign", "Test hr_admin account"),
         ("role.assign", "Test hr account"),
     ]

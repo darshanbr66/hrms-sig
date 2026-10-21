@@ -17,13 +17,12 @@ muted the type in the app or by email gets neither on that channel (NTF-3).
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import public as identity
 from app.modules.leave.emails import message
 from app.modules.leave.models import LeaveRequest
 from app.modules.notify.public import EmailTemplate, NotificationType, email_wanted, enqueue, notify
 from app.modules.people import public as people
+from app.platform.db import Session
 
 _FOR_DECIDER = frozenset({"submitted", "cancellation_requested"})
 
@@ -40,7 +39,7 @@ def _data(request: LeaveRequest, leave_type: str, event: str) -> dict[str, str |
 
 
 async def _send(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID | None,
     request: LeaveRequest,
@@ -85,7 +84,7 @@ async def _send(
 
 
 async def to_manager(
-    session: AsyncSession, request: LeaveRequest, leave_type: str, event: str, *, now: datetime, today: date
+    session: Session, request: LeaveRequest, leave_type: str, event: str, *, now: datetime, today: date
 ) -> None:
     facts = await people.job_facts(session, request.employee_id, today)
     if facts is None or facts.manager_employee_id is None:
@@ -101,7 +100,7 @@ async def to_manager(
 
 
 async def to_employee(
-    session: AsyncSession, request: LeaveRequest, leave_type: str, event: str, now: datetime
+    session: Session, request: LeaveRequest, leave_type: str, event: str, now: datetime
 ) -> None:
     await _send(
         session,
@@ -113,5 +112,5 @@ async def to_employee(
     )
 
 
-async def recorded(session: AsyncSession, request: LeaveRequest, leave_type: str, now: datetime) -> None:
+async def recorded(session: Session, request: LeaveRequest, leave_type: str, now: datetime) -> None:
     await to_employee(session, request, leave_type, "recorded", now)

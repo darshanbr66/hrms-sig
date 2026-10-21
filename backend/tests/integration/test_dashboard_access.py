@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
 from tests.people_data import add_job, create_employee, create_org_units
@@ -185,7 +186,7 @@ async def test_a_super_admin_reaches_the_hr_figures_only_through_an_approved_ele
         assert (await later.get(STATISTICS)).status_code == 403
         assert "hr_admin" not in (await later.get("/api/v1/me")).json()["roles"]
 
-    actions = await api.fetch(
-        "SELECT action FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id", id=request["id"]
+    actions = await api.records(
+        AuditLogRecord, {"target_id": request["id"]}, sort=[("recorded_at", 1), ("id", 1)]
     )
-    assert [a for (a,) in actions][:2] == ["access.elevation.requested", "access.elevation.approved"]
+    assert [row.action for row in actions][:2] == ["access.elevation.requested", "access.elevation.approved"]

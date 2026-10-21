@@ -1,97 +1,85 @@
-"""Check that every process will use the intended local database and anchor bucket (local only).
+"""Check that the local processes will use the intended local MongoDB database (local only).
 
-    uv run --env-file ../.env python -m scripts.check_local_target --database NAME --bucket NAME
-        [--files-bucket NAME]
+    uv run --env-file ../.env python -m scripts.check_local_target --database NAME [--allow-remote]
 
-`run-backend.ps1` runs this before applying migrations. It stops (exit code 1) unless all four
-`DATABASE_URL_*` settings name the same local database `NAME` on this machine, the migrator's
-connection really lands in that database, `AUDIT_ANCHOR_BUCKET` is `--bucket` and, when given,
-`FILES_BUCKET` is `--files-bucket`. Each local database needs its own anchor and files buckets
-(docs/local-development.md §3.2). It prints only the
-database name, the applied Alembic revision and the bucket name, never a URL or credential.
+`run-backend.ps1` runs this before migrating. It stops (exit code 1) unless:
+
+- `APP_ENV` is `local` or `test`;
+- `MONGODB_DATABASE` is `NAME`, and `NAME` is not the production database's name (`hrms`);
+- `MONGODB_URI` names a server on this machine, unless `--allow-remote` is given (a database of
+  its own on a remote cluster, never the production one);
+- the server answers as a replica set primary: the application's units of work are
+  multi-document transactions, which a standalone server refuses.
+
+It only reads the server's `hello` reply. It prints the database name, whether the server is on
+this machine and the replica set's name, never a URI or credential.
 """
 
 import argparse
 import os
 import sys
+from typing import Any
 from urllib.parse import urlsplit
 
-import psycopg
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
+
+from app.platform.config import PRODUCTION_DATABASE
 
 LOCAL_ENVIRONMENTS = ("local", "test")
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
-URL_SETTINGS = (
-    "DATABASE_URL_APP",
-    "DATABASE_URL_WORKER",
-    "DATABASE_URL_MIGRATOR",
-    "DATABASE_URL_AUDIT_RETENTION",
-)
 
 
-def _problems(database: str, bucket: str, files_bucket: str | None) -> list[str]:
-    problems = []
-    for name in URL_SETTINGS:
-        value = os.environ.get(name)
-        if not value:
-            problems.append(f"{name} is not set.")
-            continue
-        parts = urlsplit(value)
-        if parts.hostname not in LOCAL_HOSTS:
-            problems.append(f"{name} does not point at a database on this machine.")
-        if parts.path.lstrip("/") != database:
-            problems.append(
-                f"{name} names database {parts.path.lstrip('/') or '(none)'}, expected {database}."
-            )
-    actual_bucket = os.environ.get("AUDIT_ANCHOR_BUCKET", "")
-    if actual_bucket != bucket:
-        problems.append(f"AUDIT_ANCHOR_BUCKET is {actual_bucket or '(not set)'}, expected {bucket}.")
-    if files_bucket is not None:
-        actual_files = os.environ.get("FILES_BUCKET", "")
-        if actual_files != files_bucket:
-            problems.append(f"FILES_BUCKET is {actual_files or '(not set)'}, expected {files_bucket}.")
-        if files_bucket == bucket:
-            problems.append("The files bucket must differ from the anchor bucket.")
-    return problems
+def _hosts(uri: str) -> list[str]:
+    netloc = urlsplit(uri).netloc.rpartition("@")[2]
+    hosts = []
+    for item in netloc.split(","):
+        # host:port, or [IPv6]:port
+        host = item[1:].partition("]")[0] if item.startswith("[") else item.partition(":")[0]
+        hosts.append(host.lower())
+    return hosts
 
 
-def main() -> int:
+def problems(environ: dict[str, str], database: str, *, allow_remote: bool) -> list[str]:
+    found = []
+    if environ.get("APP_ENV") not in LOCAL_ENVIRONMENTS:
+        found.append("APP_ENV must be local or test.")
+    if database.lower() == PRODUCTION_DATABASE:
+        found.append(
+            f"{PRODUCTION_DATABASE} is the production database's name; use another, such as hrms_local."
+        )
+    if environ.get("MONGODB_DATABASE") != database:
+        found.append(f"MONGODB_DATABASE is not {database}.")
+    uri = environ.get("MONGODB_URI", "")
+    if urlsplit(uri).scheme not in ("mongodb", "mongodb+srv"):
+        found.append("MONGODB_URI is not set to a mongodb:// or mongodb+srv:// URI.")
+    elif not allow_remote and not all(host in LOCAL_HOSTS for host in _hosts(uri)):
+        found.append("MONGODB_URI does not point at a server on this machine (add --allow-remote to accept).")
+    return found
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m scripts.check_local_target")
     parser.add_argument("--database", required=True)
-    parser.add_argument("--bucket", required=True)
-    parser.add_argument("--files-bucket")
-    args = parser.parse_args()
-    if os.environ.get("APP_ENV") not in LOCAL_ENVIRONMENTS:
-        sys.stderr.write("Refused: this script is for local development only (APP_ENV local or test).\n")
-        return 1
-    problems = _problems(args.database, args.bucket, args.files_bucket)
-    if problems:
-        sys.stderr.write("Stopped: the settings do not match the intended target.\n")
-        sys.stderr.writelines(f"  - {problem}\n" for problem in problems)
+    parser.add_argument("--allow-remote", action="store_true")
+    arguments = parser.parse_args(argv)
+    environ = dict(os.environ)
+    found = problems(environ, arguments.database, allow_remote=arguments.allow_remote)
+    if found:
+        sys.stderr.write("Refused:\n" + "".join(f"  {item}\n" for item in found))
         return 1
     try:
-        with psycopg.connect(
-            os.environ["DATABASE_URL_MIGRATOR"], connect_timeout=5, application_name="hrms-preflight"
-        ) as conn:
-            row = conn.execute("SELECT current_database(), to_regclass('public.alembic_version')").fetchone()
-            current, has_alembic = row if row else (None, None)
-            revision = None
-            if has_alembic:
-                version = conn.execute("SELECT version_num FROM public.alembic_version").fetchone()
-                revision = version[0] if version else None
-    except psycopg.OperationalError:
-        sys.stderr.write(
-            f"Stopped: cannot connect to database {args.database} as the migrator. Check that the "
-            "Compose services are running and that the database exists. This script never creates it.\n"
-        )
+        client: MongoClient[dict[str, Any]]
+        with MongoClient(environ["MONGODB_URI"], serverSelectionTimeoutMS=8000) as client:
+            hello = client.admin.command("hello")
+    except PyMongoError as exc:
+        sys.stderr.write(f"Refused: the MongoDB server did not answer ({type(exc).__name__}).\n")
         return 1
-    if current != args.database:
-        sys.stderr.write(f"Stopped: the migrator connected to {current}, expected {args.database}.\n")
+    if not hello.get("setName") or not hello.get("isWritablePrimary"):
+        sys.stderr.write("Refused: the server is not a replica set primary; transactions need one.\n")
         return 1
-    sys.stdout.write(
-        f"Target database {current} (Alembic revision {revision or 'none'}), anchor bucket {args.bucket}"
-        + (f", files bucket {args.files_bucket}" if args.files_bucket else "")
-        + ".\n"
-    )
+    where = "this machine" if not arguments.allow_remote else "remote server allowed"
+    sys.stdout.write(f"Target database {arguments.database} ({where}, replica set {hello['setName']})\n")
     return 0
 
 

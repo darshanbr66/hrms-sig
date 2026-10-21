@@ -68,7 +68,8 @@ class ExportList(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[ExportView]
-    # False when file storage is not set up: exports cannot be produced.
+    # Whether file storage is available. Files live in the database (GridFS, ADR-030), so it
+    # always is; kept so clients of the published contract need no change.
     storage_ready: bool
 
 
@@ -192,9 +193,7 @@ async def export_audit_log(
 @router.get("/me/exports", response_model=ExportList)
 async def my_exports(exports: Service, actor: Annotated[Actor, account()]) -> ExportList:
     """Exports you asked for, newest first."""
-    return ExportList(
-        items=[_view(job) for job in await exports.mine(actor)], storage_ready=exports.configured
-    )
+    return ExportList(items=[_view(job) for job in await exports.mine(actor)], storage_ready=True)
 
 
 @router.post("/me/exports/{export_id}/download", response_model=ExportDownloadLink)

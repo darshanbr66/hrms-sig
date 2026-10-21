@@ -13,14 +13,13 @@ the recipient's own first name.
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import repository as repo
 from app.modules.identity.models import OneTimePurpose, OneTimeToken, User, UserStatus
 from app.modules.notify.public import EmailTemplate, OutboxItem, Renderer
 from app.modules.people import public as people
 from app.platform import settings
 from app.platform.clock import Clock
+from app.platform.db import Session
 from app.platform.email import OutgoingEmail
 from app.platform.security import tokens
 
@@ -53,7 +52,7 @@ class IdentityEmails:
         }
 
     async def _link_token(
-        self, session: AsyncSession, user: User, purpose: OneTimePurpose, ttl: timedelta, now: datetime
+        self, session: Session, user: User, purpose: OneTimePurpose, ttl: timedelta, now: datetime
     ) -> str:
         raw = tokens.new_token()
         await repo.retire_one_time_tokens(session, user.id, purpose, now)
@@ -68,7 +67,7 @@ class IdentityEmails:
         await session.flush()
         return raw
 
-    async def invite(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def invite(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await repo.lock_user(session, item.user_id)
         if user is None or user.status != UserStatus.INVITED:
             return None
@@ -88,7 +87,7 @@ class IdentityEmails:
             ),
         )
 
-    async def password_reset(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def password_reset(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await repo.lock_user(session, item.user_id)
         if user is None or user.status != UserStatus.ACTIVE:
             return None
@@ -110,7 +109,7 @@ class IdentityEmails:
             ),
         )
 
-    async def mfa_reset(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def mfa_reset(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         """The re-enrolment link after an administrator's MFA reset. It works only together
         with the account's password (docs/security-architecture.md §3.3, threat model T17)."""
         user = await repo.lock_user(session, item.user_id)
@@ -134,11 +133,11 @@ class IdentityEmails:
             ),
         )
 
-    async def _account(self, session: AsyncSession, item: OutboxItem) -> User | None:
+    async def _account(self, session: Session, item: OutboxItem) -> User | None:
         user = await repo.get_user(session, item.user_id)
         return user if user is not None and user.status == UserStatus.ACTIVE else None
 
-    async def password_changed(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def password_changed(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await self._account(session, item)
         if user is None:
             return None
@@ -152,7 +151,7 @@ class IdentityEmails:
             ),
         )
 
-    async def new_device(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def new_device(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await self._account(session, item)
         if user is None:
             return None
@@ -169,7 +168,7 @@ class IdentityEmails:
             ),
         )
 
-    async def account_locked(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def account_locked(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await self._account(session, item)
         if user is None:
             return None
@@ -185,7 +184,7 @@ class IdentityEmails:
             ),
         )
 
-    async def recovery_code_used(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def recovery_code_used(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await self._account(session, item)
         if user is None:
             return None
@@ -200,7 +199,7 @@ class IdentityEmails:
             ),
         )
 
-    async def mfa_changed(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def mfa_changed(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         user = await self._account(session, item)
         if user is None:
             return None

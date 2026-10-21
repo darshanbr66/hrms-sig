@@ -1,4 +1,4 @@
-"""A user's own sign-in history, read from `audit.security_events` (AUTH-7).
+"""A user's own sign-in history, read from `security_events` (AUTH-7).
 
 Only the sign-in subset, only the user's own rows, and only the columns the account page
 shows: never the event details.
@@ -7,13 +7,11 @@ shows: never the event details.
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final
-
-from sqlalchemy import select, tuple_
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any, Final
 
 from app.platform.audit.records import SecurityEventType
-from app.platform.audit.tables import security_events
+from app.platform.audit.tables import SecurityEventRecord
+from app.platform.db import Session
 
 LOGIN_EVENT_TYPES: Final = (
     SecurityEventType.LOGIN_SUCCEEDED.value,
@@ -33,41 +31,35 @@ class LoginHistoryRow:
 
 
 async def login_events(
-    session: AsyncSession,
+    session: Session,
     user_id: uuid.UUID,
     *,
     since: datetime,
     before: tuple[datetime, uuid.UUID] | None,
     limit: int,
 ) -> list[LoginHistoryRow]:
-    table = security_events
-    query = (
-        select(
-            table.c.id,
-            table.c.recorded_at,
-            table.c.occurred_at,
-            table.c.event_type,
-            table.c.ip,
-            table.c.user_agent,
-        )
-        .where(
-            table.c.user_id == user_id,
-            table.c.event_type.in_(LOGIN_EVENT_TYPES),
-            table.c.recorded_at >= since,
-        )
-        .order_by(table.c.recorded_at.desc(), table.c.id.desc())
-        .limit(limit)
-    )
+    # Security events are not tenant-scoped (some have no organization), so the organization is
+    # named here, besides the account.
+    query: dict[str, Any] = {
+        "organization_id": session.require_tenant(),
+        "user_id": user_id,
+        "event_type": {"$in": list(LOGIN_EVENT_TYPES)},
+        "recorded_at": {"$gte": since},
+    }
     if before is not None:
-        query = query.where(tuple_(table.c.recorded_at, table.c.id) < tuple_(*before))
+        query = {
+            "$and": [
+                query,
+                {
+                    "$or": [
+                        {"recorded_at": {"$lt": before[0]}},
+                        {"recorded_at": before[0], "id": {"$lt": before[1]}},
+                    ]
+                },
+            ]
+        }
+    rows = await session.find(SecurityEventRecord, query, sort=[("recorded_at", -1), ("id", -1)], limit=limit)
     return [
-        LoginHistoryRow(
-            row.id,
-            row.recorded_at,
-            row.occurred_at,
-            row.event_type,
-            str(row.ip) if row.ip is not None else None,
-            row.user_agent,
-        )
-        for row in (await session.execute(query)).all()
+        LoginHistoryRow(row.id, row.recorded_at, row.occurred_at, row.event_type, row.ip, row.user_agent)
+        for row in rows
     ]

@@ -20,10 +20,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Final
 
-from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.access import public as access
 from app.modules.identity import public as identity
 from app.modules.org import public as org
@@ -55,7 +51,7 @@ from app.platform.authz.roles import ADMIN_ACCOUNT_ROLES
 from app.platform.authz.sod import SodRule
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 
 # Status changes HR can record (product-requirements EMP-5). Exited is final until the rehire
@@ -167,7 +163,7 @@ class JobChangeRequest:
     notes: str | None
 
 
-async def _names(session: AsyncSession, jobs: Sequence[EmployeeJob]) -> Names:
+async def _names(session: Session, jobs: Sequence[EmployeeJob]) -> Names:
     units = await org.unit_names(
         session,
         department_ids={job.department_id for job in jobs},
@@ -201,13 +197,13 @@ class PeopleService:
         self, actor: Actor, filters: repo.EmployeeFilters, after: tuple[str, uuid.UUID] | None, limit: int
     ) -> EmployeeListing:
         today = self._authz.today()
-        scope = self._authz.scope_filter(actor, "employee.profile.read", Employee.id)
         async with self._db.unit_of_work() as session:
+            scope = await self._authz.scope_filter(session, actor, "employee.profile.read", "id")
             rows = await repo.list_employees(session, scope, filters, on=today, after=after, limit=limit)
             return await self._listing(session, rows, limit, today)
 
     async def _listing(
-        self, session: AsyncSession, rows: list[tuple[Employee, str]], limit: int, today: date
+        self, session: Session, rows: list[tuple[Employee, str]], limit: int, today: date
     ) -> EmployeeListing:
         page = rows[:limit]
         employees = [employee for employee, _ in page]
@@ -219,7 +215,7 @@ class PeopleService:
 
     @staticmethod
     async def _jobs_for(
-        session: AsyncSession, employees: Sequence[Employee], today: date
+        session: Session, employees: Sequence[Employee], today: date
     ) -> dict[uuid.UUID, EmployeeJob]:
         """The job that applies today, else the latest one (future joiners, people who left)."""
         ids = [employee.id for employee in employees]
@@ -230,8 +226,8 @@ class PeopleService:
 
     async def statistics(self, actor: Actor) -> Statistics:
         today = self._authz.today()
-        scope = self._authz.scope_filter(actor, "employee.profile.read", Employee.id)
         async with self._db.unit_of_work() as session:
+            scope = await self._authz.scope_filter(session, actor, "employee.profile.read", "id")
             rows = await repo.statistics_rows(session, scope)
             counts = {
                 column: await repo.headcounts(session, scope, today, column)
@@ -308,8 +304,8 @@ class PeopleService:
             )
             return await self._record(session, employee_id)
 
-    async def _record(self, session: AsyncSession, employee_id: uuid.UUID) -> EmployeeRecord:
-        employee = await session.get(Employee, employee_id, populate_existing=True)
+    async def _record(self, session: Session, employee_id: uuid.UUID) -> EmployeeRecord:
+        employee = await session.get(Employee, employee_id)
         if employee is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         jobs = await self._jobs_for(session, [employee], self._authz.today())
@@ -439,7 +435,7 @@ class PeopleService:
 
     async def _apply(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         context: RequestContext,
         granted: Granted,
@@ -448,7 +444,7 @@ class PeopleService:
         expected_version: int,
         values: Mapping[str, Any],
     ) -> EmployeeRecord:
-        employee = await session.get(Employee, employee_id, with_for_update=True, populate_existing=True)
+        employee = await session.get(Employee, employee_id, for_update=True)
         if employee is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         check_version(employee.version, expected_version)
@@ -491,7 +487,7 @@ class PeopleService:
                 hide_existence=True,
             )
             await self._require_placement(session, actor, granted, change.department_id, change.location_id)
-            employee = await session.get(Employee, employee_id, with_for_update=True, populate_existing=True)
+            employee = await session.get(Employee, employee_id, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if employee.status == EmployeeStatus.EXITED:
@@ -586,7 +582,7 @@ class PeopleService:
 
     async def _change_status(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         context: RequestContext,
         employee_id: uuid.UUID,
@@ -597,7 +593,7 @@ class PeopleService:
         permission: str,
     ) -> EmployeeStatusChange:
         today = self._authz.today()
-        employee = await session.get(Employee, employee_id, with_for_update=True, populate_existing=True)
+        employee = await session.get(Employee, employee_id, for_update=True)
         if employee is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         from_status = employee.status
@@ -750,13 +746,7 @@ class PeopleService:
                 granted = await self._contacts_reader(session, actor, subject)
             if not await repo.employee_exists(session, subject):
                 raise ProblemError(ProblemType.NOT_FOUND)
-            contacts = list(
-                await session.scalars(
-                    select(EmergencyContact)
-                    .where(EmergencyContact.employee_id == subject)
-                    .order_by(EmergencyContact.priority)
-                )
-            )
+            contacts = await session.find(EmergencyContact, {"employee_id": subject}, sort=[("priority", 1)])
             if granted.audit_reads:
                 await self._audit.record(
                     session,
@@ -772,7 +762,7 @@ class PeopleService:
                 )
             return contacts
 
-    async def _contacts_reader(self, session: AsyncSession, actor: Actor, subject: uuid.UUID) -> Granted:
+    async def _contacts_reader(self, session: Session, actor: Actor, subject: uuid.UUID) -> Granted:
         for base in ("employee.personal.read", "employee.emergency_contact.read.team"):
             if not self._authz.holds_any(actor, base):
                 continue
@@ -796,12 +786,18 @@ class PeopleService:
             granted = await self._authz.require(
                 session, actor, permission, subject_employee_id=subject, hide_existence=True
             )
-            employee = await session.get(Employee, subject, with_for_update=True, populate_existing=True)
+            employee = await session.get(Employee, subject, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
-            await session.execute(delete(EmergencyContact).where(EmergencyContact.employee_id == subject))
+            await session.delete_many(EmergencyContact, {"employee_id": subject})
             rows = [
-                EmergencyContact(employee_id=subject, priority=index, **values)
+                EmergencyContact(
+                    employee_id=subject,
+                    priority=index,
+                    name=values["name"],
+                    relationship=values["relationship"],
+                    phone=values["phone"],
+                )
                 for index, values in enumerate(contacts, start=1)
             ]
             session.add_all(rows)
@@ -866,16 +862,14 @@ class PeopleService:
             granted = await self._authz.require(
                 session, actor, permission, subject_employee_id=subject, hide_existence=True
             )
-            employee = await session.get(Employee, subject, with_for_update=True, populate_existing=True)
+            employee = await session.get(Employee, subject, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             today = self._authz.today()
             birth = values.get("date_of_birth")
             if birth is not None and birth >= today:
                 raise field_error("date_of_birth", "personal.birth_in_future", "Enter a date in the past.")
-            record = await session.get(
-                EmployeePersonal, subject, with_for_update=True, populate_existing=True
-            )
+            record = await session.get(EmployeePersonal, subject, for_update=True)
             check_version(record.version if record else 0, expected_version)
             if record is None:
                 record = EmployeePersonal(employee_id=subject)
@@ -910,7 +904,7 @@ class PeopleService:
 
     async def _require_placement(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         granted: Granted,
         department_id: uuid.UUID,
@@ -928,7 +922,7 @@ class PeopleService:
             raise AccessDenied(code="employee.outside_assignment")
 
     async def _check_manager(
-        self, session: AsyncSession, employee_id: uuid.UUID | None, manager_id: uuid.UUID, on: date
+        self, session: Session, employee_id: uuid.UUID | None, manager_id: uuid.UUID, on: date
     ) -> None:
         if manager_id == employee_id:
             raise field_error(
@@ -982,7 +976,7 @@ def _anniversary(
 
 
 async def _check_units(
-    session: AsyncSession, department_id: uuid.UUID, designation_id: uuid.UUID, location_id: uuid.UUID
+    session: Session, department_id: uuid.UUID, designation_id: uuid.UUID, location_id: uuid.UUID
 ) -> None:
     inactive = await org.inactive_units(
         session, department_id=department_id, designation_id=designation_id, location_id=location_id
@@ -1003,16 +997,15 @@ async def _check_units(
         )
 
 
-async def _flush(session: AsyncSession) -> None:
+async def _flush(session: Session) -> None:
     try:
         await session.flush()
-    except IntegrityError as exc:
-        message = str(exc.orig)
-        if "uq_employees_employee_code" in message:
+    except UniqueViolationError as exc:
+        if exc.index == "uq_employees_employee_code":
             raise field_error(
                 "employee_code", "employee.code_in_use", "Another employee already has this code."
             ) from exc
-        if "uq_employees_work_email" in message:
+        if exc.index == "uq_employees_work_email":
             raise field_error(
                 "work_email", "employee.email_in_use", "Another employee already has this work email."
             ) from exc

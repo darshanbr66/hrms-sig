@@ -1,8 +1,8 @@
 """The access module's interface: the actor of each request (docs/authorization-model.md §1, §4).
 
 `SessionActorProvider` implements `app.platform.authz.route.ActorProvider`. For every request
-it authenticates the access cookie, then resolves effective permissions from PostgreSQL in the
-same short transaction:
+it authenticates the access cookie, then resolves effective permissions from MongoDB in the
+same short transaction, inside the account's organization:
 
 - assigned roles that apply now, each permission carrying the assignment's department and
   location constraint;
@@ -19,7 +19,7 @@ connections at once.
 
 `AccountRoles` tells identity which roles an account holds (identity cannot import access).
 
-`bootstrap_super_admins` is the installation step that creates the first two super admins
+`bootstrap_super_admins` is the step that creates an organization's first two super admins
 (docs/authorization-model.md §4.3, bootstrap). The worker registers `register_grant_expiry`
 and the `AccessEmails` renderers. `holder_ids` names the accounts a role applies to now, for
 alerts addressed to a role (the audit integrity alert).
@@ -31,8 +31,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import Request
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.access import repository as repo
 from app.modules.access.emails import AccessEmails
@@ -44,8 +42,9 @@ from app.modules.people import public as people
 from app.platform.authz.context import UNRESTRICTED, Actor, Constraint, SessionScope
 from app.platform.authz.roles import ACCOUNT_BASELINE, MIN_SUPER_ADMINS, RoleKey
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session
 from app.platform.errors import ProblemError, ProblemType
+from app.platform.tenancy import Organization
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +56,7 @@ class EffectiveAccess:
 
 
 async def effective_grants(
-    session: AsyncSession, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
+    session: Session, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
 ) -> tuple[dict[str, tuple[Constraint, ...]], frozenset[str]]:
     """Permission key -> constraints, and the role keys held, for an account now."""
     access = await effective_access(session, user_id, employee_id, now)
@@ -65,7 +64,7 @@ async def effective_grants(
 
 
 async def effective_access(
-    session: AsyncSession, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
+    session: Session, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
 ) -> EffectiveAccess:
     today = now.date()
     derived: list[str] = []
@@ -112,7 +111,9 @@ class SessionActorProvider:
             else:
                 # Enrolment-only sessions hold no permissions at all.
                 access = EffectiveAccess({}, frozenset(), None)
+        await identity.touch_session(self._db, auth)
         return Actor(
+            organization_id=auth.organization_id,
             user_id=auth.user_id,
             session_id=auth.session_id,
             session_scope=auth.scope,
@@ -125,7 +126,6 @@ class SessionActorProvider:
 
 
 __all__ = [
-    "BOOTSTRAP_LOCK",
     "AccessEmails",
     "AccountRoles",
     "BootstrapRefusedError",
@@ -143,10 +143,10 @@ class AccountRoles:
     """`identity.service.AccountRoles`: the roles an account holds, for the administrator
     account rules when disabling (docs/authorization-model.md §6)."""
 
-    async def role_keys(self, session: AsyncSession, user_id: uuid.UUID, now: datetime) -> frozenset[str]:
+    async def role_keys(self, session: Session, user_id: uuid.UUID, now: datetime) -> frozenset[str]:
         return frozenset(key for _, key in await repo.active_assignments(session, user_id, now))
 
-    async def lock_super_admins(self, session: AsyncSession, now: datetime) -> set[uuid.UUID]:
+    async def lock_super_admins(self, session: Session, now: datetime) -> set[uuid.UUID]:
         role = await repo.role_by_key(session, RoleKey.SUPER_ADMIN.value)
         if role is None:
             raise RuntimeError("the super_admin role is missing from the catalog")
@@ -157,19 +157,19 @@ class BootstrapRefusedError(Exception):
     """The installation already has super admins, or the request is not two new accounts."""
 
 
-BOOTSTRAP_LOCK = 0x5356_4253  # "SVBS": serializes concurrent bootstrap attempts
+async def bootstrap_super_admins(session: Session, emails: list[str], now: datetime) -> dict[str, str]:
+    """Create two invited accounts holding `super_admin` in the session's organization; returns
+    email -> invite token.
 
-
-async def bootstrap_super_admins(session: AsyncSession, emails: list[str], now: datetime) -> dict[str, str]:
-    """Create two invited accounts holding `super_admin`; returns email -> invite token.
-
-    Allowed once per installation: refused if any super admin assignment exists. SOD-8 needs
-    a second super admin for every later assignment, so the first two are created together.
-    The assignments have no `granted_by` (the database allows that only for the bootstrap).
+    Allowed once per organization: refused if any super admin assignment exists there. SOD-8
+    needs a second super admin for every later assignment, so the first two are created
+    together. The assignments have no `granted_by` (allowed only for the bootstrap). Concurrent
+    attempts serialize on the organization's document.
     """
     if len(emails) != MIN_SUPER_ADMINS or len({email.casefold() for email in emails}) != MIN_SUPER_ADMINS:
         raise BootstrapRefusedError(f"give exactly {MIN_SUPER_ADMINS} different email addresses")
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": BOOTSTRAP_LOCK})
+    if session.tenant is None or await session.get(Organization, session.tenant, for_update=True) is None:
+        raise BootstrapRefusedError("the organization does not exist")
     role = await repo.role_by_key(session, RoleKey.SUPER_ADMIN.value)
     if role is None:
         raise RuntimeError("the super_admin role is missing; run the migrations first")
@@ -180,8 +180,15 @@ async def bootstrap_super_admins(session: AsyncSession, emails: list[str], now: 
         if await identity.email_in_use(session, email):
             raise BootstrapRefusedError(f"an account for {email} already exists")
         user_id = await identity.create_invited_account(session, email)
-        session.add(
-            UserRole(user_id=user_id, role_id=role.id, valid_from=now, grant_reason="Installation bootstrap")
+        repo.add_assignment(
+            session,
+            UserRole(
+                user_id=user_id,
+                role_id=role.id,
+                role_key=role.key,
+                valid_from=now,
+                grant_reason="Installation bootstrap",
+            ),
         )
         invites[email] = await identity.issue_invite(session, user_id, now)
     return invites

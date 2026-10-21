@@ -20,15 +20,13 @@ second factor (§3.3). A used, expired or replaced link fails with 409 `password
 
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import defaults, devices, notifications
 from app.modules.identity import repository as repo
 from app.modules.identity.models import DeviceRevokedReason, OneTimePurpose, RevokedReason, UserStatus
 from app.platform.audit.records import RequestContext, SecurityEvent, SecurityEventType, Severity
 from app.platform.audit.writer import AuditWriter
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.ratelimit import RateLimiter
 from app.platform.security import passwords, tokens
@@ -113,7 +111,7 @@ class PasswordResetService:
             await self._apply(session, context, digest, password_hash, now)
 
     async def _apply(
-        self, session: AsyncSession, context: RequestContext, digest: bytes, password_hash: str, now: datetime
+        self, session: Session, context: RequestContext, digest: bytes, password_hash: str, now: datetime
     ) -> None:
         # Re-checked under the lock: a concurrent completion, a newer link or expiry since the
         # first check makes this one fail.

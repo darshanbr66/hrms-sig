@@ -11,7 +11,8 @@ Rules from docs/security-architecture.md §8 and docs/database-design.md §4.10:
 - Security event details are flat, non-sensitive scalars (IDs, counts, reasons). They never
   hold an email address or phone number: an email typed at sign-in is recorded only as
   `email_attempted_hash`.
-- Text values never contain NUL, which PostgreSQL text and JSONB cannot store.
+- Text values never contain NUL (a rule kept from the PostgreSQL design, so records and their
+  digests are the same in both).
 - Invalid records raise `ValueError`: they are programming errors, not user errors.
 """
 

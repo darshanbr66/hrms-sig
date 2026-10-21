@@ -30,24 +30,16 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import ColumnElement, and_, func, literal, or_, select, text, tuple_
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance import public as attendance
 from app.modules.identity import public as identity
 from app.modules.leave import notifications, reports
+from app.modules.leave.calendar import holiday_dates
 from app.modules.leave.models import (
     ACTIVE_STATUSES,
-    YEARLY_WHERE,
     AccrualMethod,
     CarryForwardMode,
     Decision,
     EntryType,
-    Holiday,
-    HolidayCalendar,
-    HolidayKind,
     LeaveDecision,
     LeaveLedgerEntry,
     LeavePolicy,
@@ -55,8 +47,8 @@ from app.modules.leave.models import (
     LeaveRequestDay,
     LeaveType,
     LeaveTypeStatus,
-    LocationHolidayCalendar,
     RequestStatus,
+    day_documents,
 )
 from app.modules.leave.rules import (
     CountedDay,
@@ -87,7 +79,7 @@ from app.platform.authz.engine import AccessDenied, Authorizer
 from app.platform.authz.sod import SodRule
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import CASE_INSENSITIVE, Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.ratelimit import RateLimiter, RateLimitRule, RateLimitScope
 
@@ -285,19 +277,16 @@ class AllocationCounts:
     nothing_due: int = 0
 
 
-async def _refuse_archive_with_open_requests(session: AsyncSession, leave_type_id: uuid.UUID) -> None:
+async def _refuse_archive_with_open_requests(session: Session, leave_type_id: uuid.UUID) -> None:
     """A leave type is archived only once no request of it waits for a decision, so approvers
     are never left deciding requests of a type nobody can request any more."""
-    waiting = (
-        await session.execute(
-            select(func.count()).where(
-                LeaveRequest.leave_type_id == leave_type_id,
-                LeaveRequest.status.in_(
-                    (RequestStatus.PENDING.value, RequestStatus.CANCELLATION_REQUESTED.value)
-                ),
-            )
-        )
-    ).scalar_one()
+    waiting = await session.count(
+        LeaveRequest,
+        {
+            "leave_type_id": leave_type_id,
+            "status": {"$in": [RequestStatus.PENDING.value, RequestStatus.CANCELLATION_REQUESTED.value]},
+        },
+    )
     if waiting:
         raise conflict(
             "leave.type_in_use",
@@ -306,77 +295,53 @@ async def _refuse_archive_with_open_requests(session: AsyncSession, leave_type_i
         )
 
 
-async def _lock_employee(session: AsyncSession, employee_id: uuid.UUID) -> None:
+async def _lock_employee(session: Session, employee_id: uuid.UUID) -> None:
     """One writer of an employee's leave at a time, so balance checks and writes agree."""
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"leave:{employee_id}"}
-    )
+    await session.lock(f"leave:{employee_id}")
 
 
 async def _ledger_sums(
-    session: AsyncSession, employee_id: uuid.UUID, type_ids: Sequence[uuid.UUID] | None = None
+    session: Session, employee_id: uuid.UUID, type_ids: Sequence[uuid.UUID] | None = None
 ) -> dict[uuid.UUID, Decimal]:
-    query = (
-        select(LeaveLedgerEntry.leave_type_id, func.sum(LeaveLedgerEntry.amount))
-        .where(LeaveLedgerEntry.employee_id == employee_id)
-        .group_by(LeaveLedgerEntry.leave_type_id)
-    )
+    match: dict[str, Any] = {"employee_id": employee_id}
     if type_ids is not None:
-        query = query.where(LeaveLedgerEntry.leave_type_id.in_(type_ids))
-    return {row[0]: Decimal(row[1]) for row in (await session.execute(query)).all()}
+        match["leave_type_id"] = {"$in": list(type_ids)}
+    sums = await reports.sums_by_type(session, LeaveLedgerEntry, "amount", match)
+    return {type_id: total for (_, type_id), total in sums.items()}
 
 
 async def _reserved(
-    session: AsyncSession, employee_id: uuid.UUID, *, excluding: uuid.UUID | None = None
+    session: Session, employee_id: uuid.UUID, *, excluding: uuid.UUID | None = None
 ) -> dict[uuid.UUID, Decimal]:
-    query = (
-        select(LeaveRequest.leave_type_id, func.sum(LeaveRequest.days_requested))
-        .where(LeaveRequest.employee_id == employee_id, LeaveRequest.status == RequestStatus.PENDING.value)
-        .group_by(LeaveRequest.leave_type_id)
-    )
+    match: dict[str, Any] = {"employee_id": employee_id, "status": RequestStatus.PENDING.value}
     if excluding is not None:
-        query = query.where(LeaveRequest.id != excluding)
-    return {row[0]: Decimal(row[1]) for row in (await session.execute(query)).all()}
+        match["id"] = {"$ne": excluding}
+    sums = await reports.sums_by_type(session, LeaveRequest, "days_requested", match)
+    return {type_id: total for (_, type_id), total in sums.items()}
 
 
 async def _policy_for(
-    session: AsyncSession, leave_type_id: uuid.UUID, facts: people.JobFacts | None, on: date
+    session: Session, leave_type_id: uuid.UUID, facts: people.JobFacts | None, on: date
 ) -> LeavePolicy | None:
     if facts is None:
         return None
-    candidates = list(
-        await session.scalars(
-            select(LeavePolicy).where(
-                LeavePolicy.leave_type_id == leave_type_id,
-                LeavePolicy.effective_from <= on,
-                or_(LeavePolicy.effective_to.is_(None), LeavePolicy.effective_to > on),
-            )
-        )
+    candidates = await session.find(
+        LeavePolicy,
+        {
+            "leave_type_id": leave_type_id,
+            "effective_from": {"$lte": on},
+            "$or": [{"effective_to": None}, {"effective_to": {"$gt": on}}],
+        },
     )
     return most_specific(candidates, facts.location_id, facts.employment_type)
 
 
-async def _holidays(
-    session: AsyncSession, location_id: uuid.UUID | None, start: date, end: date
-) -> set[date]:
+async def _holidays(session: Session, location_id: uuid.UUID | None, start: date, end: date) -> set[date]:
     """Holidays (not optional ones) of the active calendar each year of the range assigns to
     the location."""
     if location_id is None:
         return set()
-    rows = await session.scalars(
-        select(Holiday.date)
-        .join(HolidayCalendar, HolidayCalendar.id == Holiday.calendar_id)
-        .join(LocationHolidayCalendar, LocationHolidayCalendar.calendar_id == HolidayCalendar.id)
-        .where(
-            LocationHolidayCalendar.location_id == location_id,
-            HolidayCalendar.status == "active",
-            Holiday.kind == HolidayKind.HOLIDAY.value,
-            Holiday.is_optional.is_(False),
-            Holiday.date >= start,
-            Holiday.date <= end,
-        )
-    )
-    return set(rows)
+    return (await holiday_dates(session, [location_id], start, end)).get(location_id, set())
 
 
 def _own_employee(actor: Actor) -> uuid.UUID:
@@ -416,11 +381,11 @@ class LeaveService:
     # --- leave types ---------------------------------------------------------------------------
 
     async def leave_types(self, actor: Actor, *, include_archived: bool) -> list[LeaveType]:
-        query = select(LeaveType).order_by(func.lower(LeaveType.name), LeaveType.id)
-        if not include_archived:
-            query = query.where(LeaveType.status == LeaveTypeStatus.ACTIVE.value)
+        query = {} if include_archived else {"status": LeaveTypeStatus.ACTIVE.value}
         async with self._db.unit_of_work() as session:
-            return list(await session.scalars(query))
+            return await session.find(
+                LeaveType, query, sort=[("name", 1), ("id", 1)], collation=CASE_INSENSITIVE
+            )
 
     async def create_type(
         self, actor: Actor, context: RequestContext, values: Mapping[str, Any]
@@ -430,9 +395,8 @@ class LeaveService:
             leave_type = LeaveType(**values)
             session.add(leave_type)
             try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
+                await session.flush()
+            except UniqueViolationError as exc:
                 raise conflict(
                     "leave.type_code_in_use", "Another leave type already uses this code."
                 ) from exc
@@ -462,9 +426,7 @@ class LeaveService:
     ) -> LeaveType:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "leave.policy.manage")
-            leave_type = await session.get(
-                LeaveType, leave_type_id, with_for_update=True, populate_existing=True
-            )
+            leave_type = await session.get(LeaveType, leave_type_id, for_update=True)
             if leave_type is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             check_version(leave_type.version, expected_version)
@@ -501,17 +463,20 @@ class LeaveService:
     # --- policies ------------------------------------------------------------------------------
 
     async def policies(self, leave_type_id: uuid.UUID | None) -> list[PolicyRecord]:
-        query = select(LeavePolicy, LeaveType.name).join(LeaveType, LeaveType.id == LeavePolicy.leave_type_id)
-        if leave_type_id is not None:
-            query = query.where(LeavePolicy.leave_type_id == leave_type_id)
-        query = query.order_by(
-            func.lower(LeaveType.name),
-            LeavePolicy.location_id.is_not(None),
-            LeavePolicy.employment_type.is_not(None),
-            LeavePolicy.effective_from.desc(),
-        )
         async with self._db.unit_of_work() as session:
-            rows = (await session.execute(query)).all()
+            policies = await session.find(
+                LeavePolicy, {} if leave_type_id is None else {"leave_type_id": leave_type_id}
+            )
+            type_names = {t.id: t.name for t in await session.find(LeaveType, {})}
+            rows = sorted(
+                ((policy, type_names.get(policy.leave_type_id, "")) for policy in policies),
+                key=lambda row: (
+                    row[1].lower(),
+                    row[0].location_id is not None,
+                    row[0].employment_type is not None,
+                    -row[0].effective_from.toordinal(),
+                ),
+            )
             locations = await org.unit_names(
                 session, location_ids={r[0].location_id for r in rows if r[0].location_id}
             )
@@ -541,31 +506,20 @@ class LeaveService:
             if location_id is not None and not await org.location_time_zones(session, [location_id]):
                 raise field_error("location_id", "leave.unknown_location", "Choose an existing location.")
             # One writer per leave type, so two versions of one scope cannot race.
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                {"key": f"leave_policy:{leave_type.id}"},
+            await session.lock(f"leave_policy:{leave_type.id}")
+            later = await session.find(
+                LeavePolicy,
+                {
+                    "leave_type_id": leave_type.id,
+                    "location_id": location_id,
+                    "employment_type": values.get("employment_type"),
+                    "$or": [
+                        {"effective_to": None},
+                        {"effective_from": {"$gte": values["effective_from"]}},
+                        {"effective_to": {"$gt": values["effective_from"]}},
+                    ],
+                },
             )
-            same_scope = and_(
-                LeavePolicy.leave_type_id == leave_type.id,
-                LeavePolicy.location_id.is_(None)
-                if location_id is None
-                else LeavePolicy.location_id == location_id,
-                LeavePolicy.employment_type.is_(None)
-                if values.get("employment_type") is None
-                else LeavePolicy.employment_type == values["employment_type"],
-            )
-            later = (
-                await session.scalars(
-                    select(LeavePolicy).where(
-                        same_scope,
-                        or_(
-                            LeavePolicy.effective_to.is_(None),
-                            LeavePolicy.effective_from >= values["effective_from"],
-                            LeavePolicy.effective_to > values["effective_from"],
-                        ),
-                    )
-                )
-            ).all()
             current = [
                 p for p in later if p.effective_from < values["effective_from"] and p.effective_to is None
             ]
@@ -615,17 +569,16 @@ class LeaveService:
             )
             sums = await _ledger_sums(session, subject)
             reserved = await _reserved(session, subject)
-            types = list(
-                await session.scalars(
-                    select(LeaveType)
-                    .where(
-                        or_(
-                            LeaveType.status == LeaveTypeStatus.ACTIVE.value,
-                            LeaveType.id.in_(list(sums) + list(reserved)),
-                        )
-                    )
-                    .order_by(func.lower(LeaveType.name), LeaveType.id)
-                )
+            types = await session.find(
+                LeaveType,
+                {
+                    "$or": [
+                        {"status": LeaveTypeStatus.ACTIVE.value},
+                        {"id": {"$in": list(sums) + list(reserved)}},
+                    ]
+                },
+                sort=[("name", 1), ("id", 1)],
+                collation=CASE_INSENSITIVE,
             )
             facts = await people.job_facts(session, subject, today)
             balances = []
@@ -651,16 +604,19 @@ class LeaveService:
             await self._authz.require(
                 session, actor, "leave.read", subject_employee_id=subject, hide_existence=True
             )
-            query = (
-                select(LeaveLedgerEntry, LeaveType.name)
-                .join(LeaveType, LeaveType.id == LeaveLedgerEntry.leave_type_id)
-                .where(LeaveLedgerEntry.employee_id == subject)
-                .order_by(LeaveLedgerEntry.effective_date.desc(), LeaveLedgerEntry.id.desc())
-                .limit(500)
-            )
+            match: dict[str, Any] = {"employee_id": subject}
             if leave_type_id is not None:
-                query = query.where(LeaveLedgerEntry.leave_type_id == leave_type_id)
-            return [(row[0], row[1]) for row in (await session.execute(query)).all()]
+                match["leave_type_id"] = leave_type_id
+            entries = await session.find(
+                LeaveLedgerEntry, match, sort=[("effective_date", -1), ("id", -1)], limit=500
+            )
+            names = {
+                t.id: t.name
+                for t in await session.find(
+                    LeaveType, {"id": {"$in": list({e.leave_type_id for e in entries})}}
+                )
+            }
+            return [(entry, names.get(entry.leave_type_id, "")) for entry in entries]
 
     async def adjust(
         self,
@@ -679,14 +635,9 @@ class LeaveService:
             if actor.employee_id == employee_id:
                 raise AccessDenied(code=SodRule.OWN_BALANCE.value)
             await _lock_employee(session, employee_id)
-            replay = (
-                await session.scalars(
-                    select(LeaveLedgerEntry).where(
-                        LeaveLedgerEntry.employee_id == employee_id,
-                        LeaveLedgerEntry.idempotency_key == idempotency_key,
-                    )
-                )
-            ).one_or_none()
+            replay = await session.find_one(
+                LeaveLedgerEntry, {"employee_id": employee_id, "idempotency_key": idempotency_key}
+            )
             if replay is not None:
                 if (replay.leave_type_id, replay.amount, replay.entry_type) != (
                     values["leave_type_id"],
@@ -726,9 +677,8 @@ class LeaveService:
             )
             session.add(entry)
             try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
+                await session.flush()
+            except UniqueViolationError as exc:
                 raise conflict(
                     "leave.opening_balance_exists",
                     "An opening balance for this leave year is already recorded. "
@@ -767,9 +717,7 @@ class LeaveService:
             leave_type = await session.get(LeaveType, leave_type_id)
             if leave_type is None or leave_type.status != LeaveTypeStatus.ACTIVE.value:
                 raise field_error("leave_type_id", "leave.unknown_type", "Choose an active leave type.")
-            colleagues, _ = await people.employed_colleagues(
-                session, people.employee_id_column().is_not(None), on=as_of
-            )
+            colleagues, _ = await people.employed_colleagues(session, {}, on=as_of)
             for colleague in colleagues:
                 try:
                     await self._authz.require(
@@ -806,31 +754,20 @@ class LeaveService:
                 if amount <= 0:
                     counts["nothing_due"] += 1
                     continue
-                inserted = (
-                    await session.execute(
-                        insert(LeaveLedgerEntry)
-                        .values(
-                            employee_id=colleague.id,
-                            leave_type_id=leave_type.id,
-                            leave_year=year,
-                            entry_type=EntryType.ACCRUAL.value,
-                            amount=amount,
-                            effective_date=max(year, facts.date_of_joining) if facts else year,
-                            policy_id=policy.id,
-                            created_by=actor.user_id,
-                        )
-                        .on_conflict_do_nothing(
-                            index_elements=[
-                                LeaveLedgerEntry.employee_id,
-                                LeaveLedgerEntry.leave_type_id,
-                                LeaveLedgerEntry.leave_year,
-                                LeaveLedgerEntry.entry_type,
-                            ],
-                            index_where=text(YEARLY_WHERE),
-                        )
-                        .returning(LeaveLedgerEntry.id)
-                    )
-                ).scalar_one_or_none()
+                await _lock_employee(session, colleague.id)
+                inserted = await session.insert_if_absent(
+                    LeaveLedgerEntry(
+                        employee_id=colleague.id,
+                        leave_type_id=leave_type.id,
+                        leave_year=year,
+                        entry_type=EntryType.ACCRUAL.value,
+                        amount=amount,
+                        effective_date=max(year, facts.date_of_joining) if facts else year,
+                        policy_id=policy.id,
+                        created_by=actor.user_id,
+                    ),
+                    ["employee_id", "leave_type_id", "leave_year", "entry_type", "slot"],
+                )
                 counts["allocated" if inserted else "already_allocated"] += 1
             result = AllocationCounts(**counts)
             await self._audit.record(
@@ -852,7 +789,7 @@ class LeaveService:
 
     async def _evaluate(
         self,
-        session: AsyncSession,
+        session: Session,
         employee_id: uuid.UUID,
         draft: Draft,
         *,
@@ -928,14 +865,9 @@ class LeaveService:
                 session, actor, "leave.request.self", subject_employee_id=employee_id
             )
             await _lock_employee(session, employee_id)
-            replay = (
-                await session.scalars(
-                    select(LeaveRequest).where(
-                        LeaveRequest.employee_id == employee_id,
-                        LeaveRequest.idempotency_key == idempotency_key,
-                    )
-                )
-            ).one_or_none()
+            replay = await session.find_one(
+                LeaveRequest, {"employee_id": employee_id, "idempotency_key": idempotency_key}
+            )
             if replay is not None:
                 if (replay.leave_type_id, replay.start_date, replay.end_date) != (
                     draft.leave_type_id,
@@ -968,25 +900,33 @@ class LeaveService:
                 status=(RequestStatus.APPROVED if auto else RequestStatus.PENDING).value,
                 submitted_by=actor.user_id,
                 idempotency_key=idempotency_key,
+                days=day_documents(
+                    [
+                        LeaveRequestDay(
+                            date=day.date,
+                            portion=day.portion,
+                            counted=day.counted,
+                            not_counted_reason=day.not_counted_reason,
+                        )
+                        for day in preview.days
+                    ]
+                ),
             )
-            session.add(request)
-            try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
+            # Active requests of one person never overlap (formerly an exclusion constraint):
+            # checked under the person's leave lock, taken above.
+            if await session.exists(
+                LeaveRequest,
+                {
+                    "employee_id": employee_id,
+                    "status": {"$in": [status.value for status in ACTIVE_STATUSES]},
+                    "start_date": {"$lte": draft.end_date},
+                    "end_date": {"$gte": draft.start_date},
+                },
+            ):
                 raise conflict(
                     "leave.overlap", "You already have leave requested or approved on some of these days."
-                ) from exc
-            session.add_all(
-                LeaveRequestDay(
-                    leave_request_id=request.id,
-                    date=day.date,
-                    portion=day.portion,
-                    counted=day.counted,
-                    not_counted_reason=day.not_counted_reason,
                 )
-                for day in preview.days
-            )
+            session.add(request)
             if auto:
                 self._usage(session, request, policy, actor.user_id)
             await session.flush()
@@ -1020,7 +960,7 @@ class LeaveService:
             return await self._detail(session, actor, request.id)
 
     @staticmethod
-    def _usage(session: AsyncSession, request: LeaveRequest, policy: LeavePolicy, user_id: uuid.UUID) -> None:
+    def _usage(session: Session, request: LeaveRequest, policy: LeavePolicy, user_id: uuid.UUID) -> None:
         session.add(
             LeaveLedgerEntry(
                 employee_id=request.employee_id,
@@ -1037,15 +977,10 @@ class LeaveService:
             )
         )
 
-    async def _reversal(self, session: AsyncSession, request: LeaveRequest, user_id: uuid.UUID) -> None:
-        usage = (
-            await session.scalars(
-                select(LeaveLedgerEntry).where(
-                    LeaveLedgerEntry.leave_request_id == request.id,
-                    LeaveLedgerEntry.entry_type == EntryType.USAGE.value,
-                )
-            )
-        ).one_or_none()
+    async def _reversal(self, session: Session, request: LeaveRequest, user_id: uuid.UUID) -> None:
+        usage = await session.find_one(
+            LeaveLedgerEntry, {"leave_request_id": request.id, "entry_type": EntryType.USAGE.value}
+        )
         if usage is None:
             return
         session.add(
@@ -1075,9 +1010,7 @@ class LeaveService:
                 session, actor, "leave.request.self", subject_employee_id=employee_id
             )
             await _lock_employee(session, employee_id)
-            request = await session.get(
-                LeaveRequest, request_id, with_for_update=True, populate_existing=True
-            )
+            request = await session.get(LeaveRequest, request_id, for_update=True)
             if request is None or request.employee_id != employee_id:
                 raise ProblemError(ProblemType.NOT_FOUND)
             leave_type = await session.get(LeaveType, request.leave_type_id)
@@ -1145,24 +1078,18 @@ class LeaveService:
                 "note", "leave.note_required", "Say why, so the employee knows what to do next."
             )
         async with self._db.unit_of_work() as session:
-            subject = (
-                await session.execute(select(LeaveRequest.employee_id).where(LeaveRequest.id == request_id))
-            ).scalar_one_or_none()
-            if subject is None:
+            found = await session.get(LeaveRequest, request_id)
+            if found is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            subject = found.employee_id
             granted = await self._authz.require(
                 session, actor, "leave.request.approve", subject_employee_id=subject, hide_existence=True
             )
             if actor.employee_id == subject:
                 raise AccessDenied(code=SodRule.OWN_REQUEST.value)
-            replay = (
-                await session.scalars(
-                    select(LeaveDecision).where(
-                        LeaveDecision.decided_by == actor.user_id,
-                        LeaveDecision.idempotency_key == idempotency_key,
-                    )
-                )
-            ).one_or_none()
+            replay = await session.find_one(
+                LeaveDecision, {"decided_by": actor.user_id, "idempotency_key": idempotency_key}
+            )
             if replay is not None:
                 if replay.leave_request_id != request_id:
                     raise field_error(
@@ -1172,9 +1099,7 @@ class LeaveService:
                     )
                 return await self._detail(session, actor, request_id)
             await _lock_employee(session, subject)
-            request = await session.get(
-                LeaveRequest, request_id, with_for_update=True, populate_existing=True
-            )
+            request = await session.get(LeaveRequest, request_id, for_update=True)
             if request is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if request.submitted_by == actor.user_id:
@@ -1218,7 +1143,7 @@ class LeaveService:
             return await self._detail(session, actor, request.id)
 
     async def _transition(
-        self, session: AsyncSession, request: LeaveRequest, *, approve: bool, user_id: uuid.UUID
+        self, session: Session, request: LeaveRequest, *, approve: bool, user_id: uuid.UUID
     ) -> Decision:
         """Move a request waiting for a decision to its next state, writing the ledger entry
         the decision causes; refuse a request that is no longer waiting."""
@@ -1265,11 +1190,10 @@ class LeaveService:
 
     async def detail(self, actor: Actor, context: RequestContext, request_id: uuid.UUID) -> RequestDetail:
         async with self._db.unit_of_work() as session:
-            subject = (
-                await session.execute(select(LeaveRequest.employee_id).where(LeaveRequest.id == request_id))
-            ).scalar_one_or_none()
-            if subject is None:
+            found = await session.get(LeaveRequest, request_id)
+            if found is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            subject = found.employee_id
             await self._authz.require(
                 session, actor, "leave.read", subject_employee_id=subject, hide_existence=True
             )
@@ -1289,8 +1213,8 @@ class LeaveService:
                 )
             return detail
 
-    async def _detail(self, session: AsyncSession, actor: Actor, request_id: uuid.UUID) -> RequestDetail:
-        request = await session.get(LeaveRequest, request_id, populate_existing=True)
+    async def _detail(self, session: Session, actor: Actor, request_id: uuid.UUID) -> RequestDetail:
+        request = await session.get(LeaveRequest, request_id)
         if request is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         own = actor.employee_id == request.employee_id
@@ -1313,19 +1237,9 @@ class LeaveService:
             or (request.status == RequestStatus.APPROVED and request.start_date > today)
         )
         record = (await self._records(session, [request]))[0]
-        days = list(
-            await session.scalars(
-                select(LeaveRequestDay)
-                .where(LeaveRequestDay.leave_request_id == request.id)
-                .order_by(LeaveRequestDay.date)
-            )
-        )
-        decisions = list(
-            await session.scalars(
-                select(LeaveDecision)
-                .where(LeaveDecision.leave_request_id == request.id)
-                .order_by(LeaveDecision.decided_at, LeaveDecision.id)
-            )
+        days = sorted(request.day_rows(), key=lambda day: day.date)
+        decisions = await session.find(
+            LeaveDecision, {"leave_request_id": request.id}, sort=[("decided_at", 1), ("id", 1)]
         )
         deciders = await identity.emails_of(session, {d.decided_by for d in decisions})
         return RequestDetail(
@@ -1339,24 +1253,42 @@ class LeaveService:
         )
 
     @staticmethod
-    async def _records(session: AsyncSession, requests: Sequence[LeaveRequest]) -> list[RequestRecord]:
+    async def _records(session: Session, requests: Sequence[LeaveRequest]) -> list[RequestRecord]:
         names = await people.employee_names(session, {r.employee_id for r in requests})
         types = (
-            dict(
-                (
-                    await session.execute(
-                        select(LeaveType.id, LeaveType.name).where(
-                            LeaveType.id.in_({r.leave_type_id for r in requests})
-                        )
-                    )
-                ).all()
-            )
+            {
+                leave_type.id: leave_type.name
+                for leave_type in await session.find(
+                    LeaveType, {"id": {"$in": list({r.leave_type_id for r in requests})}}
+                )
+            }
             if requests
             else {}
         )
         return [
             RequestRecord(r, names.get(r.employee_id, ""), types.get(r.leave_type_id, "")) for r in requests
         ]
+
+    async def _filter_conditions(
+        self, session: Session, filters: RequestFilters, today: date
+    ) -> list[dict[str, Any]]:
+        conditions: list[dict[str, Any]] = []
+        if filters.statuses:
+            conditions.append({"status": {"$in": list(filters.statuses)}})
+        if filters.leave_type_id:
+            conditions.append({"leave_type_id": filters.leave_type_id})
+        if filters.employee_id:
+            conditions.append({"employee_id": filters.employee_id})
+        if filters.start:
+            conditions.append({"end_date": {"$gte": filters.start}})
+        if filters.end:
+            conditions.append({"start_date": {"$lte": filters.end}})
+        if filters.department_id or filters.location_id:
+            placed = await people.placed_employee_ids(
+                session, filters.department_id, filters.location_id, today
+            )
+            conditions.append({"employee_id": {"$in": sorted(placed)}})
+        return conditions
 
     async def requests(
         self,
@@ -1371,44 +1303,46 @@ class LeaveService:
         """Requests in the actor's scope, newest start first; or their own; or, with
         `for_decision`, those waiting for a decision they may make (oldest start first)."""
         today = self._authz.today()
-        if own:
-            scope: ColumnElement[bool] = LeaveRequest.employee_id == _own_employee(actor)
-        elif for_decision:
-            scope = and_(
-                self._authz.scope_filter(actor, "leave.request.approve", LeaveRequest.employee_id),
-                LeaveRequest.status.in_(
-                    [RequestStatus.PENDING.value, RequestStatus.CANCELLATION_REQUESTED.value]
-                ),
-                LeaveRequest.submitted_by != actor.user_id,
-                *([LeaveRequest.employee_id != actor.employee_id] if actor.employee_id else []),
-            )
-        else:
-            scope = self._authz.scope_filter(actor, "leave.read", LeaveRequest.employee_id)
-        query = select(LeaveRequest).where(scope)
-        if filters.statuses:
-            query = query.where(LeaveRequest.status.in_(filters.statuses))
-        if filters.leave_type_id:
-            query = query.where(LeaveRequest.leave_type_id == filters.leave_type_id)
-        if filters.employee_id:
-            query = query.where(LeaveRequest.employee_id == filters.employee_id)
-        if filters.start:
-            query = query.where(LeaveRequest.end_date >= filters.start)
-        if filters.end:
-            query = query.where(LeaveRequest.start_date <= filters.end)
-        if filters.department_id or filters.location_id:
-            query = query.where(
-                LeaveRequest.employee_id.in_(
-                    people.placed_employee_ids_query(filters.department_id, filters.location_id, today)
-                )
-            )
-        key = func.to_char(LeaveRequest.start_date, "YYYY-MM-DD")
-        ascending = for_decision
-        if after is not None:
-            position, bound = tuple_(key, LeaveRequest.id), tuple_(literal(after[0]), literal(after[1]))
-            query = query.where(position > bound if ascending else position < bound)
-        order = (key, LeaveRequest.id) if ascending else (key.desc(), LeaveRequest.id.desc())
         async with self._db.unit_of_work() as session:
-            rows = list(await session.scalars(query.order_by(*order).limit(limit + 1)))
+            conditions: list[dict[str, Any]] = []
+            if own:
+                conditions.append({"employee_id": _own_employee(actor)})
+            elif for_decision:
+                conditions.append(
+                    await self._authz.scope_filter(session, actor, "leave.request.approve", "employee_id")
+                )
+                conditions.append(
+                    {
+                        "status": {
+                            "$in": [RequestStatus.PENDING.value, RequestStatus.CANCELLATION_REQUESTED.value]
+                        },
+                        "submitted_by": {"$ne": actor.user_id},
+                    }
+                )
+                if actor.employee_id:
+                    conditions.append({"employee_id": {"$ne": actor.employee_id}})
+            else:
+                conditions.append(await self._authz.scope_filter(session, actor, "leave.read", "employee_id"))
+            conditions.extend(await self._filter_conditions(session, filters, today))
+            ascending = for_decision
+            if after is not None:
+                beyond = "$gt" if ascending else "$lt"
+                bound = date.fromisoformat(after[0])
+                conditions.append(
+                    {
+                        "$or": [
+                            {"start_date": {beyond: bound}},
+                            {"start_date": bound, "id": {beyond: after[1]}},
+                        ]
+                    }
+                )
+            direction = 1 if ascending else -1
+            rows = await session.find(
+                LeaveRequest,
+                _all(conditions),
+                sort=[("start_date", direction), ("id", direction)],
+                limit=limit + 1,
+            )
             records = await self._records(session, rows[:limit])
         last = rows[limit - 1] if len(rows) > limit else None
         return RequestListing(records, (last.start_date.isoformat(), last.id) if last else None)
@@ -1421,23 +1355,32 @@ class LeaveService:
         if (end - start).days >= MAX_CALENDAR_DAYS:
             raise field_error("to", "range.too_long", f"Choose a range of at most {MAX_CALENDAR_DAYS} days.")
         today = self._authz.today()
-        query = select(LeaveRequest).where(
-            self._authz.scope_filter(actor, "leave.read", LeaveRequest.employee_id),
-            LeaveRequest.status.in_([s.value for s in ACTIVE_STATUSES]),
-            LeaveRequest.end_date >= start,
-            LeaveRequest.start_date <= end,
-        )
-        if filters.leave_type_id:
-            query = query.where(LeaveRequest.leave_type_id == filters.leave_type_id)
-        if filters.department_id or filters.location_id:
-            query = query.where(
-                LeaveRequest.employee_id.in_(
-                    people.placed_employee_ids_query(filters.department_id, filters.location_id, today)
+        async with self._db.unit_of_work() as session:
+            conditions = [
+                await self._authz.scope_filter(session, actor, "leave.read", "employee_id"),
+                {
+                    "status": {"$in": [status.value for status in ACTIVE_STATUSES]},
+                    "end_date": {"$gte": start},
+                    "start_date": {"$lte": end},
+                },
+            ]
+            conditions.extend(
+                await self._filter_conditions(
+                    session,
+                    RequestFilters(
+                        leave_type_id=filters.leave_type_id,
+                        department_id=filters.department_id,
+                        location_id=filters.location_id,
+                    ),
+                    today,
                 )
             )
-        query = query.order_by(LeaveRequest.start_date, LeaveRequest.id).limit(MAX_CALENDAR_ENTRIES + 1)
-        async with self._db.unit_of_work() as session:
-            rows = list(await session.scalars(query))
+            rows = await session.find(
+                LeaveRequest,
+                _all(conditions),
+                sort=[("start_date", 1), ("id", 1)],
+                limit=MAX_CALENDAR_ENTRIES + 1,
+            )
             records = await self._records(session, rows[:MAX_CALENDAR_ENTRIES])
         return records, len(rows) > MAX_CALENDAR_ENTRIES
 
@@ -1458,8 +1401,10 @@ class LeaveService:
             raise field_error("to", "range.reversed", "The end date must be on or after the start date.")
         if (end - start).days >= MAX_REPORT_DAYS:
             raise field_error("to", "range.too_long", f"Choose a period of at most {MAX_REPORT_DAYS} days.")
-        scope = self._authz.scope_filter(actor, "leave.read", people.employee_id_column(), on=end)
         async with self._db.unit_of_work() as session:
+            scope = await self._authz.scope_filter(
+                session, actor, "leave.read", people.EMPLOYEE_ID_FIELD, on=end
+            )
             page, next_after = await people.employed_colleagues(
                 session,
                 scope,
@@ -1482,3 +1427,8 @@ def vars_of(counts: AllocationCounts) -> dict[str, int]:
         "skipped_own": counts.skipped_own,
         "nothing_due": counts.nothing_due,
     }
+
+
+def _all(conditions: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    present = [condition for condition in conditions if condition]
+    return {"$and": present} if present else {}

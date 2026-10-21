@@ -11,7 +11,8 @@ import asyncio
 import httpx
 import pytest
 
-from app.modules.identity.models import UserStatus
+from app.modules.access.models import UserRole
+from app.modules.identity.models import User, UserStatus
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
 
@@ -48,13 +49,9 @@ async def test_hr_cannot_disable_or_enable_an_administrator_account(api: Api) ->
         refused = await client.post(f"/api/v1/users/{disabled_admin.user_id}/enable")
         assert refused.status_code == 403
         assert refused.json()["code"] == "user.admin_account"
-    rows = await api.fetch(
-        "SELECT id, status FROM identity.users WHERE id IN (:a, :b, :c)",
-        a=system_admin.user_id,
-        b=super_admin.user_id,
-        c=disabled_admin.user_id,
-    )
-    assert dict(rows) == {
+    ids = [system_admin.user_id, super_admin.user_id, disabled_admin.user_id]
+    rows = await api.records(User, {"id": {"$in": ids}})
+    assert {row.id: row.status for row in rows} == {
         system_admin.user_id: "active",
         super_admin.user_id: "active",
         disabled_admin.user_id: "disabled",
@@ -90,13 +87,8 @@ async def test_concurrent_disables_cannot_leave_fewer_than_two_active_super_admi
             disable(first_client, super_admins[0]), disable(second_client, super_admins[1])
         )
     assert sorted(r.status_code for r in results) == [200, 409]
-    [(active,)] = await api.fetch(
-        "SELECT count(*) FROM identity.users WHERE status = 'active' AND id IN (:a, :b, :c)",
-        a=super_admins[0].user_id,
-        b=super_admins[1].user_id,
-        c=super_admins[2].user_id,
-    )
-    assert active == 2
+    ids = [account.user_id for account in super_admins[:3]]
+    assert await api.count("users", {"status": "active", "_id": {"$in": ids}}) == 2
 
 
 async def test_removing_the_role_counts_only_active_super_admins(api: Api) -> None:
@@ -104,9 +96,8 @@ async def test_removing_the_role_counts_only_active_super_admins(api: Api) -> No
         await signed_in(api, client, RoleKey.SUPER_ADMIN)
         other = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
         await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,), status=UserStatus.DISABLED)
-        [(assignment,)] = await api.fetch(
-            "SELECT id FROM access.user_roles WHERE user_id = :id", id=other.user_id
-        )
+        [stored] = await api.records(UserRole, {"user_id": other.user_id})
+        assignment = stored.id
         # Three holders, but only two are active: removing one would leave one who can act.
         refused = await client.delete(f"/api/v1/users/{other.user_id}/roles/{assignment}")
         assert refused.status_code == 409

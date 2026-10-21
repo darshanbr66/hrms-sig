@@ -1,5 +1,5 @@
-"""Documents over HTTP with private storage on the S3 emulator (product-requirements DOC-1 to
-DOC-6, authorization-model §3.6). Files are tiny, obviously fake test files."""
+"""Documents over HTTP with private storage in the database's GridFS bucket (product-requirements
+DOC-1 to DOC-6, authorization-model §3.6). Files are tiny, obviously fake test files."""
 
 import uuid
 from dataclasses import dataclass
@@ -7,9 +7,11 @@ from datetime import timedelta
 
 import httpx
 
+from app.modules.documents.models import DocumentVersion
 from app.modules.documents.scan_job import MAX_ATTEMPTS, scan_pending
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.roles import RoleKey
+from app.platform.db import tenant_scope
 from app.platform.scanning import ScanError, ScanResult, Verdict
 from tests.api_support import Account, Api
 from tests.people_data import add_job, create_employee, create_org_units, fake_code
@@ -95,10 +97,11 @@ async def upload(
 
 
 async def scan(api: Api, verdict: Verdict) -> None:
-    assert api.files is not None
-    await scan_pending(
-        api.worker_database, api.files, FakeScanner(verdict), api.clock, AuditWriter(api.clock)
-    )
+    # As the worker runs it: once per organization, inside its scope.
+    with tenant_scope(api.organization_id):
+        await scan_pending(
+            api.worker_database, api.files, FakeScanner(verdict), api.clock, AuditWriter(api.clock)
+        )
 
 
 async def test_documents_are_stored_privately_scanned_and_downloaded_through_short_links(
@@ -139,28 +142,31 @@ async def test_documents_are_stored_privately_scanned_and_downloaded_through_sho
         assert link.status_code == 200, link.text
         assert link.json()["expires_in_seconds"] == 60
         # The signed link itself stops working after 60 seconds (rule 9).
-        assert "X-Amz-Expires=60" in link.json()["url"]
-        async with httpx.AsyncClient() as plain:
-            fetched = await plain.get(link.json()["url"])
+        url = link.json()["url"]
+        assert url.startswith("/api/v1/files/")
+        # The link works without a session (it is the authorization), and only as signed.
+        async with api.client(csrf=False) as plain:
+            fetched = await plain.get(url)
+            payload, _, signature = url.rpartition("/")[2].partition(".")
+            tampered = await plain.get(f"/api/v1/files/{payload}.{signature[::-1]}")
         assert fetched.status_code == 200
         assert fetched.content == PDF
         assert fetched.headers["content-disposition"].startswith("attachment;")
+        assert fetched.headers["cache-control"] == "no-store"
+        assert tampered.status_code == 404
         newer = await client.post(
             f"/api/v1/documents/{document['id']}/versions",
             content=PDF + b"% second\n",
             headers={"X-File-Name": "offer.pdf"},
         )
         assert [v["version_no"] for v in newer.json()["versions"]] == [2, 1]
-    [(downloads,)] = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log "
-        "WHERE action = 'document.downloaded' AND subject_employee_id = :id",
-        id=p.employee.employee_id,
+    downloads = await api.count(
+        "audit_log", {"action": "document.downloaded", "subject_employee_id": p.employee.employee_id}
     )
     assert downloads == 1
     # The storage key is random, never the uploaded name.
-    [(key,)] = await api.fetch(
-        "SELECT storage_key FROM docs.document_versions WHERE id = :id", id=version["id"]
-    )
+    [stored] = await api.records(DocumentVersion, {"id": uuid.UUID(version["id"])})
+    key = stored.storage_key
     assert key.startswith("documents/")
     assert "offer" not in key
 
@@ -220,10 +226,7 @@ async def test_an_infected_file_is_never_downloadable(files_api: Api) -> None:
         assert refused.json()["code"] == "document.unavailable"
         detail = (await client.get(f"/api/v1/documents/{document['id']}")).json()
         assert detail["versions"][0]["scan_status"] == "infected"
-    [(flagged,)] = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log WHERE action = 'document.scan.infected' AND target_id = :id",
-        id=version_id,
-    )
+    flagged = await api.count("audit_log", {"action": "document.scan.infected", "target_id": str(version_id)})
     assert flagged == 1
     async with api.client() as client:
         await api.sign_in(client, p.hr)
@@ -254,12 +257,10 @@ async def test_a_file_the_scanner_cannot_check_is_never_downloadable(files_api: 
     scanner = UnavailableScanner(body)
 
     async def attempt() -> tuple[str, int]:
-        assert api.files is not None
-        await scan_pending(api.worker_database, api.files, scanner, api.clock, AuditWriter(api.clock))
-        [(status, attempts)] = await api.fetch(
-            "SELECT scan_status, scan_attempts FROM docs.document_versions WHERE id = :id", id=version_id
-        )
-        return status, attempts
+        with tenant_scope(api.organization_id):
+            await scan_pending(api.worker_database, api.files, scanner, api.clock, AuditWriter(api.clock))
+        [stored] = await api.records(DocumentVersion, {"id": uuid.UUID(str(version_id))})
+        return stored.scan_status, stored.scan_attempts
 
     assert await attempt() == ("pending", 1)
     async with api.client() as client:
@@ -275,15 +276,29 @@ async def test_a_file_the_scanner_cannot_check_is_never_downloadable(files_api: 
         assert refused.json()["code"] == "document.unavailable"
 
 
-async def test_without_storage_the_api_says_it_is_not_set_up(api: Api) -> None:
-    admin = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
+async def test_with_uploads_turned_off_nothing_unscanned_is_accepted(api: Api) -> None:
+    """A deployment without ClamAV (DOCUMENT_UPLOADS_ENABLED=false, the default): storage works,
+    uploads and new versions are refused and nothing reaches the file bucket (DOC-5)."""
+    p = await people(api)
     async with api.client() as client:
-        await api.sign_in(client, admin)
+        await api.sign_in(client, p.admin)
         internal = await category(client, "internal", visible=True, upload=True)
-        # Checks that do not need storage still answer first.
+        # Checks that do not need an upload still answer first.
         assert (
             await upload(client, f"/api/v1/employees/{uuid.uuid4()}/documents", internal)
         ).status_code == 404
-        refused = await upload(client, "/api/v1/company-documents", internal)
-        assert refused.status_code == 503
-        assert refused.json()["code"] == "files.not_configured"
+        for path in (
+            "/api/v1/company-documents",
+            f"/api/v1/employees/{p.employee.employee_id}/documents",
+        ):
+            refused = await upload(client, path, internal)
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["code"] == "documents.uploads_disabled"
+    async with api.client() as client:
+        await api.sign_in(client, p.employee)
+        refused = await upload(client, "/api/v1/me/documents", internal)
+        assert refused.json()["code"] == "documents.uploads_disabled"
+        listing = (await client.get("/api/v1/me/documents")).json()
+        assert (listing["storage_ready"], listing["uploads_ready"]) == (True, False)
+    stored = api.worker_database.collection("files.files")
+    assert await stored.count_documents({"metadata.organization_id": api.organization_id}) == 0

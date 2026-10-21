@@ -2,12 +2,11 @@
 
 Reporting lines and placement for the authorization engine (docs/authorization-model.md §5, §7):
 
-- `team_member_ids_query` is a SELECT of employee IDs, for embedding in a list query's scope
-  filter as `employee_id IN (...)` without materializing the team first.
+- `team_member_ids` resolves the reporting subtree on a date, for a list query's scope filter.
 - `is_team_member` answers the single-record question by walking up the reporting chain.
 - `has_direct_reports` decides the derived `manager` role; `is_employed` the derived
   `employee` role.
-- `placement` and `placed_employee_ids_query` apply a role assignment's department or
+- `placement` and `placed_employee_ids` apply a role assignment's department or
   location constraint.
 - `relationships` bundles these for the engine's `Relationships` protocol.
 - `employee_exists` lets other modules check a reference to an employee record;
@@ -18,7 +17,7 @@ Reporting lines and placement for the authorization engine (docs/authorization-m
 - `job_facts` gives the employment dates and the job (location, department, employment type,
   manager) that applies on a date, for modules whose rules depend on them (leave).
 - `employed_colleagues` lists employees within a caller's scope filter (built on
-  `employee_id_column`) with where they work, for modules that show their own data per person.
+  `EMPLOYEE_ID_FIELD`) with where they work, for modules that show their own data per person.
 - `employee_ids_by_code` finds employees by code, for imports.
 - `ids_in_scope` materializes a caller's scope filter (an export fixes who it covers when it
   is requested); `employee_rows` and `EMPLOYEES_HEADER` give the employee export.
@@ -34,11 +33,7 @@ import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
-from typing import Final
-
-from sqlalchemy import ColumnElement, and_, func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import QueryableAttribute
+from typing import Any, Final
 
 from app.modules.org import public as org
 from app.modules.people import repository
@@ -52,22 +47,22 @@ from app.modules.people.repository import (
     has_direct_reports,
     is_employed,
     is_team_member,
-    placed_employee_ids_query,
+    placed_employee_ids,
     placed_in_unit_count,
     placement,
     team_member_ids,
-    team_member_ids_query,
     work_email,
 )
+from app.platform.db import Session
 
 
 class PeopleRelationships:
     """Implements `app.platform.authz.engine.Relationships`."""
 
     is_team_member = staticmethod(is_team_member)
-    team_member_ids_query = staticmethod(team_member_ids_query)
+    team_member_ids = staticmethod(team_member_ids)
     placement = staticmethod(placement)
-    placed_employee_ids_query = staticmethod(placed_employee_ids_query)
+    placed_employee_ids = staticmethod(placed_employee_ids)
 
 
 relationships = PeopleRelationships()
@@ -75,15 +70,17 @@ relationships = PeopleRelationships()
 # More employees than the design load (product-requirements §7), so an unlimited listing is
 # still bounded.
 MAX_COLLEAGUES: Final = 5000
+# The field a caller's scope filter names when it lists employees (`scope_filter(..., EMPLOYEE_ID_FIELD)`).
+EMPLOYEE_ID_FIELD: Final = "id"
 
 __all__ = [
     "EMPLOYEES_HEADER",
+    "EMPLOYEE_ID_FIELD",
     "MAX_COLLEAGUES",
     "Colleague",
     "PeopleRelationships",
     "employed_colleagues",
     "employee_exists",
-    "employee_id_column",
     "employee_ids_by_code",
     "employee_names",
     "employee_rows",
@@ -95,12 +92,11 @@ __all__ = [
     "is_team_member",
     "job_facts",
     "job_periods",
-    "placed_employee_ids_query",
+    "placed_employee_ids",
     "placed_in_unit_count",
     "placement",
     "relationships",
     "team_member_ids",
-    "team_member_ids_query",
     "work_email",
 ]
 
@@ -124,7 +120,7 @@ class JobFacts:
         return self.date_of_joining <= on and (self.date_of_exit is None or self.date_of_exit >= on)
 
 
-async def job_facts(session: AsyncSession, employee_id: uuid.UUID, on: date) -> JobFacts | None:
+async def job_facts(session: Session, employee_id: uuid.UUID, on: date) -> JobFacts | None:
     employee = await session.get(Employee, employee_id)
     if employee is None:
         return None
@@ -166,40 +162,38 @@ class Employment:
 
 
 async def ids_in_scope(
-    session: AsyncSession, scope: ColumnElement[bool], *, limit: int = MAX_COLLEAGUES
+    session: Session, scope: dict[str, Any], *, limit: int = MAX_COLLEAGUES
 ) -> list[uuid.UUID]:
-    """Every employee ID a scope filter (built on `employee_id_column`) covers, at most `limit`."""
-    return list(await session.scalars(select(Employee.id).where(scope).order_by(Employee.id).limit(limit)))
+    """Every employee ID a scope filter (built on `EMPLOYEE_ID_FIELD`) covers, at most `limit`."""
+    return [employee.id for employee in await session.find(Employee, scope, sort=[("id", 1)], limit=limit)]
 
 
-async def employee_ids_by_code(session: AsyncSession, codes: Collection[str]) -> dict[str, uuid.UUID]:
+async def employee_ids_by_code(session: Session, codes: Collection[str]) -> dict[str, uuid.UUID]:
     """Employee IDs by lower-cased employee code, for imports that name people by code."""
     if not codes:
         return {}
-    lowered = {code.lower() for code in codes}
-    rows = await session.execute(
-        select(Employee.id, Employee.employee_code).where(func.lower(Employee.employee_code).in_(lowered))
-    )
-    return {code.lower(): employee_id for employee_id, code in rows.all()}
+    lowered = sorted({code.lower() for code in codes})
+    employees = await session.find(Employee, {"code_key": {"$in": lowered}})
+    return {employee.code_key: employee.id for employee in employees}
 
 
 async def job_periods(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date
 ) -> dict[uuid.UUID, Employment]:
     """Employment dates and the job rows overlapping `start`..`end` (inclusive), per employee."""
     if not employee_ids:
         return {}
-    ids = set(employee_ids)
-    employees = {row.id: row for row in await session.scalars(select(Employee).where(Employee.id.in_(ids)))}
+    ids = list(set(employee_ids))
+    employees = {row.id: row for row in await session.find(Employee, {"id": {"$in": ids}})}
     jobs: dict[uuid.UUID, list[JobPeriod]] = {employee_id: [] for employee_id in employees}
-    rows = await session.scalars(
-        select(EmployeeJob)
-        .where(
-            EmployeeJob.employee_id.in_(ids),
-            EmployeeJob.effective_from <= end,
-            or_(EmployeeJob.effective_to.is_(None), EmployeeJob.effective_to > start),
-        )
-        .order_by(EmployeeJob.employee_id, EmployeeJob.effective_from)
+    rows = await session.find(
+        EmployeeJob,
+        {
+            "employee_id": {"$in": ids},
+            "effective_from": {"$lte": end},
+            "$or": [{"effective_to": None}, {"effective_to": {"$gt": start}}],
+        },
+        sort=[("employee_id", 1), ("effective_from", 1)],
     )
     for job in rows:
         jobs[job.employee_id].append(
@@ -229,14 +223,9 @@ class Colleague:
     location_name: str | None
 
 
-def employee_id_column() -> QueryableAttribute[uuid.UUID]:
-    """The employee ID column a caller's scope filter applies to, for `employed_colleagues`."""
-    return Employee.id
-
-
 async def employed_colleagues(
-    session: AsyncSession,
-    scope: ColumnElement[bool],
+    session: Session,
+    scope: dict[str, Any],
     *,
     on: date,
     since: date | None = None,
@@ -257,16 +246,18 @@ async def employed_colleagues(
         location_id=location_id,
     )
     employed = (
-        and_(
-            Employee.date_of_joining <= on,
-            or_(Employee.date_of_exit.is_(None), Employee.date_of_exit >= since),
-        )
+        {
+            "$and": [
+                {"date_of_joining": {"$lte": on}},
+                {"$or": [{"date_of_exit": None}, {"date_of_exit": {"$gte": since}}]},
+            ]
+        }
         if since
         else repository.employed_on(on)
     )
     rows = await repository.list_employees(
         session,
-        and_(scope, employed),
+        {"$and": [scope, employed]} if scope else employed,
         filters,
         on=on,
         after=after,

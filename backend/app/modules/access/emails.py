@@ -6,11 +6,10 @@ why to people allowed to see it. Role names come from the system role definition
 
 from collections.abc import Mapping
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.identity import public as identity
 from app.modules.notify.public import EmailTemplate, OutboxItem, Renderer
 from app.platform.authz.roles import ROLE_DEFINITIONS, RoleKey
+from app.platform.db import Session
 from app.platform.email import OutgoingEmail
 
 PRODUCT = "Sigvitas HRMS"
@@ -103,7 +102,7 @@ class AccessEmails:
     def renderers(self) -> Mapping[EmailTemplate, Renderer]:
         return {EmailTemplate.GRANT_REQUEST: self.grant_request}
 
-    async def grant_request(self, session: AsyncSession, item: OutboxItem) -> OutgoingEmail | None:
+    async def grant_request(self, session: Session, item: OutboxItem) -> OutgoingEmail | None:
         address = await identity.active_email(session, item.user_id)
         text = message(item.data)
         if address is None or text is None:

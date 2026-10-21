@@ -94,6 +94,10 @@ export function DocumentList({
           File storage is not set up, so documents cannot be uploaded or downloaded yet. Ask your system
           administrator.
         </Banner>
+      ) : !data.uploads_ready ? (
+        <Banner tone="warning">
+          Document uploads are turned off until virus scanning is set up. Ask your system administrator.
+        </Banner>
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {owner.kind === "me" ? (
@@ -103,7 +107,7 @@ export function DocumentList({
             Show archived documents
           </Checkbox>
         )}
-        {canUpload && data.storage_ready ? (
+        {canUpload && data.uploads_ready ? (
           <Button
             onPress={() => {
               setUploading(true);
@@ -124,7 +128,12 @@ export function DocumentList({
       ) : (
         <ul aria-label="Documents" className="flex flex-col gap-3">
           {data.items.map((document) => (
-            <DocumentCard key={document.id} document={document} storageReady={data.storage_ready} />
+            <DocumentCard
+              key={document.id}
+              document={document}
+              storageReady={data.storage_ready}
+              uploadsReady={data.uploads_ready}
+            />
           ))}
         </ul>
       )}
@@ -219,7 +228,15 @@ function StepUpButton({ onVerified }: { onVerified: () => void }) {
   );
 }
 
-function DocumentCard({ document, storageReady }: { document: DocumentView; storageReady: boolean }) {
+function DocumentCard({
+  document,
+  storageReady,
+  uploadsReady,
+}: {
+  document: DocumentView;
+  storageReady: boolean;
+  uploadsReady: boolean;
+}) {
   const download = useDownload();
   const refresh = useRefreshDocuments();
   const toast = useToast();
@@ -252,7 +269,7 @@ function DocumentCard({ document, storageReady }: { document: DocumentView; stor
         </div>
         <div className="flex flex-wrap gap-2">
           {document.status === "archived" ? <Badge tone="neutral">Archived</Badge> : null}
-          {document.can_add_version && document.status === "active" && storageReady ? (
+          {document.can_add_version && document.status === "active" && uploadsReady ? (
             <Button
               size="sm"
               variant="secondary"

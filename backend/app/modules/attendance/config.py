@@ -24,10 +24,6 @@ from dataclasses import dataclass
 from datetime import date, time
 from typing import Any, Final
 
-from sqlalchemy import ColumnElement, and_, func, or_, select, text
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance.models import (
     AttendanceLock,
     AttendancePolicy,
@@ -47,7 +43,7 @@ from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import CASE_INSENSITIVE, Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 
 MAX_BULK: Final = 500
@@ -88,26 +84,22 @@ def _changes(values: Mapping[str, Any], before: Any = None) -> dict[str, FieldCh
     }
 
 
-async def _lock(session: AsyncSession, key: str) -> None:
-    await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
-
-
 async def _supersede(
-    session: AsyncSession, model: Any, series: ColumnElement[bool], effective_from: date, what: str
+    session: Session, model: Any, series: dict[str, Any], effective_from: date, what: str
 ) -> uuid.UUID | None:
     """Close the open row of one series at `effective_from`. Refuses when a row of the series
-    starts on or after that date, or ends after it: history is never rewritten."""
-    rows: list[Any] = list(
-        await session.scalars(
-            select(model).where(
-                series,
-                or_(
-                    model.effective_to.is_(None),
-                    model.effective_from >= effective_from,
-                    model.effective_to > effective_from,
-                ),
-            )
-        )
+    starts on or after that date, or ends after it: history is never rewritten. The caller holds
+    the series' lock, so two versions never overlap (formerly an exclusion constraint)."""
+    rows: list[Any] = await session.find(
+        model,
+        {
+            **series,
+            "$or": [
+                {"effective_to": None},
+                {"effective_from": {"$gte": effective_from}},
+                {"effective_to": {"$gt": effective_from}},
+            ],
+        },
     )
     current = [row for row in rows if row.effective_from < effective_from and row.effective_to is None]
     if len(rows) != len(current):
@@ -191,21 +183,21 @@ class ConfigService:
     # --- shifts --------------------------------------------------------------------------------
 
     async def shifts(self, *, include_archived: bool) -> list[ShiftRecord]:
-        query = select(Shift).order_by(func.lower(Shift.name), Shift.id)
-        if not include_archived:
-            query = query.where(Shift.status == ShiftStatus.ACTIVE.value)
+        query = {} if include_archived else {"status": ShiftStatus.ACTIVE.value}
         async with self._db.unit_of_work() as session:
-            shifts = list(await session.scalars(query))
+            shifts = await session.find(
+                Shift, query, sort=[("name", 1), ("id", 1)], collation=CASE_INSENSITIVE
+            )
             return await self._with_versions(session, shifts)
 
     @staticmethod
-    async def _with_versions(session: AsyncSession, shifts: Sequence[Shift]) -> list[ShiftRecord]:
+    async def _with_versions(session: Session, shifts: Sequence[Shift]) -> list[ShiftRecord]:
         versions: dict[uuid.UUID, list[ShiftVersion]] = {shift.id: [] for shift in shifts}
         if shifts:
-            for version in await session.scalars(
-                select(ShiftVersion)
-                .where(ShiftVersion.shift_id.in_(list(versions)))
-                .order_by(ShiftVersion.shift_id, ShiftVersion.effective_from.desc())
+            for version in await session.find(
+                ShiftVersion,
+                {"shift_id": {"$in": list(versions)}},
+                sort=[("shift_id", 1), ("effective_from", -1)],
             ):
                 versions[version.shift_id].append(version)
         return [ShiftRecord(shift, versions[shift.id]) for shift in shifts]
@@ -218,9 +210,8 @@ class ConfigService:
             shift = Shift(**values)
             session.add(shift)
             try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
+                await session.flush()
+            except UniqueViolationError as exc:
                 raise conflict("shift.code_in_use", "Another shift already uses this code.") from exc
             version = self._version(shift.id, 1, first, actor.user_id)
             session.add(version)
@@ -284,7 +275,7 @@ class ConfigService:
     ) -> ShiftRecord:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "shift.manage")
-            shift = await session.get(Shift, shift_id, with_for_update=True, populate_existing=True)
+            shift = await session.get(Shift, shift_id, for_update=True)
             if shift is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             check_version(shift.version, expected_version)
@@ -312,18 +303,11 @@ class ConfigService:
             await session.refresh(shift)
             return (await self._with_versions(session, [shift]))[0]
 
-    async def _refuse_archive_in_use(self, session: AsyncSession, shift_id: uuid.UUID) -> None:
+    async def _refuse_archive_in_use(self, session: Session, shift_id: uuid.UUID) -> None:
         today = self._authz.today()
-        in_use = and_(
-            or_(ShiftAssignment.effective_to.is_(None), ShiftAssignment.effective_to > today),
-            ShiftAssignment.shift_id == shift_id,
-        )
-        default_in_use = and_(
-            or_(LocationDefaultShift.effective_to.is_(None), LocationDefaultShift.effective_to > today),
-            LocationDefaultShift.shift_id == shift_id,
-        )
-        assignments = (await session.execute(select(func.count()).where(in_use))).scalar_one()
-        defaults = (await session.execute(select(func.count()).where(default_in_use))).scalar_one()
+        in_use = {"shift_id": shift_id, "$or": [{"effective_to": None}, {"effective_to": {"$gt": today}}]}
+        assignments = await session.count(ShiftAssignment, in_use)
+        defaults = await session.count(LocationDefaultShift, in_use)
         if assignments or defaults:
             raise conflict(
                 "shift.in_use",
@@ -336,21 +320,16 @@ class ConfigService:
     ) -> ShiftRecord:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "shift.manage")
-            shift = await session.get(Shift, shift_id, with_for_update=True, populate_existing=True)
+            shift = await session.get(Shift, shift_id, for_update=True)
             if shift is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if shift.status != ShiftStatus.ACTIVE:
                 raise conflict("shift.archived", "This shift is archived. Make it active first.")
             replaced = await _supersede(
-                session, ShiftVersion, ShiftVersion.shift_id == shift.id, values.effective_from, "shift"
+                session, ShiftVersion, {"shift_id": shift.id}, values.effective_from, "shift"
             )
-            number = (
-                await session.execute(
-                    select(func.coalesce(func.max(ShiftVersion.version_no), 0)).where(
-                        ShiftVersion.shift_id == shift.id
-                    )
-                )
-            ).scalar_one() + 1
+            latest = await session.find_one(ShiftVersion, {"shift_id": shift.id}, sort=[("version_no", -1)])
+            number = (latest.version_no if latest else 0) + 1
             version = self._version(shift.id, number, values, actor.user_id)
             session.add(version)
             shift.version += 1
@@ -375,7 +354,7 @@ class ConfigService:
             await session.refresh(shift)
             return (await self._with_versions(session, [shift]))[0]
 
-    async def _active_shift(self, session: AsyncSession, shift_id: uuid.UUID) -> Shift:
+    async def _active_shift(self, session: Session, shift_id: uuid.UUID) -> Shift:
         shift = await session.get(Shift, shift_id)
         if shift is None or shift.status != ShiftStatus.ACTIVE:
             raise field_error("shift_id", "shift.unknown", "Choose an active shift.")
@@ -385,30 +364,14 @@ class ConfigService:
 
     async def defaults(self) -> list[DefaultRecord]:
         async with self._db.unit_of_work() as session:
-            rows = list(
-                await session.scalars(
-                    select(LocationDefaultShift).order_by(
-                        LocationDefaultShift.location_id, LocationDefaultShift.effective_from.desc()
-                    )
-                )
+            rows = await session.find(
+                LocationDefaultShift, {}, sort=[("location_id", 1), ("effective_from", -1)]
             )
             return await self._default_records(session, rows)
 
     @staticmethod
-    async def _default_records(
-        session: AsyncSession, rows: Sequence[LocationDefaultShift]
-    ) -> list[DefaultRecord]:
-        names = (
-            dict(
-                (
-                    await session.execute(
-                        select(Shift.id, Shift.name).where(Shift.id.in_({r.shift_id for r in rows}))
-                    )
-                ).all()
-            )
-            if rows
-            else {}
-        )
+    async def _default_records(session: Session, rows: Sequence[LocationDefaultShift]) -> list[DefaultRecord]:
+        names = await _shift_names(session, {r.shift_id for r in rows})
         locations = await org.unit_names(session, location_ids={r.location_id for r in rows})
         return [
             DefaultRecord(row, names.get(row.shift_id, ""), locations.locations.get(row.location_id, ""))
@@ -430,11 +393,11 @@ class ConfigService:
                     "location_id", "attendance.unknown_location", "Choose an existing location."
                 )
             await self._active_shift(session, shift_id)
-            await _lock(session, f"attendance_default:{location_id}")
+            await session.lock(f"attendance_default:{location_id}")
             replaced = await _supersede(
                 session,
                 LocationDefaultShift,
-                LocationDefaultShift.location_id == location_id,
+                {"location_id": location_id},
                 effective_from,
                 "location's default shift",
             )
@@ -472,24 +435,10 @@ class ConfigService:
             await self._authz.require(
                 session, actor, "attendance.read", subject_employee_id=employee_id, hide_existence=True
             )
-            rows = list(
-                await session.scalars(
-                    select(ShiftAssignment)
-                    .where(ShiftAssignment.employee_id == employee_id)
-                    .order_by(ShiftAssignment.effective_from.desc())
-                )
+            rows = await session.find(
+                ShiftAssignment, {"employee_id": employee_id}, sort=[("effective_from", -1)]
             )
-            names = (
-                dict(
-                    (
-                        await session.execute(
-                            select(Shift.id, Shift.name).where(Shift.id.in_({r.shift_id for r in rows}))
-                        )
-                    ).all()
-                )
-                if rows
-                else {}
-            )
+            names = await _shift_names(session, {r.shift_id for r in rows})
             return [AssignmentRecord(row, names.get(row.shift_id, "")) for row in rows]
 
     async def assign(
@@ -518,11 +467,11 @@ class ConfigService:
                 if not await people.employee_exists(session, employee_id):
                     skipped += 1
                     continue
-                await _lock(session, f"attendance_assignment:{employee_id}")
+                await session.lock(f"attendance_assignment:{employee_id}")
                 replaced = await _supersede(
                     session,
                     ShiftAssignment,
-                    ShiftAssignment.employee_id == employee_id,
+                    {"employee_id": employee_id},
                     effective_from,
                     "person's shift",
                 )
@@ -560,26 +509,16 @@ class ConfigService:
 
     async def policies(self) -> list[PolicyRecord]:
         async with self._db.unit_of_work() as session:
-            rows = list(
-                await session.scalars(
-                    select(AttendancePolicy).order_by(
-                        AttendancePolicy.scope_type,
-                        AttendancePolicy.scope_id,
-                        AttendancePolicy.effective_from.desc(),
-                    )
-                )
+            rows = await session.find(
+                AttendancePolicy, {}, sort=[("scope_type", 1), ("scope_id", 1), ("effective_from", -1)]
             )
             return await self._policy_records(session, rows)
 
     @staticmethod
-    async def _policy_records(session: AsyncSession, rows: Sequence[AttendancePolicy]) -> list[PolicyRecord]:
+    async def _policy_records(session: Session, rows: Sequence[AttendancePolicy]) -> list[PolicyRecord]:
         shift_ids = {r.scope_id for r in rows if r.scope_type == PolicyScope.SHIFT and r.scope_id}
         location_ids = {r.scope_id for r in rows if r.scope_type == PolicyScope.LOCATION and r.scope_id}
-        shifts = (
-            dict((await session.execute(select(Shift.id, Shift.name).where(Shift.id.in_(shift_ids)))).all())
-            if shift_ids
-            else {}
-        )
+        shifts = await _shift_names(session, shift_ids)
         locations = (await org.unit_names(session, location_ids=location_ids)).locations
         return [
             PolicyRecord(
@@ -607,13 +546,8 @@ class ConfigService:
                 raise field_error("scope_id", "attendance.unknown_location", "Choose an existing location.")
             if scope_type == PolicyScope.SHIFT and scope_id is not None:
                 await self._active_shift(session, scope_id)
-            await _lock(session, f"attendance_policy:{scope_type}:{scope_id}")
-            same_scope = and_(
-                AttendancePolicy.scope_type == scope_type,
-                AttendancePolicy.scope_id.is_(None)
-                if scope_id is None
-                else AttendancePolicy.scope_id == scope_id,
-            )
+            await session.lock(f"attendance_policy:{scope_type}:{scope_id}")
+            same_scope = {"scope_type": scope_type, "scope_id": scope_id}
             replaced = await _supersede(
                 session, AttendancePolicy, same_scope, values["effective_from"], "policy"
             )
@@ -671,11 +605,7 @@ class ConfigService:
 
     async def locks(self, actor: Actor) -> list[AttendanceLock]:
         async with self._db.unit_of_work() as session:
-            return list(
-                await session.scalars(
-                    select(AttendanceLock).order_by(AttendanceLock.period_start.desc()).limit(200)
-                )
-            )
+            return await session.find(AttendanceLock, {}, sort=[("period_start", -1)], limit=200)
 
     async def create_lock(
         self, actor: Actor, context: RequestContext, period_start: date, period_end: date, reason: str
@@ -690,17 +620,22 @@ class ConfigService:
             )
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "attendance.policy.manage")
+            # Active locks never overlap (formerly an exclusion constraint): checked under a lock.
+            await session.lock("attendance_locks")
+            if await session.exists(
+                AttendanceLock,
+                {
+                    "released_at": None,
+                    "period_start": {"$lte": period_end},
+                    "period_end": {"$gte": period_start},
+                },
+            ):
+                raise conflict("attendance.lock_overlap", "These dates overlap a lock that is still active.")
             lock = AttendanceLock(
                 period_start=period_start, period_end=period_end, reason=reason, locked_by=actor.user_id
             )
             session.add(lock)
-            try:
-                async with session.begin_nested():
-                    await session.flush()
-            except IntegrityError as exc:
-                raise conflict(
-                    "attendance.lock_overlap", "These dates overlap a lock that is still active."
-                ) from exc
+            await session.flush()
             await self._audit.record(
                 session,
                 AuditEvent(
@@ -725,7 +660,7 @@ class ConfigService:
     ) -> AttendanceLock:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "attendance.policy.manage")
-            lock = await session.get(AttendanceLock, lock_id, with_for_update=True, populate_existing=True)
+            lock = await session.get(AttendanceLock, lock_id, for_update=True)
             if lock is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if lock.released_at is not None:
@@ -754,8 +689,10 @@ class ConfigService:
     async def setup(self, actor: Actor) -> SetupGaps:
         """ATT-12: who in the reader's scope has no shift or no policy today."""
         on = self._authz.today()
-        scope = self._authz.scope_filter(actor, "attendance.read", people.employee_id_column())
         async with self._db.unit_of_work() as session:
+            scope = await self._authz.scope_filter(
+                session, actor, "attendance.read", people.EMPLOYEE_ID_FIELD
+            )
             everyone, _ = await people.employed_colleagues(session, scope, on=on)
             schedule = await Schedule.load(session, [c.id for c in everyone], on, on)
             without_shift, without_policy = [], []
@@ -765,26 +702,15 @@ class ConfigService:
                     without_shift.append(colleague)
                 elif applied.policy is None:
                     without_policy.append(colleague)
-            shifts = (
-                await session.execute(select(func.count()).where(Shift.status == ShiftStatus.ACTIVE.value))
-            ).scalar_one()
-            policies = (
-                await session.execute(
-                    select(func.count()).where(
-                        AttendancePolicy.effective_from <= on,
-                        or_(AttendancePolicy.effective_to.is_(None), AttendancePolicy.effective_to > on),
-                    )
-                )
-            ).scalar_one()
-            organization = (
-                await session.execute(
-                    select(func.count()).where(
-                        AttendancePolicy.scope_type == PolicyScope.ORGANIZATION.value,
-                        AttendancePolicy.effective_from <= on,
-                        or_(AttendancePolicy.effective_to.is_(None), AttendancePolicy.effective_to > on),
-                    )
-                )
-            ).scalar_one()
+            shifts = await session.count(Shift, {"status": ShiftStatus.ACTIVE.value})
+            effective = {
+                "effective_from": {"$lte": on},
+                "$or": [{"effective_to": None}, {"effective_to": {"$gt": on}}],
+            }
+            policies = await session.count(AttendancePolicy, effective)
+            organization = await session.count(
+                AttendancePolicy, {**effective, "scope_type": PolicyScope.ORGANIZATION.value}
+            )
         return SetupGaps(
             on=on,
             shifts=shifts,
@@ -794,3 +720,9 @@ class ConfigService:
             without_policy=without_policy,
             organization_policy=organization > 0,
         )
+
+
+async def _shift_names(session: Session, shift_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    if not shift_ids:
+        return {}
+    return {shift.id: shift.name for shift in await session.find(Shift, {"id": {"$in": list(shift_ids)}})}

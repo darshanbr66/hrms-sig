@@ -9,8 +9,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.org.models import Department, Designation, Location
 from app.modules.people.models import (
     Employee,
@@ -19,6 +17,7 @@ from app.modules.people.models import (
     EmploymentType,
     JobChangeReason,
 )
+from app.platform.db import Session
 
 
 def fake_code(prefix: str = "TEST") -> str:
@@ -32,7 +31,7 @@ class OrgUnits:
     designation_id: uuid.UUID
 
 
-async def create_org_units(session: AsyncSession) -> OrgUnits:
+async def create_org_units(session: Session) -> OrgUnits:
     location = Location(code=fake_code(), name="Test location", time_zone="Asia/Kolkata", country_code="IN")
     department = Department(code=fake_code(), name="Test department")
     designation = Designation(code=fake_code(), name="Test designation")
@@ -42,7 +41,7 @@ async def create_org_units(session: AsyncSession) -> OrgUnits:
 
 
 async def create_employee(
-    session: AsyncSession,
+    session: Session,
     *,
     joined: date,
     exited: date | None = None,
@@ -64,7 +63,7 @@ async def create_employee(
 
 
 async def add_job(
-    session: AsyncSession,
+    session: Session,
     units: OrgUnits,
     employee_id: uuid.UUID,
     *,

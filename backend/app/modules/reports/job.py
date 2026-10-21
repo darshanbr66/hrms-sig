@@ -1,7 +1,7 @@
 """Producing and removing export files (worker, every minute; product-requirements RPT-2, RPT-3).
 
-Each run takes queued exports one at a time (`FOR UPDATE SKIP LOCKED`), marks one `running`
-in its own transaction, builds the rows from the parameters fixed when it was requested,
+Each run (for each organization) claims queued exports one at a time with an atomic update
+that marks one `running`, builds the rows from the parameters fixed when it was requested,
 writes the CSV to private storage and marks it `done` with a 24-hour expiry, then tells the
 requester. A failure is recorded by exception class only and the requester is told; an export
 left `running` by a stopped worker is retried, up to `MAX_ATTEMPTS`. Files past their expiry
@@ -13,10 +13,6 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Final
 
-import procrastinate
-from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance import public as attendance
 from app.modules.leave import public as leave
 from app.modules.notify.public import NotificationType, notify
@@ -26,23 +22,21 @@ from app.modules.reports.models import ExportJob, ExportStatus, ExportType
 from app.modules.reports.service import SPECS
 from app.platform.clock import Clock
 from app.platform.csvfile import Cell, to_csv
-from app.platform.db import Database
+from app.platform.db import Database, Session
 from app.platform.files import FileStore
+from app.platform.jobs import Scheduler
 
 logger = logging.getLogger(__name__)
 
 TASK_NAME: Final = "reports.exports"
 SCHEDULE: Final = "* * * * *"
-QUEUE: Final = "exports"
 BATCH: Final = 5
 MAX_ATTEMPTS: Final = 3
 STALE: Final = timedelta(minutes=15)
 KEEP: Final = timedelta(hours=24)
 
 
-async def _rows(
-    session: AsyncSession, job: ExportJob, now: datetime
-) -> tuple[tuple[str, ...], list[list[Cell]]]:
+async def _rows(session: Session, job: ExportJob, now: datetime) -> tuple[tuple[str, ...], list[list[Cell]]]:
     p = job.parameters
     start = date.fromisoformat(p["start"]) if p.get("start") else None
     end = date.fromisoformat(p["end"]) if p.get("end") else None
@@ -65,37 +59,40 @@ async def _rows(
 
 
 async def _claim(database: Database, now: datetime) -> ExportJob | None:
+    exhausted = {"$gte": ["$attempts", MAX_ATTEMPTS]}
     async with database.unit_of_work() as session:
-        job = (
-            await session.scalars(
-                select(ExportJob)
-                .where(
-                    or_(
-                        ExportJob.status == ExportStatus.QUEUED.value,
-                        (ExportJob.status == ExportStatus.RUNNING.value)
-                        & (ExportJob.started_at < now - STALE),
-                    )
-                )
-                .order_by(ExportJob.requested_at, ExportJob.id)
-                .limit(1)
-                .with_for_update(skip_locked=True)
-            )
-        ).first()
+        job = await session.find_one_and_update(
+            ExportJob,
+            {
+                "$or": [
+                    {"status": ExportStatus.QUEUED.value},
+                    {"status": ExportStatus.RUNNING.value, "started_at": {"$lt": now - STALE}},
+                ]
+            },
+            [
+                {
+                    "$set": {
+                        "status": {
+                            "$cond": [exhausted, ExportStatus.FAILED.value, ExportStatus.RUNNING.value]
+                        },
+                        "error_code": {"$cond": [exhausted, "TooManyAttempts", "$error_code"]},
+                        "completed_at": {"$cond": [exhausted, now, "$completed_at"]},
+                        "started_at": {"$cond": [exhausted, "$started_at", now]},
+                        "attempts": {"$cond": [exhausted, "$attempts", {"$add": ["$attempts", 1]}]},
+                    }
+                }
+            ],
+            sort=[("requested_at", 1), ("id", 1)],
+        )
         if job is None:
             return None
-        if job.attempts >= MAX_ATTEMPTS:
-            job.status = ExportStatus.FAILED.value
-            job.error_code = "TooManyAttempts"
-            job.completed_at = now
+        if job.status == ExportStatus.FAILED:
             await _tell(session, job, ready=False)
             return None
-        job.status = ExportStatus.RUNNING.value
-        job.started_at = now
-        job.attempts += 1
         return job
 
 
-async def _tell(session: AsyncSession, job: ExportJob, *, ready: bool) -> None:
+async def _tell(session: Session, job: ExportJob, *, ready: bool) -> None:
     title = SPECS[ExportType(job.export_type)].title.replace("-", " ").capitalize()
     await notify(
         session,
@@ -127,7 +124,7 @@ async def produce(database: Database, store: FileStore, clock: Clock) -> int:
                 "reports.export_failed", extra={"export_id": str(job.id), "error": type(exc).__name__}
             )
             async with database.unit_of_work() as session:
-                failed = await session.get(ExportJob, job.id, with_for_update=True)
+                failed = await session.get(ExportJob, job.id, for_update=True)
                 if failed is not None:
                     failed.status = ExportStatus.FAILED.value
                     failed.error_code = type(exc).__name__[:100]
@@ -135,7 +132,7 @@ async def produce(database: Database, store: FileStore, clock: Clock) -> int:
                     await _tell(session, failed, ready=False)
             continue
         async with database.unit_of_work() as session:
-            done = await session.get(ExportJob, job.id, with_for_update=True)
+            done = await session.get(ExportJob, job.id, for_update=True)
             if done is None:
                 continue
             finished = clock.now()
@@ -153,14 +150,10 @@ async def produce(database: Database, store: FileStore, clock: Clock) -> int:
 async def purge(database: Database, store: FileStore, clock: Clock) -> int:
     removed = 0
     async with database.unit_of_work() as session:
-        expired = list(
-            await session.scalars(
-                select(ExportJob)
-                .where(ExportJob.status == ExportStatus.DONE.value, ExportJob.expires_at <= clock.now())
-                .limit(100)
-                .with_for_update(skip_locked=True)
-            )
+        found = await session.find(
+            ExportJob, {"status": ExportStatus.DONE.value, "expires_at": {"$lte": clock.now()}}, limit=100
         )
+        expired = [job for job in [await session.get(ExportJob, f.id, for_update=True) for f in found] if job]
         for job in expired:
             if job.storage_key is not None:
                 await store.delete(job.storage_key)
@@ -170,10 +163,9 @@ async def purge(database: Database, store: FileStore, clock: Clock) -> int:
     return removed
 
 
-def register_exports(job_app: procrastinate.App, database: Database, store: FileStore, clock: Clock) -> None:
-    @job_app.periodic(cron=SCHEDULE, periodic_id=TASK_NAME)
-    @job_app.task(name=TASK_NAME, queue=QUEUE, lock=TASK_NAME)
-    async def run_exports(timestamp: int) -> None:
+def register_exports(scheduler: Scheduler, database: Database, store: FileStore, clock: Clock) -> None:
+    @scheduler.periodic(TASK_NAME, SCHEDULE, per_organization=True)
+    async def run_exports() -> None:
         produced = await produce(database, store, clock)
         removed = await purge(database, store, clock)
         if produced or removed:

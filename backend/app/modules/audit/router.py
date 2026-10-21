@@ -2,8 +2,10 @@
 
 Both permissions are flagged R, so every read is itself recorded in the audit log, in the
 same transaction as the read. Neither stream holds sensitive values (docs/security-
-architecture.md §8 guarantee 5), so the rows are returned as stored, except the keyed hash
-of an attempted email, which is never returned.
+architecture.md §8 guarantee 5), so the records are returned as stored, except the keyed hash
+of an attempted email, which is never returned. Each reader sees their own organization's
+records only; security events that belong to no organization (a sign-in attempt for an
+unknown email) are not listed here.
 """
 
 import uuid
@@ -12,16 +14,14 @@ from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
 from pydantic import AwareDatetime, BaseModel, ConfigDict
-from sqlalchemy import ColumnElement, Select, select, tuple_
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.platform.audit.records import AuditEvent, RequestContext
-from app.platform.audit.tables import audit_log, security_events
+from app.platform.audit.tables import AuditLogRecord, SecurityEventRecord
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer
 from app.platform.authz.route import requires
-from app.platform.db import Database
+from app.platform.db import Database, Session
 from app.platform.pagination import decode_cursor, encode_cursor
 
 router = APIRouter(prefix="/api/v1", tags=["audit"])
@@ -82,36 +82,39 @@ def _next_cursor(rows: list[Any], limit: int) -> str | None:
     if len(rows) <= limit:
         return None
     last = rows[limit - 1]
-    return encode_cursor((last["recorded_at"], last["id"]))
+    return encode_cursor((last.recorded_at, last.id))
 
 
 async def _page(
-    session: AsyncSession,
+    session: Session,
+    model: type[AuditLogRecord] | type[SecurityEventRecord],
+    conditions: dict[str, Any],
     *,
-    query: Select[Any],
-    table: Any,
-    conditions: list[ColumnElement[bool]],
+    since: datetime | None,
+    until: datetime | None,
     cursor: str | None,
     limit: int,
 ) -> list[Any]:
+    parts: list[dict[str, Any]] = [conditions]
+    if since is not None:
+        parts.append({"recorded_at": {"$gte": since}})
+    if until is not None:
+        parts.append({"recorded_at": {"$lt": until}})
     position = decode_cursor(cursor)
     if position is not None:
-        conditions.append(tuple_(table.c.recorded_at, table.c.id) < tuple_(*position))
-    query = query.where(*conditions).order_by(table.c.recorded_at.desc(), table.c.id.desc()).limit(limit + 1)
-    return list((await session.execute(query)).mappings().all())
-
-
-def _range(table: Any, since: datetime | None, until: datetime | None) -> list[ColumnElement[bool]]:
-    conditions: list[ColumnElement[bool]] = []
-    if since is not None:
-        conditions.append(table.c.recorded_at >= since)
-    if until is not None:
-        conditions.append(table.c.recorded_at < until)
-    return conditions
+        parts.append(
+            {
+                "$or": [
+                    {"recorded_at": {"$lt": position[0]}},
+                    {"recorded_at": position[0], "id": {"$lt": position[1]}},
+                ]
+            }
+        )
+    return await session.find(model, {"$and": parts}, sort=[("recorded_at", -1), ("id", -1)], limit=limit + 1)
 
 
 async def _record_read(
-    request: Request, session: AsyncSession, actor: Actor, permission: str, action: str
+    request: Request, session: Session, actor: Actor, permission: str, action: str
 ) -> None:
     writer: AuditWriter = request.app.state.audit_writer
     await writer.record(
@@ -140,27 +143,21 @@ async def read_audit_log(
 ) -> AuditPage:
     database: Database = request.app.state.database
     engine: Authorizer = request.app.state.authorizer
-    conditions = _range(audit_log, since, until)
+    conditions: dict[str, Any] = {}
     if actor_id is not None:
-        conditions.append(audit_log.c.actor_user_id == actor_id)
+        conditions["actor_user_id"] = actor_id
     if subject_employee_id is not None:
-        conditions.append(audit_log.c.subject_employee_id == subject_employee_id)
+        conditions["subject_employee_id"] = subject_employee_id
     if action is not None:
-        conditions.append(audit_log.c.action == action)
+        conditions["action"] = action
     async with database.unit_of_work() as session:
         granted = await engine.require(session, actor, "audit.read")
         rows = await _page(
-            session,
-            query=select(audit_log),
-            table=audit_log,
-            conditions=conditions,
-            cursor=cursor,
-            limit=limit,
+            session, AuditLogRecord, conditions, since=since, until=until, cursor=cursor, limit=limit
         )
         await _record_read(request, session, actor, granted.key, "audit.log.read")
     items = [
-        AuditRecord(**{**row, "ip": str(row["ip"]) if row["ip"] is not None else None})
-        for row in rows[:limit]
+        AuditRecord(**{name: getattr(row, name) for name in AuditRecord.model_fields}) for row in rows[:limit]
     ]
     return AuditPage(items=items, next_cursor=_next_cursor(rows, limit))
 
@@ -179,25 +176,21 @@ async def read_security_events(
 ) -> SecurityPage:
     database: Database = request.app.state.database
     engine: Authorizer = request.app.state.authorizer
-    conditions = _range(security_events, since, until)
-    if user_id is not None:
-        conditions.append(security_events.c.user_id == user_id)
-    if event_type is not None:
-        conditions.append(security_events.c.event_type == event_type)
-    columns = [column for column in security_events.c if column.name != "email_attempted_hash"]
     async with database.unit_of_work() as session:
+        # Security events are not tenant-scoped (some belong to no organization): name it here.
+        conditions: dict[str, Any] = {"organization_id": session.require_tenant()}
+        if user_id is not None:
+            conditions["user_id"] = user_id
+        if event_type is not None:
+            conditions["event_type"] = event_type
         granted = await engine.require(session, actor, "security.event.read")
         rows = await _page(
-            session,
-            query=select(*columns),
-            table=security_events,
-            conditions=conditions,
-            cursor=cursor,
-            limit=limit,
+            session, SecurityEventRecord, conditions, since=since, until=until, cursor=cursor, limit=limit
         )
         await _record_read(request, session, actor, granted.key, "security.events.read")
+    # The keyed hash of an attempted email is never returned (SecurityRecord has no such field).
     items = [
-        SecurityRecord(**{**row, "ip": str(row["ip"]) if row["ip"] is not None else None})
+        SecurityRecord(**{name: getattr(row, name) for name in SecurityRecord.model_fields})
         for row in rows[:limit]
     ]
     return SecurityPage(items=items, next_cursor=_next_cursor(rows, limit))

@@ -8,6 +8,7 @@ unnoticed.
 import base64
 import hashlib
 import json
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -17,16 +18,16 @@ import rfc8785
 from app.platform.audit import canonical
 from app.platform.audit.canonical import CheckpointFields, CheckpointKind, Stream
 from app.platform.audit.signing import CheckpointSigner, SignatureVerifier
-from app.platform.audit.tables import audit_log, security_events
+from app.platform.audit.tables import AuditLogRecord, SecurityEventRecord
 from tests.api_support import audit_signer, audit_verifier
 
 ROW = dict.fromkeys(canonical.COLUMNS[Stream.SECURITY_EVENTS]) | {
     "id": "0199d0a4-0000-7000-8000-000000000001",
-    "recorded_at": "2026-10-10 08:00:00.123456+00",
-    "occurred_at": "2026-10-10 08:00:00.12+00",
+    "recorded_at": "2026-10-10T08:00:00.123Z",
+    "occurred_at": "2026-10-10T08:00:00.120Z",
     "event_type": "login.failed",
     "severity": "warning",
-    "details": '{"reason": "password"}',
+    "details": {"reason": "password"},
 }
 
 
@@ -46,10 +47,28 @@ def fields(**overrides: object) -> CheckpointFields:
     return CheckpointFields(**(values | overrides))  # type: ignore[arg-type]
 
 
-def test_columns_are_exactly_each_streams_columns() -> None:
-    # A new column changes every digest: it needs a new digest version, not a silent change.
-    assert canonical.COLUMNS[Stream.AUDIT_LOG] == tuple(audit_log.c.keys())
-    assert canonical.COLUMNS[Stream.SECURITY_EVENTS] == tuple(security_events.c.keys())
+def test_columns_are_exactly_each_streams_fields() -> None:
+    # A new field changes every digest: it needs a new digest version, not a silent change. The
+    # month is derived from `recorded_at`, so it is not sealed separately.
+    for stream, model in ((Stream.AUDIT_LOG, AuditLogRecord), (Stream.SECURITY_EVENTS, SecurityEventRecord)):
+        assert set(canonical.COLUMNS[stream]) == set(model.field_types()) - {"month"}
+
+
+def test_stored_values_have_one_canonical_form() -> None:
+    record = {
+        "_id": uuid.UUID("0199d0a4-0000-7000-8000-000000000001"),
+        "organization_id": None,
+        "recorded_at": datetime(2026, 10, 10, 8, 0, 0, 123000, tzinfo=UTC),
+        "email_attempted_hash": bytes(range(4)),
+        "details": {"attempts": 3, "nested": {"at": datetime(2026, 1, 1, tzinfo=UTC)}},
+    }
+    values = canonical.row_values(Stream.SECURITY_EVENTS, record)
+    assert values["id"] == "0199d0a4-0000-7000-8000-000000000001"
+    assert values["recorded_at"] == "2026-10-10T08:00:00.123Z"
+    assert values["email_attempted_hash"] == "00010203"
+    assert values["details"] == {"attempts": 3, "nested": {"at": "2026-01-01T00:00:00.000Z"}}
+    assert values["event_type"] is None
+    assert set(values) == set(canonical.COLUMNS[Stream.SECURITY_EVENTS])
 
 
 def test_row_digest_is_version_then_canonical_json() -> None:
@@ -110,18 +129,17 @@ def test_checkpoint_hash_covers_every_field() -> None:
     assert len(hashes) == len(changes)
 
 
-def test_anchor_body_is_the_checkpoint_with_hash_and_signature() -> None:
+def test_export_body_is_the_checkpoint_with_hash_and_signature() -> None:
     signer = audit_signer()
     base = fields()
     digest = canonical.checkpoint_hash(base)
     signature = signer.sign(digest)
-    body = json.loads(canonical.anchor_body(base, signature))
+    body = json.loads(canonical.export_body(base, signature))
     assert body["checkpoint_hash"] == digest.hex()
     assert base64.b64decode(body["signature"]) == signature
     assert {key: body[key] for key in canonical.checkpoint_document(base)} == canonical.checkpoint_document(
         base
     )
-    assert base.anchor_object_key == "audit_log/000000000007.json"
 
 
 def test_signatures_verify_only_with_the_named_key() -> None:
@@ -155,7 +173,3 @@ def test_month_helpers() -> None:
     assert canonical.month_key(datetime(2026, 12, 31, 23, 59, tzinfo=UTC)) == "2026-12"
     assert canonical.month_end("2026-12") == datetime(2027, 1, 1, tzinfo=UTC)
     assert canonical.add_months(datetime(2026, 11, 1, tzinfo=UTC), 14) == datetime(2028, 1, 1, tzinfo=UTC)
-    assert canonical.partition_name(Stream.AUDIT_LOG, "2026-01") == "audit_log_p2026_01"
-    assert canonical.key_of_partition(Stream.AUDIT_LOG, "audit_log_p2026_01") == "2026-01"
-    for name in ("audit_log_p2026_13", "audit_log_default", "security_events_p2026_01", "audit_log_p2026-01"):
-        assert canonical.key_of_partition(Stream.AUDIT_LOG, name) is None

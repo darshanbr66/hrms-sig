@@ -13,14 +13,12 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Final
+from typing import Any, Final
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.modules.leave.models import LeaveLedgerEntry, LeaveRequest, LeaveRequestDay, LeaveType, RequestStatus
+from app.modules.leave.models import LeaveLedgerEntry, LeaveRequest, LeaveType, RequestStatus
 from app.modules.people import public as people
 from app.platform.csvfile import Cell
+from app.platform.db import Document, Session, decode, encode_filter
 
 REQUESTS_HEADER: Final = (
     "employee_code",
@@ -49,36 +47,46 @@ class TakenRow:
     pending: Decimal
 
 
-async def _types(session: AsyncSession) -> dict[uuid.UUID, str]:
-    return dict((await session.execute(select(LeaveType.id, LeaveType.name))).all())
+async def sums_by_type(
+    session: Session, model: type[Document], field: str, match: dict[str, Any]
+) -> dict[tuple[uuid.UUID, uuid.UUID], Decimal]:
+    """The exact sum of a decimal field per employee and leave type (Decimal128 arithmetic)."""
+    pipeline = [
+        {"$match": encode_filter(model, match)},
+        {"$group": {"_id": {"e": "$employee_id", "t": "$leave_type_id"}, "total": {"$sum": f"${field}"}}},
+    ]
+    return {
+        (row["_id"]["e"], row["_id"]["t"]): decode(Decimal, row["total"])
+        for row in await session.aggregate(model, pipeline)
+    }
+
+
+async def _types(session: Session) -> dict[uuid.UUID, str]:
+    return {leave_type.id: leave_type.name for leave_type in await session.find(LeaveType, {})}
 
 
 async def taken(
-    session: AsyncSession, colleagues: list[people.Colleague], start: date, end: date
+    session: Session, colleagues: list[people.Colleague], start: date, end: date
 ) -> list[TakenRow]:
     ids = [c.id for c in colleagues]
     if not ids:
         return []
-    rows = await session.execute(
-        select(
-            LeaveRequest.employee_id,
-            LeaveRequest.leave_type_id,
-            LeaveRequest.status,
-            func.sum(LeaveRequestDay.portion),
-        )
-        .join(LeaveRequestDay, LeaveRequestDay.leave_request_id == LeaveRequest.id)
-        .where(
-            LeaveRequest.employee_id.in_(ids),
-            LeaveRequest.status.in_([*_TAKEN, RequestStatus.PENDING.value]),
-            LeaveRequestDay.counted.is_(True),
-            LeaveRequestDay.date >= start,
-            LeaveRequestDay.date <= end,
-        )
-        .group_by(LeaveRequest.employee_id, LeaveRequest.leave_type_id, LeaveRequest.status)
+    requests = await session.find(
+        LeaveRequest,
+        {
+            "employee_id": {"$in": ids},
+            "status": {"$in": [*_TAKEN, RequestStatus.PENDING.value]},
+            "start_date": {"$lte": end},
+            "end_date": {"$gte": start},
+        },
     )
     sums: dict[tuple[uuid.UUID, uuid.UUID], list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])
-    for employee_id, type_id, status, days in rows.all():
-        sums[(employee_id, type_id)][0 if status in _TAKEN else 1] += Decimal(days)
+    for request in requests:
+        days = sum(
+            (day.portion for day in request.day_rows() if day.counted and start <= day.date <= end), ZERO
+        )
+        if days:
+            sums[(request.employee_id, request.leave_type_id)][0 if request.status in _TAKEN else 1] += days
     types = await _types(session)
     by_id = {c.id: c for c in colleagues}
     return sorted(
@@ -91,21 +99,17 @@ async def taken(
 
 
 async def request_rows(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date
 ) -> list[list[Cell]]:
     colleagues, _ = await people.employed_colleagues(
-        session, people.employee_id_column().in_(list(employee_ids)), on=end, since=start
+        session, {people.EMPLOYEE_ID_FIELD: {"$in": list(employee_ids)}}, on=end, since=start
     )
     by_id = {c.id: c for c in colleagues}
     types = await _types(session)
-    requests = await session.scalars(
-        select(LeaveRequest)
-        .where(
-            LeaveRequest.employee_id.in_(list(by_id)),
-            LeaveRequest.end_date >= start,
-            LeaveRequest.start_date <= end,
-        )
-        .order_by(LeaveRequest.start_date, LeaveRequest.id)
+    requests = await session.find(
+        LeaveRequest,
+        {"employee_id": {"$in": list(by_id)}, "end_date": {"$gte": start}, "start_date": {"$lte": end}},
+        sort=[("start_date", 1), ("id", 1)],
     )
     return [
         [
@@ -124,43 +128,20 @@ async def request_rows(
     ]
 
 
-async def balance_rows(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], on: date
-) -> list[list[Cell]]:
+async def balance_rows(session: Session, employee_ids: Collection[uuid.UUID], on: date) -> list[list[Cell]]:
     colleagues, _ = await people.employed_colleagues(
-        session, people.employee_id_column().in_(list(employee_ids)), on=on, since=EARLIEST
+        session, {people.EMPLOYEE_ID_FIELD: {"$in": list(employee_ids)}}, on=on, since=EARLIEST
     )
     ids = [c.id for c in colleagues]
     if not ids:
         return []
-    balances = {
-        (row[0], row[1]): Decimal(row[2])
-        for row in (
-            await session.execute(
-                select(
-                    LeaveLedgerEntry.employee_id,
-                    LeaveLedgerEntry.leave_type_id,
-                    func.sum(LeaveLedgerEntry.amount),
-                )
-                .where(LeaveLedgerEntry.employee_id.in_(ids))
-                .group_by(LeaveLedgerEntry.employee_id, LeaveLedgerEntry.leave_type_id)
-            )
-        ).all()
-    }
-    pending = {
-        (row[0], row[1]): Decimal(row[2])
-        for row in (
-            await session.execute(
-                select(
-                    LeaveRequest.employee_id,
-                    LeaveRequest.leave_type_id,
-                    func.sum(LeaveRequest.days_requested),
-                )
-                .where(LeaveRequest.employee_id.in_(ids), LeaveRequest.status == RequestStatus.PENDING.value)
-                .group_by(LeaveRequest.employee_id, LeaveRequest.leave_type_id)
-            )
-        ).all()
-    }
+    balances = await sums_by_type(session, LeaveLedgerEntry, "amount", {"employee_id": {"$in": ids}})
+    pending = await sums_by_type(
+        session,
+        LeaveRequest,
+        "days_requested",
+        {"employee_id": {"$in": ids}, "status": RequestStatus.PENDING.value},
+    )
     types = await _types(session)
     rows: list[list[Cell]] = []
     for colleague in colleagues:

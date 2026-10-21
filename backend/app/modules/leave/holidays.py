@@ -18,10 +18,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.leave.models import Holiday, HolidayCalendar, HolidayKind, LocationHolidayCalendar
 from app.modules.org import public as org
 from app.modules.people import public as people
@@ -31,7 +27,7 @@ from app.platform.authz.context import Actor
 from app.platform.authz.engine import Authorizer, Granted
 from app.platform.clock import Clock
 from app.platform.concurrency import check_version
-from app.platform.db import Database
+from app.platform.db import CASE_INSENSITIVE, Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 
 MAX_RANGE_DAYS: Final = 366
@@ -82,27 +78,19 @@ class HolidayService:
 
     async def calendars(self, year: int | None) -> list[CalendarSummary]:
         async with self._db.unit_of_work() as session:
-            query = select(HolidayCalendar).order_by(
-                HolidayCalendar.year.desc(), func.lower(HolidayCalendar.name)
+            calendars = await session.find(
+                HolidayCalendar,
+                {} if year is None else {"year": year},
+                sort=[("year", -1), ("name", 1)],
+                collation=CASE_INSENSITIVE,
             )
-            if year is not None:
-                query = query.where(HolidayCalendar.year == year)
-            calendars = list(await session.scalars(query))
             ids = [calendar.id for calendar in calendars]
-            counts: dict[tuple[uuid.UUID, str], int] = {
-                (calendar_id, kind): count
-                for calendar_id, kind, count in (
-                    await session.execute(
-                        select(Holiday.calendar_id, Holiday.kind, func.count())
-                        .where(Holiday.calendar_id.in_(ids))
-                        .group_by(Holiday.calendar_id, Holiday.kind)
-                    )
-                ).all()
-            }
+            counts: dict[tuple[uuid.UUID, str], int] = {}
+            for holiday in await session.find(Holiday, {"calendar_id": {"$in": ids}}):
+                key = (holiday.calendar_id, holiday.kind)
+                counts[key] = counts.get(key, 0) + 1
             locations: dict[uuid.UUID, list[uuid.UUID]] = {}
-            for row in await session.scalars(
-                select(LocationHolidayCalendar).where(LocationHolidayCalendar.calendar_id.in_(ids))
-            ):
+            for row in await session.find(LocationHolidayCalendar, {"calendar_id": {"$in": ids}}):
                 locations.setdefault(row.calendar_id, []).append(row.location_id)
         return [
             CalendarSummary(
@@ -118,21 +106,13 @@ class HolidayService:
         async with self._db.unit_of_work() as session:
             return await self._detail(session, calendar_id)
 
-    async def _detail(self, session: AsyncSession, calendar_id: uuid.UUID) -> CalendarDetail:
-        calendar = await session.get(HolidayCalendar, calendar_id, populate_existing=True)
+    async def _detail(self, session: Session, calendar_id: uuid.UUID) -> CalendarDetail:
+        calendar = await session.get(HolidayCalendar, calendar_id)
         if calendar is None:
             raise ProblemError(ProblemType.NOT_FOUND)
-        holidays = list(
-            await session.scalars(
-                select(Holiday).where(Holiday.calendar_id == calendar_id).order_by(Holiday.date)
-            )
-        )
-        location_ids = list(
-            await session.scalars(
-                select(LocationHolidayCalendar.location_id).where(
-                    LocationHolidayCalendar.calendar_id == calendar_id
-                )
-            )
+        holidays = await session.find(Holiday, {"calendar_id": calendar_id}, sort=[("date", 1)])
+        location_ids = await session.distinct(
+            LocationHolidayCalendar, "location_id", {"calendar_id": calendar_id}
         )
         names = await org.unit_names(session, location_ids=location_ids)
         return CalendarDetail(calendar, holidays, names.locations)
@@ -153,24 +133,21 @@ class HolidayService:
             placement = await people.placement(session, actor.employee_id, self._authz.today())
             if placement is None:
                 return []
-            rows = (
-                await session.execute(
-                    select(Holiday, HolidayCalendar.name)
-                    .join(HolidayCalendar, HolidayCalendar.id == Holiday.calendar_id)
-                    .join(
-                        LocationHolidayCalendar,
-                        LocationHolidayCalendar.calendar_id == HolidayCalendar.id,
-                    )
-                    .where(
-                        LocationHolidayCalendar.location_id == placement.location_id,
-                        HolidayCalendar.status == "active",
-                        Holiday.date >= start,
-                        Holiday.date <= end,
-                    )
-                    .order_by(Holiday.date)
+            calendar_ids = await session.distinct(
+                LocationHolidayCalendar, "calendar_id", {"location_id": placement.location_id}
+            )
+            calendars = {
+                calendar.id: calendar.name
+                for calendar in await session.find(
+                    HolidayCalendar, {"id": {"$in": calendar_ids}, "status": "active"}
                 )
-            ).all()
-        return [EmployeeHoliday(row[0], row[1]) for row in rows]
+            }
+            holidays = await session.find(
+                Holiday,
+                {"calendar_id": {"$in": list(calendars)}, "date": {"$gte": start, "$lte": end}},
+                sort=[("date", 1)],
+            )
+        return [EmployeeHoliday(holiday, calendars[holiday.calendar_id]) for holiday in holidays]
 
     # --- changes -------------------------------------------------------------------------------
 
@@ -264,7 +241,7 @@ class HolidayService:
             session.add(holiday)
             try:
                 await session.flush()
-            except IntegrityError as exc:
+            except UniqueViolationError as exc:
                 raise _field(
                     "date",
                     "holiday.date_taken",
@@ -378,16 +355,9 @@ class HolidayService:
             _refuse_archived(calendar)
             if not (await org.unit_names(session, location_ids=[location_id])).locations:
                 raise _field("location_id", "holiday.unknown_location", "Choose an existing location.")
-            current = (
-                await session.scalars(
-                    select(LocationHolidayCalendar)
-                    .where(
-                        LocationHolidayCalendar.location_id == location_id,
-                        LocationHolidayCalendar.year == calendar.year,
-                    )
-                    .with_for_update()
-                )
-            ).first()
+            current = await session.find_one(
+                LocationHolidayCalendar, {"location_id": location_id, "year": calendar.year}, for_update=True
+            )
             if current is not None and current.calendar_id == calendar_id:
                 return await self._detail(session, calendar_id)
             previous = current.calendar_id if current else None
@@ -424,14 +394,9 @@ class HolidayService:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "holiday.manage")
             calendar = await self._locked(session, calendar_id, expected_version)
-            current = (
-                await session.scalars(
-                    select(LocationHolidayCalendar).where(
-                        LocationHolidayCalendar.location_id == location_id,
-                        LocationHolidayCalendar.calendar_id == calendar.id,
-                    )
-                )
-            ).first()
+            current = await session.find_one(
+                LocationHolidayCalendar, {"location_id": location_id, "calendar_id": calendar.id}
+            )
             if current is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
             await session.delete(current)
@@ -450,13 +415,11 @@ class HolidayService:
     # --- helpers -------------------------------------------------------------------------------
 
     async def _locked(
-        self, session: AsyncSession, calendar_id: uuid.UUID, expected_version: int
+        self, session: Session, calendar_id: uuid.UUID, expected_version: int
     ) -> HolidayCalendar:
         """The calendar, locked and checked against the version the change was based on. Every
         change to the calendar or its holidays and locations moves its version on."""
-        calendar = await session.get(
-            HolidayCalendar, calendar_id, with_for_update=True, populate_existing=True
-        )
+        calendar = await session.get(HolidayCalendar, calendar_id, for_update=True)
         if calendar is None:
             raise ProblemError(ProblemType.NOT_FOUND)
         check_version(calendar.version, expected_version)
@@ -465,15 +428,15 @@ class HolidayService:
         return calendar
 
     @staticmethod
-    async def _entry(session: AsyncSession, calendar_id: uuid.UUID, holiday_id: uuid.UUID) -> Holiday:
-        holiday = await session.get(Holiday, holiday_id, with_for_update=True, populate_existing=True)
+    async def _entry(session: Session, calendar_id: uuid.UUID, holiday_id: uuid.UUID) -> Holiday:
+        holiday = await session.get(Holiday, holiday_id, for_update=True)
         if holiday is None or holiday.calendar_id != calendar_id:
             raise ProblemError(ProblemType.NOT_FOUND)
         return holiday
 
     async def _record(
         self,
-        session: AsyncSession,
+        session: Session,
         actor: Actor,
         context: RequestContext,
         granted: Granted,
@@ -507,12 +470,10 @@ def _refuse_archived(calendar: HolidayCalendar) -> None:
         raise _conflict("holiday.calendar_archived", "This calendar is archived. Restore it to change it.")
 
 
-async def _refuse_archive_in_use(session: AsyncSession, calendar_id: uuid.UUID) -> None:
+async def _refuse_archive_in_use(session: Session, calendar_id: uuid.UUID) -> None:
     """Archiving a calendar a location still uses would silently take its holidays and working
     days away from those employees, past dates included (day status is derived when read)."""
-    in_use = (
-        await session.execute(select(func.count()).where(LocationHolidayCalendar.calendar_id == calendar_id))
-    ).scalar_one()
+    in_use = await session.count(LocationHolidayCalendar, {"calendar_id": calendar_id})
     if in_use:
         uses = "location uses" if in_use == 1 else "locations use"
         raise _conflict(
@@ -521,11 +482,11 @@ async def _refuse_archive_in_use(session: AsyncSession, calendar_id: uuid.UUID) 
         )
 
 
-async def _flush(session: AsyncSession) -> None:
+async def _flush(session: Session) -> None:
     try:
         await session.flush()
-    except IntegrityError as exc:
-        if "uq_holiday_calendars_name_year" in str(exc.orig):
+    except UniqueViolationError as exc:
+        if exc.index == "uq_holiday_calendars_name_year":
             raise _conflict(
                 "holiday.calendar_exists", "A calendar with this name already exists for that year."
             ) from exc

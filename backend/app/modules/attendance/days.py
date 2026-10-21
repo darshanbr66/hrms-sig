@@ -16,9 +16,6 @@ from decimal import Decimal
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance import timeline
 from app.modules.attendance.derive import DayContext, DaySummary, derive_day
 from app.modules.attendance.models import (
@@ -31,6 +28,7 @@ from app.modules.attendance.schedule import Schedule, policy_values, shift_times
 from app.modules.attendance.timeline import EventType
 from app.modules.leave import public as leave
 from app.modules.org import public as org
+from app.platform.db import Session
 
 MAX_RANGE_DAYS: Final = 93
 UTC: Final = ZoneInfo("UTC")
@@ -66,13 +64,11 @@ def dates(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
 
-async def voided_ids(session: AsyncSession, event_ids: Collection[uuid.UUID]) -> set[uuid.UUID]:
+async def voided_ids(session: Session, event_ids: Collection[uuid.UUID]) -> set[uuid.UUID]:
     if not event_ids:
         return set()
     return set(
-        await session.scalars(
-            select(AttendanceEventVoid.event_id).where(AttendanceEventVoid.event_id.in_(set(event_ids)))
-        )
+        await session.distinct(AttendanceEventVoid, "event_id", {"event_id": {"$in": list(set(event_ids))}})
     )
 
 
@@ -83,7 +79,7 @@ def effective(events: Sequence[DayEvent]) -> list[timeline.Event]:
 
 
 async def judge(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
 ) -> dict[uuid.UUID, list[JudgedDay]]:
     """Every date from `start` to `end` (inclusive) for each employee, oldest first."""
     ids = set(employee_ids)
@@ -92,16 +88,10 @@ async def judge(
     schedule = await Schedule.load(session, ids, start, end)
     location_ids = {job.location_id for e in schedule.employments.values() for job in e.jobs}
     zones = await org.location_time_zones(session, location_ids)
-    rows = list(
-        await session.scalars(
-            select(AttendanceEvent)
-            .where(
-                AttendanceEvent.employee_id.in_(ids),
-                AttendanceEvent.work_date >= start,
-                AttendanceEvent.work_date <= end,
-            )
-            .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
-        )
+    rows = await session.find(
+        AttendanceEvent,
+        {"employee_id": {"$in": list(ids)}, "work_date": {"$gte": start, "$lte": end}},
+        sort=[("occurred_at", 1), ("id", 1)],
     )
     voided = await voided_ids(session, [row.id for row in rows])
     by_day: dict[tuple[uuid.UUID, date], list[DayEvent]] = defaultdict(list)
@@ -111,17 +101,15 @@ async def judge(
     working_days = await leave.working_day_dates(session, location_ids, start, end)
     portions = await leave.leave_portions(session, ids, start, end)
     pending = {
-        (row[0], row[1])
-        for row in (
-            await session.execute(
-                select(AttendanceCorrection.employee_id, AttendanceCorrection.work_date).where(
-                    AttendanceCorrection.employee_id.in_(ids),
-                    AttendanceCorrection.status == CorrectionStatus.PENDING.value,
-                    AttendanceCorrection.work_date >= start,
-                    AttendanceCorrection.work_date <= end,
-                )
-            )
-        ).all()
+        (row.employee_id, row.work_date)
+        for row in await session.find(
+            AttendanceCorrection,
+            {
+                "employee_id": {"$in": list(ids)},
+                "status": CorrectionStatus.PENDING.value,
+                "work_date": {"$gte": start, "$lte": end},
+            },
+        )
     }
 
     judged: dict[uuid.UUID, list[JudgedDay]] = {}

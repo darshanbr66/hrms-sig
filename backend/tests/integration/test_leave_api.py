@@ -8,13 +8,18 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy.exc import DBAPIError
+from pymongo.errors import OperationFailure
 
+from app.modules.leave.models import LeaveLedgerEntry, LeavePolicy
+from app.modules.notify.models import EmailOutbox
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
+from app.platform.db import AppendOnlyError, GuardedUpdateError
 from tests.api_support import Account, Api
 from tests.people_data import OrgUnits, add_job, create_employee, create_org_units, fake_code
 
@@ -208,22 +213,22 @@ async def test_leave_types_and_policies_are_configured_by_hr_admins_only(api: Ap
         )
         assert stale.status_code == 412
 
-    actions = await api.fetch(
-        "SELECT action FROM audit.audit_log WHERE action LIKE 'leave.%' AND actor_user_id = :id "
-        "ORDER BY recorded_at, id",
-        id=admin.user_id,
+    actions = await api.records(
+        AuditLogRecord,
+        {"action": {"$regex": "^leave[.]"}, "actor_user_id": admin.user_id},
+        sort=[("recorded_at", 1), ("id", 1)],
     )
-    assert [a for (a,) in actions] == [
+    assert [row.action for row in actions] == [
         "leave.type.created",
         "leave.policy.created",
         "leave.policy.created",
         "leave.type.updated",
     ]
-    with pytest.raises(DBAPIError):
-        await api.execute(
-            "UPDATE leave.leave_policies SET accrual_amount = 99 WHERE leave_type_id = :id",
-            id=leave_type["id"],
-        )
+    # A policy version is never edited beyond closing it.
+    with pytest.raises(GuardedUpdateError):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            [policy, *_] = await session.find(LeavePolicy, {"leave_type_id": uuid.UUID(leave_type["id"])})
+            policy.accrual_amount = Decimal("99.00")
 
 
 # --- allocation and adjustments --------------------------------------------------------------------
@@ -245,11 +250,8 @@ async def test_allocation_gives_each_eligible_employee_the_policy_amount_once(ap
             "5.00",
             True,
         )
-    entries = await api.fetch(
-        "SELECT entry_type, amount FROM leave.leave_ledger WHERE employee_id = :id",
-        id=w.employee.employee_id,
-    )
-    assert [(e, str(a)) for e, a in entries] == [("accrual", "5.00")]
+    entries = await api.records(LeaveLedgerEntry, {"employee_id": w.employee.employee_id})
+    assert [(row.entry_type, str(row.amount)) for row in entries] == [("accrual", "5.00")]
 
 
 async def test_hr_adjusts_with_a_reason_never_their_own_balance(api: Api) -> None:
@@ -291,14 +293,21 @@ async def test_hr_adjusts_with_a_reason_never_their_own_balance(api: Api) -> Non
     async with api.client() as client:
         await api.sign_in(client, w.manager)
         assert (await client.post(path, json=body, headers=key())).status_code == 403
-    [(reason,)] = await api.fetch(
-        "SELECT reason FROM audit.audit_log WHERE action = 'leave.balance.adjusted' "
-        "AND subject_employee_id = :id ORDER BY recorded_at LIMIT 1",
-        id=w.employee.employee_id,
+    [adjusted, *_] = await api.records(
+        AuditLogRecord,
+        {"action": "leave.balance.adjusted", "subject_employee_id": w.employee.employee_id},
+        sort=[("recorded_at", 1)],
     )
-    assert reason == body["reason"]
-    with pytest.raises(DBAPIError):
-        await api.execute("DELETE FROM leave.leave_ledger WHERE employee_id = :id", id=w.employee.employee_id)
+    assert adjusted.reason == body["reason"]
+    # The ledger is append-only for the application and for the API's database user.
+    with pytest.raises(AppendOnlyError):  # noqa: PT012 (the delete raises)
+        async with api.database.unit_of_work() as session:
+            [entry, *_] = await session.find(LeaveLedgerEntry, {"employee_id": w.employee.employee_id})
+            await session.delete(entry)
+    with pytest.raises(OperationFailure, match="not authorized"):
+        await api.database.collection("leave_ledger").delete_many(
+            {"organization_id": api.organization_id, "employee_id": w.employee.employee_id}
+        )
 
 
 # --- the request lifecycle --------------------------------------------------------------------------
@@ -336,13 +345,10 @@ async def test_a_request_reserves_days_and_the_manager_approves_it(api: Api) -> 
     w = await world(api)
     await allocate(api, w)
     request = await submit_reserving(api, w)
-    outbox = await api.fetch(
-        "SELECT template_data FROM notify.email_outbox WHERE user_id = :id AND template = 'leave.request'",
-        id=w.manager.user_id,
-    )
+    outbox = await api.records(EmailOutbox, {"user_id": w.manager.user_id, "template": "leave.request"})
     assert len(outbox) == 1
-    assert outbox[0][0]["event"] == "submitted"
-    assert "Test family event" not in str(outbox[0][0])
+    assert (outbox[0].template_data or {})["event"] == "submitted"
+    assert "Test family event" not in str(outbox[0].template_data)
 
     path = f"/api/v1/leave-requests/{request['id']}"
     async with api.client() as client:
@@ -384,15 +390,11 @@ async def test_a_request_reserves_days_and_the_manager_approves_it(api: Api) -> 
     for message in (to_manager, to_employee):
         assert "Test family event" not in message.body
 
-    reads = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log WHERE action = 'leave.request.reason_read' AND target_id = :id",
-        id=request["id"],
+    assert (
+        await api.count("audit_log", {"action": "leave.request.reason_read", "target_id": request["id"]}) == 1
     )
-    assert reads == [(1,)]
-    decided = await api.fetch(
-        "SELECT action, changes::text FROM audit.audit_log "
-        "WHERE target_id = :id AND action = 'leave.request.approved'",
-        id=request["id"],
+    decided = await api.records(
+        AuditLogRecord, {"target_id": request["id"], "action": "leave.request.approved"}
     )
     assert len(decided) == 1
 
@@ -629,14 +631,9 @@ async def test_two_approvers_deciding_at_once_leave_one_decision(api: Api) -> No
             b.post(f"/api/v1/leave-requests/{request['id']}/reject", json={"note": "Test"}, headers=key()),
         )
     assert sorted(r.status_code for r in responses) == [200, 409]
-    decisions = await api.fetch(
-        "SELECT count(*) FROM leave.leave_decisions WHERE leave_request_id = :id", id=request["id"]
-    )
-    assert decisions == [(1,)]
-    usage = await api.fetch(
-        "SELECT count(*) FROM leave.leave_ledger WHERE leave_request_id = :id", id=request["id"]
-    )
-    assert usage[0][0] in (0, 1)
+    request_id = uuid.UUID(request["id"])
+    assert await api.count("leave_decisions", {"leave_request_id": request_id}) == 1
+    assert await api.count("leave_ledger", {"leave_request_id": request_id}) in (0, 1)
 
 
 async def test_concurrent_requests_cannot_overdraw_the_balance(api: Api) -> None:

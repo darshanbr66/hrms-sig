@@ -1,78 +1,49 @@
 # Local services for development. Every port is bound to 127.0.0.1.
-# Start with: docker compose --env-file .env -f infra/compose.yaml up -d --wait
+# Start with: docker compose -f infra/compose.yaml up -d --wait
+#
+# MongoDB runs as a single-member replica set: the application's units of work are
+# multi-document transactions, which a standalone server refuses. It has no authentication and
+# listens on 127.0.0.1 only; it holds obviously fake local data. Connect with
+#   MONGODB_URI=mongodb://127.0.0.1:27017/?replicaSet=rs0&directConnection=true
+# (run-backend.ps1 sets this for you). Atlas is never needed for local development.
 #
 # ClamAV scans uploaded documents. It needs about 1.5 GB of memory and downloads its signatures
 # on first start, so it runs only with the `scan` profile:
-#   docker compose --env-file .env -f infra/compose.yaml --profile scan up -d --wait
-# Without it, uploaded documents stay "being checked" and cannot be downloaded (fail closed).
+#   docker compose -f infra/compose.yaml --profile scan up -d --wait
+# Without it, uploads are refused (DOCUMENT_UPLOADS_ENABLED=false, the default).
 
 name: hrms
 
 services:
-  postgres:
-    image: postgres:18.6
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
-      HRMS_DB_MIGRATOR_PASSWORD: ${HRMS_DB_MIGRATOR_PASSWORD:?set HRMS_DB_MIGRATOR_PASSWORD in .env}
-      HRMS_DB_APP_PASSWORD: ${HRMS_DB_APP_PASSWORD:?set HRMS_DB_APP_PASSWORD in .env}
-      HRMS_DB_WORKER_PASSWORD: ${HRMS_DB_WORKER_PASSWORD:?set HRMS_DB_WORKER_PASSWORD in .env}
-      HRMS_DB_AUDIT_RETENTION_PASSWORD: ${HRMS_DB_AUDIT_RETENTION_PASSWORD:?set HRMS_DB_AUDIT_RETENTION_PASSWORD in .env}
+  mongo:
+    image: mongo:8.0.34
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:27017:27017"
     volumes:
-      - postgres-data:/var/lib/postgresql
-      - ./db/bootstrap-roles.sql:/hrms-bootstrap/bootstrap-roles.sql:ro
-      - ./db/local-init.sh:/docker-entrypoint-initdb.d/10-hrms-bootstrap.sh:ro
+      - mongo-data:/data/db
+    # Initiates the replica set on the first check (an initiated set is left alone); healthy
+    # once this member is primary.
     healthcheck:
-      test: ["CMD", "pg_isready", "--username", "postgres", "--dbname", "hrms"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status() } catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] }) }
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 5s
 
-  redis:
-    image: redis:7.2.16
-    # The custom entrypoint bypasses the image script that drops root, so set the user here.
-    user: redis
-    entrypoint: ["/bin/sh", "/hrms-redis/start.sh"]
-    environment:
-      REDIS_RATELIMIT_PASSWORD: ${REDIS_RATELIMIT_PASSWORD:?set REDIS_RATELIMIT_PASSWORD in .env}
-    ports:
-      - "127.0.0.1:6380:6379"
-    volumes:
-      - ./redis:/hrms-redis:ro
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning --user hrms_ratelimit --pass \"$$REDIS_RATELIMIT_PASSWORD\" ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  # Local mail catcher: the worker's outbox sends here (SMTP 1025); read mail at http://127.0.0.1:8025.
+  # Local mail catcher, for EMAIL_TRANSPORT=smtp (SMTP 1025); read mail at http://127.0.0.1:8025.
   mailpit:
     image: axllent/mailpit:v1.31.3
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
-
-  # Local S3 with Object Lock in compliance mode, for the audit checkpoint anchors
-  # (docs/security-architecture.md §8.1). RustFS, Apache-2.0, pinned by digest. Locally the
-  # worker uses the emulator's root credentials; staging and production use credentials that
-  # can only write and read objects. Create the bucket once with
-  # backend/scripts/create_local_anchor_bucket.py (docs/local-development.md).
-  rustfs:
-    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
-    environment:
-      RUSTFS_ACCESS_KEY: ${AUDIT_ANCHOR_ACCESS_KEY_ID:?set AUDIT_ANCHOR_ACCESS_KEY_ID in .env}
-      RUSTFS_SECRET_KEY: ${AUDIT_ANCHOR_SECRET_ACCESS_KEY:?set AUDIT_ANCHOR_SECRET_ACCESS_KEY in .env}
-    ports:
-      - "127.0.0.1:9000:9000"
-    volumes:
-      - rustfs-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
 
   clamav:
     image: clamav/clamav:1.4.3
@@ -89,6 +60,5 @@ services:
       start_period: 300s
 
 volumes:
-  postgres-data:
-  rustfs-data:
+  mongo-data:
   clamav-data:

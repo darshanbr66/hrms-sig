@@ -12,9 +12,11 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-from sqlalchemy.exc import DBAPIError
+from pymongo.errors import OperationFailure
 
+from app.modules.attendance.models import AttendanceEventVoid, AttendancePolicy
 from app.platform.authz.roles import RoleKey
+from app.platform.db import AppendOnlyError, GuardedUpdateError
 from tests.api_support import Account, Api
 from tests.people_data import OrgUnits, add_job, create_employee, create_org_units, fake_code
 
@@ -184,11 +186,11 @@ async def test_shifts_and_policies_are_configured_by_hr_admins_only(api: Api) ->
             ("2030-06-01", None),
         }
     # Versions are never edited beyond closing them.
-    with pytest.raises(DBAPIError):
-        await api.execute(
-            "UPDATE attendance.attendance_policies SET grace_minutes = 0 WHERE id = :id",
-            id=first.json()["id"],
-        )
+    with pytest.raises(GuardedUpdateError):  # noqa: PT012 (the commit raises)
+        async with api.database.unit_of_work() as session:
+            policy = await session.get(AttendancePolicy, uuid.UUID(first.json()["id"]))
+            assert policy is not None
+            policy.grace_minutes = 0 if policy.grace_minutes else 1
 
 
 async def test_setup_lists_who_has_no_shift_or_policy(api: Api) -> None:
@@ -298,10 +300,8 @@ async def test_days_are_judged_and_a_correction_is_approved_without_losing_the_o
         assert approved.json()["correction"]["status"] == "approved"
         again = await client.post(f"/api/v1/attendance/corrections/{correction_id}/approve", json={})
         assert again.json()["code"] == "correction.already_decided"
-    [(reason_reads,)] = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log "
-        "WHERE action = 'attendance.correction.reason_read' AND target_id = :id",
-        id=correction_id,
+    reason_reads = await api.count(
+        "audit_log", {"action": "attendance.correction.reason_read", "target_id": str(correction_id)}
     )
     assert reason_reads >= 1
 
@@ -341,13 +341,15 @@ async def test_days_are_judged_and_a_correction_is_approved_without_losing_the_o
             ("CLOCK_OUT", True),
             ("CLOCK_OUT", False),
         ]
-    [(stored,)] = await api.fetch(
-        "SELECT count(*) FROM attendance.attendance_events WHERE employee_id = :id", id=t.employee.employee_id
-    )
-    assert stored == 3
-    with pytest.raises(DBAPIError):
-        await api.execute(
-            "DELETE FROM attendance.attendance_event_voids WHERE event_id = :id", id=clock_out["id"]
+    assert await api.count("attendance_events", {"employee_id": t.employee.employee_id}) == 3
+    # A void is append-only for the application and for the API's database user.
+    with pytest.raises(AppendOnlyError):  # noqa: PT012 (the delete raises)
+        async with api.database.unit_of_work() as session:
+            [void] = await session.find(AttendanceEventVoid, {"event_id": uuid.UUID(clock_out["id"])})
+            await session.delete(void)
+    with pytest.raises(OperationFailure, match="not authorized"):
+        await api.database.collection("attendance_event_voids").delete_many(
+            {"organization_id": api.organization_id, "event_id": uuid.UUID(clock_out["id"])}
         )
 
 

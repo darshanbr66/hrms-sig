@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import pyotp
 
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import PASSWORD, Api, link_token
 from tests.people_data import fake_code
@@ -130,19 +131,10 @@ async def test_hr_admin_sets_up_the_organization_and_onboards_the_first_employee
         await activate(api, browser, link_token(message))
         await check_employee_reach(browser, employee_id, body)
 
-    org_actions = {
-        row[0]
-        for row in await api.fetch(
-            "SELECT action FROM audit.audit_log WHERE target_id IN (:a, :b, :c)",
-            a=units["locations"],
-            b=units["departments"],
-            c=units["designations"],
-        )
-    }
+    unit_ids = [str(units[name]) for name in ("locations", "departments", "designations")]
+    org_actions = {row.action for row in await api.records(AuditLogRecord, {"target_id": {"$in": unit_ids}})}
     assert org_actions == {"org.location.created", "org.department.created", "org.designation.created"}
-    [(permission,)] = await api.fetch(
-        "SELECT permission_used FROM audit.audit_log "
-        "WHERE subject_employee_id = :id AND action = 'employee.created'",
-        id=employee_id,
+    [created] = await api.records(
+        AuditLogRecord, {"subject_employee_id": uuid.UUID(str(employee_id)), "action": "employee.created"}
     )
-    assert permission == "employee.create"
+    assert created.permission_used == "employee.create"

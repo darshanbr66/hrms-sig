@@ -1,8 +1,9 @@
 """Who is acting: the authenticated account, its session and its effective permissions.
 
-An Actor is built once per request from PostgreSQL (session, role assignments, derived
-roles); nothing is cached between requests, so a revocation or an expired assignment applies
-on the next request (docs/authorization-model.md §1).
+An Actor is built once per request from MongoDB (session, role assignments, derived roles);
+nothing is cached between requests, so a revocation or an expired assignment applies on the
+next request (docs/authorization-model.md §1). An actor belongs to exactly one organization,
+and every decision about it is made inside that organization.
 
 While an elevation or break-glass applies, `grant_request_id` names it, and every audit
 record the actor writes carries it (`audit_actor`), so an elevated session can be reviewed
@@ -41,6 +42,7 @@ UNRESTRICTED = Constraint()
 
 @dataclass(frozen=True, slots=True)
 class Actor:
+    organization_id: uuid.UUID
     user_id: uuid.UUID
     session_id: uuid.UUID
     session_scope: SessionScope

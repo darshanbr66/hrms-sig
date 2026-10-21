@@ -1,58 +1,52 @@
 # Production deployment
 
-Status (2026-10-19): **proposed, not applied.** Nothing has been created in any cloud account, no
-database has been migrated and nothing is deployed. This document describes the smallest
-production setup that fits the existing code, the decisions still open, and the manual runbook.
-Every step that creates or changes a cloud resource needs the project owner's approval first.
+Status (2026-10-20): **proposed, not applied.** Nothing is deployed, and the live Atlas database
+`hrms` has not been migrated, written to or configured by this work. This document describes the
+production setup that fits the code after ADR-030, the decisions still open, and the manual
+runbook. Every step that creates or changes a cloud resource needs the project owner's approval
+first.
 
-Hosting is ADR-023 (still pending). This proposal: the SPA on **Vercel**, the API, worker,
-ClamAV and the migration job on **Render**, **PostgreSQL 18** (Render Postgres, subject to the
-checks in §2), **AWS S3** for documents, exports and the write-once audit anchors, **Resend**
-for email over the existing SMTP sender, and a **TLS Redis** for rate-limit counters.
+Architecture (ADR-030, decided by the project owner on 2026-10-20): the SPA on **Vercel**, the
+API on **Render** (one Docker web service that also runs the scheduled jobs), **MongoDB Atlas**
+(`Cluster0`, database `hrms`) for all data including files, and **Resend's HTTPS API** for email.
+No PostgreSQL, Redis, AWS or S3. The earlier PostgreSQL proposal is in this file's Git history
+(commit `f442d13`).
 
 ## 1. What the code requires (verified in the repository)
 
 | Area | Requirement | Where |
 |---|---|---|
-| Frontend | React 19 + Vite SPA, pnpm 12.8.1 (`packageManager`), Node ≥ 20.19, `pnpm build` → `frontend/dist`, client-side routing (every unknown path serves `index.html`) | `frontend/package.json`, `src/app/App.tsx` |
-| Same origin | SPA at `/`, API at `/api/v1`, health at `/api/health/*`. No CORS anywhere; cookies are `__Host-` (host-only, `Secure`, `SameSite`); unsafe requests need `X-Requested-With: sv-web` and an `Origin` equal to `APP_BASE_URL` | `app/platform/csrf.py`, `modules/identity/router.py` |
-| API | FastAPI on uvicorn, `app.main:app_factory`, listens on `$PORT`; liveness `/api/health/live`, readiness `/api/health/ready` (database only, §12) | `app/main.py`, `app/platform/health.py` |
-| Worker | `python -m app.worker`, Procrastinate on PostgreSQL. Its schedules run inside the process (email every minute, audit sealing every minute, checkpoints hourly, verification daily, leave accrual daily, scans and exports every minute), so it must run continuously and never sleep | `app/worker.py` |
-| Database | **PostgreSQL 18** exactly or later: `uuidv7()` defaults, `transaction_timeout`; extensions `citext`, `btree_gist`, `pg_trgm`; four login roles (`hrms_migrator` with `CREATEROLE`, `hrms_app`, `hrms_worker`, `hrms_audit_retention`) created by `infra/db/bootstrap-roles.sql`; migrations only through Alembic as `hrms_migrator` (27 revisions, `0001`–`0027`, forward-only in production) | `migrations/versions/`, `docs/database-design.md` §11 |
-| TLS | In `staging`/`production` the processes refuse to start unless every PostgreSQL URL has `sslmode=verify-full`, `REDIS_URL` is `rediss://`, `APP_BASE_URL` and any S3 endpoint are `https`, SMTP is `tls` or `starttls`, `LOG_LEVEL` is not `DEBUG` and API docs are off | `app/platform/config.py` |
-| Redis | Rate-limit counters only, TTL-bound, HMAC-ed keys; auth limits fail closed when Redis is down | `docs/architecture.md` §3.1 |
-| Storage | S3 API. One private bucket for documents and exports (presigned 60 s downloads, path-style addressing); one **Object Lock (compliance)** bucket with versioning for audit anchors | `app/platform/files.py`, `app/platform/storage.py` |
-| Scanning | ClamAV daemon on TCP 3310; required when deployed; unscanned files cannot be downloaded | `app/platform/scanning.py` |
-| Email | SMTP from the worker's outbox (retries, nothing lost when the provider is down) | `app/platform/email.py` |
-| Operators | `python -m app.cli bootstrap-super-admins` (prints secret invite links) and `audit-verify` | `app/cli.py` |
-
-Documentation compared with the code during this review: `architecture.md` §11 said readiness
-checks the database and storage, the code checks the database only (now documented as intended,
-§12); `security-architecture.md` §5 said no library injects `<style>` elements, React Aria does
-(two fixed rules, now allowed by hash, §8); the deployment topology in `architecture.md` §10
-assumed a reverse proxy (Caddy or nginx) in front of everything, which this proposal replaces
-with Vercel.
+| Frontend | React 19 + Vite SPA, pnpm (`packageManager`), Node ≥ 20.19, `pnpm build` → `frontend/dist`, client-side routing (every unknown path serves `index.html`) | `frontend/package.json` |
+| Same origin | SPA at `/`, API at `/api/v1`, health at `/api/health/*`, file downloads at `/api/v1/files/<token>`. No CORS; cookies are `__Host-`; unsafe requests need `X-Requested-With: sv-web` and an `Origin` equal to `APP_BASE_URL` | `app/platform/csrf.py`, `app/platform/files.py` |
+| API | FastAPI on uvicorn, `app.main:app_factory`, listens on `$PORT`; liveness `/api/health/live`, readiness `/api/health/ready` (MongoDB answers and, with `RUN_JOBS_IN_API=true`, the jobs are running: their heartbeat is under 16 minutes old) | `app/main.py`, `app/platform/health.py`, `app/platform/jobs.py` |
+| Jobs | Email outbox, audit sealing, checkpoints, verification, witness and retention, exports, leave accrual, grant expiry, document scans. With `RUN_JOBS_IN_API=true` they run inside the API process on their own database connections (`MONGODB_WORKER_URI`); otherwise `python -m app.worker` | `app/platform/jobs.py`, `app/worker.py` |
+| Database | MongoDB 8 as a **replica set** (multi-document transactions; Atlas clusters always are). Collections, `$jsonSchema` validators and indexes are applied by `python -m app.cli migrate`, as the migration user | `app/platform/schema.py`, `migrations/__init__.py` |
+| TLS | In `staging`/`production` the processes refuse to start unless every MongoDB URI uses TLS (`mongodb+srv://`, or `tls=true`) without `tlsInsecure`/`tlsAllowInvalidCertificates` and names a database user, `APP_BASE_URL` is `https`, `LOG_LEVEL` is not `DEBUG` and API docs are off | `app/platform/config.py` |
+| Refused at start | Production without `AUDIT_WITNESS_EMAILS`; staging and production with audit retention (`MONGODB_AUDIT_RETENTION_URI` or a retention period) while `RUN_JOBS_IN_API=true`; a worker or retention URI that signs in as the same database user as `MONGODB_URI`; the database name `hrms` anywhere but production | `app/platform/config.py` |
+| Rate limits | Sliding-log counters in MongoDB with a TTL index; authentication, download and export limits fail closed (`503`) when the database is unreachable | `app/platform/ratelimit.py` |
+| Files | GridFS bucket `files` in the same database, scoped to the organization; 60-second signed same-origin download links (`DOWNLOAD_LINK_HMAC_KEY`) | `app/platform/files.py` |
+| Scanning | ClamAV on TCP 3310 while uploads are on. Without it set `DOCUMENT_UPLOADS_ENABLED=false`: uploads are refused (`503 documents.uploads_disabled`) and nothing is stored | `app/platform/scanning.py` |
+| Email | Resend HTTPS API (`EMAIL_TRANSPORT=resend`, `RESEND_API_KEY`, `EMAIL_FROM`); SMTP is refused outside `local` and `test`. Mail is written to the outbox in the business transaction and sent by the jobs with retries | `app/platform/email.py` |
+| Operators | `python -m app.cli migrate`, `create-organization`, `bootstrap-super-admins`, `audit-verify`, `audit-export-checkpoints`; every command that changes data needs `--confirm-database <MONGODB_DATABASE>` | `app/cli.py` |
 
 ## 2. Decisions and blockers before go-live
 
-Each of these stops a working or safe production deployment. None is solved by weakening a
-check; the code refuses to start rather than run without TLS, scanning or storage.
+None of these is solved by weakening a check: the code refuses to start rather than run without
+TLS, without a separate worker user, or with uploads on and no scanner.
 
 | # | Blocker | Why | Options (owner decides) |
 |---|---|---|---|
-| B1 | **Client addresses behind Vercel** | Vercel forwards `/api` to Render; Render's proxy adds Vercel's egress address to `X-Forwarded-For`. Vercel publishes no fixed egress ranges, so the API cannot trust that hop and every employee appears to come from a few Vercel addresses. The per-IP sign-in rule then blocks *everyone* for 15 minutes after a handful of failures from anywhere, password resets are limited to 10 per hour for the whole company, and audit and login history record Vercel's address. | (a) **Recommended:** a code change, reviewed as security-sensitive: Vercel adds a secret header on every forwarded request (`vercel.json` `routes` with a request-header transform); the API refuses requests without it (except health checks) and, only when it matches, takes the visitor address from Vercel's `x-real-ip`. (b) Serve the SPA from the API's own Render service instead of Vercel (one origin, one proxy hop; a code and build change). (c) Pilot only, accepted risk: raise the per-IP failure threshold in Settings; the per-account lockout in PostgreSQL still applies. |
-| B2 | **PostgreSQL TLS verification** | The code requires `sslmode=verify-full`. Render's internal connections use self-signed certificates and do not support `verify-full`. **Tested 2026-10-19 (phase 1, throwaway Render Postgres 18.6, Singapore):** the *external* host presents a Let's Encrypt certificate (`*.singapore-postgres.render.com`, issuer YR1, TLS 1.3); `verify-full` succeeds against the Mozilla bundle and the Windows store; plaintext is refused. `sslrootcert=system` failed from a Windows client (libpq there has no default store), so always name the bundle file. Not yet seen: verification from inside the Linux image against `/etc/ssl/certs/ca-certificates.crt` (first migration run shows it; a failure refuses to connect, it never falls back). | **Chosen:** external URLs with `sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt`, and the database IP allow list limited to the Render region's outbound addresses. |
-| B3 | **Database roles on Render** | **Tested 2026-10-19 (phase 1):** Render's default user is not superuser, has `CREATEROLE` and `CREATEDB`, `createrole_self_grant` is empty; creating the four roles, the `ADMIN OPTION` grants, the trusted extensions and the migrator's schema work all succeeded (rolled back). Found: the original `CREATE DATABASE … OWNER hrms_migrator` fails for a non-superuser on PostgreSQL 16+ (`must be able to SET ROLE "hrms_migrator"`), and run as that user `REVOKE ALL ON DATABASE … FROM PUBLIC` would silently leave PUBLIC's `CONNECT`/`TEMP`. | **Fixed in `bootstrap-roles.sql`:** the administrator takes `SET` (no `INHERIT`) on `hrms_migrator` for the database statements only, revokes as the owner, and gives the grant up. `tests/integration/test_bootstrap_roles.py` bootstraps as a superuser and as a Render-like administrator, then migrates to head and checks grants; the old file reproduces the error. The persistent phase 2 run on Render was stopped by the owner and not done: the first production bootstrap is the first real run (§6 has the pre- and post-checks). |
-| B4 | **Redis with TLS** | `REDIS_URL` must be `rediss://`. Render Key Value is TLS only on external connections (which need an IP allow list) and offers a single `default` user, not the restricted ACL user in `infra/redis/ratelimit.acl`. | (a) Render Key Value external URL (`rediss://`), allow list limited to the API's outbound addresses, persistence off, `maxmemory-policy volatile-ttl`. (b) A managed Redis/Valkey with TLS and ACL users in or near Singapore. |
-| B5 | **Committed database dump** | `hrms_local_test-pre-0027.dump` (a local test database: fake `@example.com` accounts, password hashes, encrypted MFA secrets, sessions, audit rows) was committed in `b6c5f1c` and is on `origin/main`. Removed from tracking in the deployment commit (approved 2026-10-19) and ignored by `*.dump`; it stays in the history. | History rewriting is not allowed here (no force push), so treat everything in it as exposed: never reuse local keys or passwords anywhere, and confirm the GitHub repository is private. |
-| B6 | **Anchor bucket retention** | Compliance-mode Object Lock cannot be shortened by anyone once set. Its default retention is the audit retention plus one year (`security-architecture.md` §8.1), and the audit retention period is still a Sigvitas input (`database-design.md` §9). | Sigvitas decides `AUDIT_LOG_RETENTION_MONTHS` and `SECURITY_EVENTS_RETENTION_MONTHS`; the bucket is created after that. |
-| B7 | **Region and data residency** | Render's closest region to India is Singapore; Render has no India region. `architecture.md` §10 defaults to an India region if Sigvitas operates there. | Sigvitas accepts Singapore for compute and database (S3 can stay in `ap-south-1`), or chooses another host. |
-| B8 | **Backups beyond PITR** | Product requirement: PITR of at least 7 days (Render: Pro workspace) **and** encrypted daily backups kept 35 days, restore tested quarterly. Render's logical exports are manual and kept 7 days. | A scheduled encrypted `pg_dump` to S3 needs a read-only backup role (a migration and grants change for approval); until then, PITR (7 days) plus a manual export before every migration. |
+| B1 | **Client addresses behind Vercel** | Vercel forwards `/api` to Render; Vercel publishes no fixed egress ranges, so the API cannot trust that hop and every employee appears to come from a few Vercel addresses. The per-address sign-in rule can then block everyone after a handful of failures, and login history records Vercel's address. | (a) **Recommended:** a secret header added by Vercel on forwarded requests, checked by the API before it trusts `x-real-ip` (security-sensitive code change, second review). (b) Serve the SPA from the Render service instead. (c) Pilot only, accepted risk: raise "Failed sign-in attempts from one network address" in Settings; the per-account lockout still applies. |
+| B2 | **Atlas custom roles** | Least privilege at the database (the API cannot update or remove audit records, attendance events, the ledger or histories; only the retention user removes audit records) exists only once the custom roles from `scripts/mongo_roles.py` are created and each process connects as its own user. The roles are tested against a local MongoDB 8 replica set; they have **not** been created or verified on Atlas. The Atlas free and Flex tiers restrict some features; confirm in Atlas that custom roles with collection-level actions can be created on `Cluster0`'s tier. | Create the roles and users (§4), then verify with the checks in §4. If the tier cannot hold them, upgrade the cluster or accept, in writing, that append-only is enforced by the application only. |
+| B3 | **Atlas tier, backups and storage** | The free tier (M0) has 512 MB of storage shared by records, audit and GridFS files, and no backups or point-in-time restore. Product requirement: PITR of at least 7 days and encrypted daily backups kept 35 days, restore tested quarterly. | A dedicated tier (M10 or above) with Cloud Backup and continuous backup before real employee data is entered. Until then: a pilot with no real personal data only, uploads off. |
+| B4 | **Audit witness recipients** | The S3 Object Lock anchors are gone. The daily witness email of the signed checkpoint heads protects against truncation of the audit trail only if the mailboxes in `AUDIT_WITNESS_EMAILS` belong to someone outside the HRMS administrators' control (an external auditor, a mailbox at another provider). It detects, it does not prevent; see ADR-030. Production refuses to start without at least one recipient. A head is witnessed only after its stream's checkpoint chain verifies; otherwise the email names the stream instead. | Name the recipients (the code only checks that the list is not empty). Optionally, an operator runs `audit-export-checkpoints` weekly to storage the database administrators cannot change. |
+| B5 | **Jobs inside the API** | One web service, no paid worker: the audit signing key, the Resend key and the worker's database user live in the internet-facing process (`security-architecture.md` §6.4 kept them apart). The audit retention user, the only one that can remove audit records, is **not** allowed there: with `RUN_JOBS_IN_API=true`, staging and production refuse `MONGODB_AUDIT_RETENTION_URI`, `AUDIT_LOG_RETENTION_MONTHS` and `SECURITY_EVENTS_RETENTION_MONTHS`, so **audit retention is off** and every audit record is kept. On Render's free plan the service sleeps after about 15 minutes idle, and the jobs (email, sealing, witness) stop with it. | Plan `starter` or above for `hrms-api` (`render.yaml`), so it never sleeps. A separate Background Worker (`RUN_JOBS_IN_API=false`, `python -m app.worker`) restores the separation when funded; only that worker may then hold the retention user and run retention. |
+| B6 | **Atlas network access** | Render's outbound addresses are shared ranges per region, not addresses of this service alone. An Atlas IP access list of those ranges still admits other Render customers to the login prompt; authentication and TLS remain the real controls. `0.0.0.0/0` is not acceptable. | The Render region's outbound ranges (Render dashboard → service → Connect → Outbound) on the Atlas access list, plus the operator's address only while migrating. Private endpoints need a dedicated tier. |
+| B7 | **Region and data residency** | Render has no India region (Singapore is closest); the Atlas cluster's region is whatever `Cluster0` was created in. | Confirm both regions and keep them the same or adjacent. |
+| B8 | **Committed database dump** | `hrms_local_test-pre-0027.dump` (fake local accounts, password hashes, encrypted MFA secrets) was committed in `b6c5f1c` and stays in the history. | Treat it as exposed: never reuse local keys or passwords; confirm the GitHub repository is private. |
 
-Smaller items to settle: the workspace plans and costs (§16); a staging environment (the
-documented process migrates staging before production; this proposal starts with production
-only for a small internal pilot, which is a deviation for the owner to accept); log retention
-of 30 days (Render's retention depends on the workspace plan; otherwise a log stream).
+Smaller items: workspace plans and costs (§16); a staging environment (a separate Atlas database
+such as `hrms_staging`, never `hrms`); log retention of 30 days.
 
 ## 3. Topology
 
@@ -61,340 +55,275 @@ Employee browser ──HTTPS──> Vercel  (https://<hrms domain>)
                               │  /assets, /index.html, SPA routes: static files, security headers
                               │  /api/*  ── external rewrite (30 s limit) ──┐
                                                                             ▼
-                              Render, region singapore, private network
-                              ├─ hrms-api     (web, Docker image, /api/health/ready)
-                              ├─ hrms-worker  (background worker, same image)
-                              ├─ hrms-clamav  (private service, clamav/clamav, TCP 3310)
-                              ├─ hrms-migrate (cron job, run by hand, same image)
-                              └─ hrms-db      (PostgreSQL 18)
+                              Render, one Docker web service
+                              └─ hrms-api  (API + scheduled jobs, RUN_JOBS_IN_API=true,
+                                            /api/health/ready)
                               External services over TLS:
-                              ├─ AWS S3: <files bucket> (private), <anchor bucket> (Object Lock)
-                              ├─ Redis with TLS (rate-limit counters)
-                              └─ Resend SMTP (smtp.resend.com:465)
+                              ├─ MongoDB Atlas Cluster0, database hrms
+                              │    hrms_app (requests), hrms_worker (jobs),
+                              │    migrator (operator only); no retention user (B5)
+                              └─ Resend HTTPS API (api.resend.com:443)
 ```
 
 The browser only ever talks to `https://<hrms domain>`: cookies stay first-party and host-only,
-the CSRF origin check compares against that origin, and there is no CORS. Vercel's 30-second
-limit on forwarded requests is enough: long work (exports, scans) runs in the worker. Uploads
-(at most 10 MB) pass through Vercel; test one on a slow connection during the pilot.
+the CSRF check compares against that origin, file downloads are same-origin paths, and there is
+no CORS.
 
-Why not the documented proxy (Caddy or nginx): Vercel serves the SPA and its headers; Render
-terminates TLS for the API. The request-size limits that proxy would have enforced (1 MB JSON,
-20 MB uploads) are enforced by the API itself for uploads; a general JSON body limit at the edge
-is not available on this topology and is listed as a risk.
+**Jobs inside the API, and what that costs.** The jobs start in the API's lifespan, at most one
+runner per process, and stop on shutdown. Each task claims its cron slot through a lease document
+in `job_leases`, so two instances, or a restart during a run, never run one slot twice; an
+interrupted slot is claimed again once its lease expires. Outbox messages, exports and scans are
+claimed one by one, so a retry does not resend what was sent. The jobs use their own database
+connections (`MONGODB_WORKER_URI`). That may be the same user and URI as `MONGODB_URI`; the
+user then holds the worker's privileges for request handling too (§4). What it does not give: the separation of keys between the internet-facing process and the worker (B5), and
+jobs on a service that sleeps.
 
-## 4. Repository files
+The jobs cannot stop silently. Any error while connecting, building the scheduler or running it
+is logged (`jobs.scheduler_failed`) and everything is restarted after 30 seconds. The scheduler
+beats a heartbeat on every 15-second tick and after every task; `/api/health/ready` answers 503
+once the heartbeat is older than a lease plus a minute (16 minutes), so Render takes the service
+out of rotation and restarts it. If the runner's task ends without a shutdown, it is logged as
+`jobs.runner_stopped` (critical), readiness fails at once and the process sends itself SIGTERM,
+so Render restarts it rather than serving requests without email, audit sealing or the witness.
 
-| File | Purpose |
-|---|---|
-| `render.yaml` | Render Blueprint: database, API, worker, ClamAV, migration job, with secrets as `sync: false` or Render-generated. Validated against Render's schema. |
-| `backend/Dockerfile`, `backend/.dockerignore` | One image for API, worker, migrations and operator commands; non-root; runtime dependencies only; uvicorn without its access log (tokens travel in invite and reset paths) and without proxy-header rewriting. |
-| `frontend/vercel.json` | Build settings, the `/api` rewrite to Render, SPA fallback, security headers and the SPA's Content-Security-Policy, caching rules. Validated against Vercel's schema. |
-| `frontend/scripts/check-deploy-config.mjs` | Runs before every Vercel build: refuses the placeholder API host, a non-https or path-changing rewrite, and any `VITE_` variable whose name looks like a secret. |
-| `frontend/playwright.csp.config.ts`, `frontend/e2e/production-csp.e2e.ts` | `pnpm test:csp`: builds the SPA and runs it under the headers from `vercel.json`, failing on any CSP violation. |
-| `infra/production.env.example` | Every production setting by service, with descriptions and no values. |
+## 4. Atlas database users and roles
 
-## 5. Creating the Render services (after approval)
+Each process connects as its own database user (Atlas → Database Access). Generate each password
+for production only.
 
-1. Choose the workspace plan (Pro for a 7-day PITR window, §2 B8) and confirm the region (B7).
-2. Settle B2 and B3 on a throwaway PostgreSQL 18 instance, then delete it.
-3. In Render: **New → Blueprint**, connect the GitHub repository, branch `main`, file
-   `render.yaml`. Review every service, plan and region before applying.
-4. Render asks for each `sync: false` value: enter them from the secret store (§7). Leave the
-   generated ones (`RATE_LIMIT_KEY_HMAC_KEY`, `EMAIL_LOOKUP_HMAC_KEY`) to Render.
-5. Do not start the worker or the API until the database is bootstrapped and migrated (§6, §11).
-   Every service has auto-deploy off; deploy them by hand in the order of §11.
-6. Record each service's outbound IP addresses (Render dashboard → service → Outbound) for the
-   database and Redis allow lists, if B2 (a) or B4 (a) is chosen.
+| User | Role | Used by |
+|---|---|---|
+| `hrms_migrator` | built-in `readWrite@hrms` and `dbAdmin@hrms` | `app.cli migrate`, from the operator machine only; never stored in Render |
+| `hrms_app` | custom `hrms_app` | `MONGODB_URI` on `hrms-api`; `create-organization` and `bootstrap-super-admins` |
+| `hrms_worker` | custom `hrms_worker` | `MONGODB_WORKER_URI` on `hrms-api` (the jobs); `audit-verify` |
+| `hrms_audit_retention` | custom `hrms_audit_retention` | `MONGODB_AUDIT_RETENTION_URI`, only on a separate worker once a retention period is set; never on `hrms-api` (B5). Create it only then |
 
-## 6. Database
+`MONGODB_URI` and `MONGODB_WORKER_URI` may name the same user with the same URI. That user needs
+the custom `hrms_worker` role, which holds every `hrms_app` privilege; the API's requests then run
+with the worker's privileges. Separate `hrms_app` and `hrms_worker` users remain the narrower
+choice.
 
-**Provision.** Render Postgres 18 (`hrms-db` in `render.yaml`, default database `hrms_admin`,
-external access closed by `ipAllowList: []`).
+The custom roles are generated from the code, so production gets exactly the roles the tests use:
 
-**Bootstrap the roles (once).** From an operator machine whose address is temporarily on the
-allow list (or the database's Render shell), as the default Render user, with four new random
-passwords from the secret store:
-
-```bash
-psql "<admin connection URL, sslmode=require or verify-full>" \
-  -v db_name=hrms \
-  -v migrator_password="$HRMS_DB_MIGRATOR_PASSWORD" \
-  -v app_password="$HRMS_DB_APP_PASSWORD" \
-  -v worker_password="$HRMS_DB_WORKER_PASSWORD" \
-  -v audit_retention_password="$HRMS_DB_AUDIT_RETENTION_PASSWORD" \
-  -f infra/db/bootstrap-roles.sql
+```powershell
+cd backend
+uv run python -m scripts.mongo_roles --database hrms > ..\.local-secrets\atlas-roles.json
 ```
 
-Before it, as the same user: `SHOW createrole_self_grant;` must be empty (otherwise the
-administrator would inherit every role it creates; stop). After it, this must return no rows
-(the administrator can no longer act as an HRMS role), and the database ACL must show no
-`PUBLIC` entry (`\l hrms`):
+Create each role in Atlas → Database Access → Custom Roles (or through the Atlas Administration
+API) with the privileges from that file. Then verify, before the first deploy, as each user from
+the operator machine (a short `mongosh` session):
 
-```sql
-SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
-WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = current_user)
-  AND r.rolname LIKE 'hrms_%' AND (m.inherit_option OR m.set_option);
+- `hrms_app`: inserting into `attendance_events` after migration succeeds; `updateOne` and
+  `deleteOne` on `attendance_events` and `audit_log` are refused (`Unauthorized`); `drop` of any
+  collection is refused.
+- `hrms_worker`: writes to `audit_chain_links` and `job_leases` succeed; `deleteOne` on
+  `audit_log` is refused.
+- `hrms_audit_retention`: nothing outside the audit collections.
+
+Record the result. Until all of these pass on Atlas, do not describe the audit trail or the
+append-only collections as protected at the database (ADR-030).
+
+## 5. Creating the Render service (after approval)
+
+1. Settle B2, B3, B5 and B7.
+2. Render: **New → Blueprint**, repository branch `main`, file `render.yaml`. It defines one web
+   service, `hrms-api`; review its plan and region before applying.
+3. Enter each `sync: false` value from the secret store (§7). Leave the generated keys
+   (`RATE_LIMIT_KEY_HMAC_KEY`, `EMAIL_LOOKUP_HMAC_KEY`, `DOWNLOAD_LINK_HMAC_KEY`) to Render.
+4. Do not deploy until the database is migrated (§6). Auto-deploy is off.
+5. Add the service's outbound ranges to the Atlas access list (B6).
+
+## 6. Migrations
+
+`python -m app.cli migrate` creates missing collections, sets each collection's validator and
+creates declared indexes, then applies numbered data migrations not yet recorded in
+`schema_migrations`. It never drops a collection or an index. It stops, changing nothing, if
+existing documents do not match a new validator or an index exists with another definition. Runs
+serialize on a lease, so two operators cannot migrate at once.
+
+From the operator machine, with its address temporarily on the Atlas access list, from
+`backend/` in PowerShell:
+
+```powershell
+$env:APP_ENV = "production"
+$env:MONGODB_DATABASE = "hrms"
+$env:MONGODB_URI = Read-Host "hrms_migrator URI" -AsSecureString |
+  ForEach-Object { [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($_)) }
+uv run python -m app.cli migrate --status
+uv run python -m app.cli migrate --confirm-database hrms
+uv run python -m app.cli migrate --status
+Remove-Item Env:MONGODB_URI
 ```
 
-If the script stops part-way, do not repair it by hand: delete the database instance and start
-again on a fresh one.
+Run it before the first deploy and before every deploy whose commit adds a migration or changes
+a model. Never run tests, `run-backend.cmd`, seeding or a restore of a local database against
+`hrms`; local and test settings refuse that name. Then remove the operator address from the
+access list.
 
-Then remove the operator address from the allow list. The four role URLs have the form
-`postgresql://<role>:<password>@<host>:5432/hrms?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt`
-(the image ships the system trust store; see B2 for which host).
-
-**Never** restore a local or test dump into production, never run `scripts/` seeding or
-`procrastinate schema --apply` against it, and never run `alembic downgrade` there (CLAUDE.md
-rule 20). Production starts empty: the only data the system creates itself is the permission
-catalog and roles from the migrations.
-
-**Backups.** Confirm PITR is active (Render: Recovery page) before every migration and record
-the time. Take a logical export from the Recovery page before each migration (kept 7 days).
-Restore drill, quarterly and before go-live: PITR into a new instance, point a temporary copy of
-the API at it with production settings, confirm sign-in and recent records, then delete it.
+**Backups** (dedicated tier only, B3): confirm continuous backup is on and record the time before
+every migration. Restore drill, quarterly and before go-live: restore to a new cluster, point a
+temporary copy of the API at it, confirm sign-in and recent records, then delete it.
 
 ## 7. Configuration and secrets
 
-`infra/production.env.example` lists every variable per service. Rules:
+`infra/production.env.example` lists every variable. Rules:
 
-- Generate every key and password for production only, on a trusted machine
-  (`infra/production.env.example` has the commands). Nothing from a local `.env`, the committed
-  dump or any test database is ever reused.
-- Keep a copy of `FIELD_ENCRYPTION_KEYS` and the audit signing key in the company's secret store,
+- Generate every key and password for production only (commands in that file). Nothing from a
+  local `.env`, `.local-secrets/` or any test database is reused.
+- Keep copies of `FIELD_ENCRYPTION_KEYS` and the audit signing key in the company's secret store
   outside Render: losing the field key makes every enrolled authenticator unreadable; losing the
   signing key ends checkpoint signing (rotation keeps the old public key listed).
-- Each service holds only its own credentials: the migrator URL only in `hrms-migrate`, the
-  signing key and SMTP key only in `hrms-worker`, the field keys only in `hrms-api`.
-- Vercel holds no application secrets. `ENABLE_EXPERIMENTAL_COREPACK=1` lets Vercel use the pnpm
-  version pinned in `package.json` (confirm Vercel supports pnpm 12; otherwise set the install
-  command to a supported version and record it).
-- Settings errors at startup name the variable and the rule, never the value
-  (`hide_input_in_errors`), so a misconfiguration does not print secrets into the logs.
+- `MONGODB_WORKER_URI` is required when deployed and may be the same URI as `MONGODB_URI` (§4).
+- The migrator URI is never stored in Render.
+- Vercel holds no application secrets.
+- Settings errors at startup name the variable and the rule, never the value.
 
 ## 8. Vercel
 
-1. New project from the GitHub repository; **Root Directory** `frontend`. `vercel.json` sets the
-   install, build and output settings (`pnpm install --frozen-lockfile`,
+1. New project from the GitHub repository; **Root Directory** `frontend`. `vercel.json` sets
+   install, build and output (`pnpm install --frozen-lockfile`,
    `node scripts/check-deploy-config.mjs && pnpm build`, `dist`).
-2. Replace `__RENDER_API_HOST__` in `frontend/vercel.json` with the Render API's host (for example
-   the `onrender.com` host shown for `hrms-api`, or a custom API host) in a reviewed commit. The
-   build refuses to run until then.
-3. Production domain: add `<hrms domain>` (a subdomain of the company domain), set its DNS as
-   Vercel instructs, and wait for the certificate. Set `APP_BASE_URL=https://<hrms domain>` on
-   `hrms-api` and `hrms-worker`. Unsafe requests from any other origin are refused, so the
-   `*.vercel.app` address cannot sign in or change anything.
-4. Preview deployments use the same `vercel.json`, so they forward to the production API. Turn on
-   Vercel **Deployment Protection** for previews, or disable previews, until a staging API exists.
-5. Headers (`vercel.json`): HSTS with preload, the SPA's CSP from `security-architecture.md` §5
-   (no storage origin is needed: downloads are top-level navigations to presigned URLs), plus the
-   two `sha256` hashes for React Aria's fixed `<style>` rules (touch-action on pressable elements;
-   overscroll on iOS while a dialog is open); `X-Frame-Options`, `nosniff`, `no-referrer`,
-   Permissions-Policy, COOP and CORP. `/api/*` keeps the API's own stricter headers and is never
-   cached (`no-store` from the API, and rewrite caching off). Hashed assets are cached for a year;
-   `index.html` revalidates every time.
-6. Run `pnpm test:csp` after any dependency upgrade: a React Aria change to those `<style>` rules
-   fails it.
+2. Replace `__RENDER_API_HOST__` in `frontend/vercel.json` with the API's `onrender.com` host in a
+   reviewed commit; the build refuses until then.
+3. Production domain: add `<hrms domain>`, set its DNS, wait for the certificate, then set
+   `APP_BASE_URL=https://<hrms domain>` on `hrms-api`. Unsafe requests from any other origin are
+   refused, so `*.vercel.app` cannot sign in.
+4. Previews forward to the production API: turn on Deployment Protection, or disable previews,
+   until a staging API exists.
+5. Headers (`vercel.json`): HSTS, the SPA's CSP with React Aria's two style hashes,
+   `X-Frame-Options`, `nosniff`, `no-referrer`, Permissions-Policy, COOP, CORP. `/api/*` keeps the
+   API's own headers and is never cached. Downloads are same-origin, so the CSP needs no storage
+   origin.
+6. Run `pnpm test:csp` after any dependency upgrade.
+7. Hobby is for non-commercial use only; a company system needs Pro.
 
 ## 9. Email (Resend)
 
-1. In Resend, add a sending domain, preferably a subdomain used only for the HRMS (for example
-   `hrms.<company domain>` or the one Resend suggests), in a region near the users.
-2. Add the DNS records Resend shows (SPF and DKIM; the return-path subdomain's MX/TXT) at the DNS
-   provider, and a DMARC record for the domain (`p=none` with reporting first, tightened after
-   the pilot). Wait until Resend shows the domain as verified.
-3. Create an API key with **sending access only**, restricted to that domain. It is the SMTP
-   password (`SMTP_PASSWORD`), held only by `hrms-worker`.
-4. `SMTP_FROM` uses the verified domain, for example `Sigvitas HRMS <hrms@<sending domain>>`.
-5. Render blocks outbound SMTP on free instances only; the worker runs on a paid plan. Resend
-   also accepts ports 2465/2587 if 465 is ever blocked.
-6. Failure handling is in the code: emails are written to the outbox in the same transaction as
-   the change and sent by the worker with retries, so a Resend outage delays mail and loses none.
-   Invite and reset links are built from `APP_BASE_URL`, never from a request.
+1. In Resend, add a sending domain used only for the HRMS (for example `hrms.<company domain>`).
+2. Add the SPF, DKIM and return-path records Resend shows, and a DMARC record (`p=none` with
+   reporting first). Wait until Resend shows the domain as verified.
+3. Create an API key with **sending access only**, restricted to that domain: `RESEND_API_KEY` on
+   `hrms-api`.
+4. `EMAIL_FROM` on the verified domain, for example `Sigvitas HRMS <hrms@<sending domain>>`.
+5. The API key travels over HTTPS (port 443), so Render's block on outbound SMTP ports does not
+   apply.
+6. Failures: messages wait in the outbox and are retried; a Resend outage delays mail and loses
+   none. Resend's answer is logged by status only, never with the message.
 
-## 10. Storage (AWS S3) and scanning
+## 10. Files and scanning
 
-**Files bucket** (`FILES_BUCKET`, region per B7, for example `ap-south-1`): Block Public Access
-on (account and bucket), default encryption SSE-S3 or SSE-KMS, Object Ownership "bucket owner
-enforced" (no ACLs), versioning on, no bucket policy granting public or cross-account access. An
-IAM user for the HRMS with only:
+Documents and exports are stored in GridFS in `hrms` (`files.files`, `files.chunks`), named by
+random keys, each tagged with its organization. Downloads go through the API: it authorizes and
+audits, then returns a same-origin link valid for 60 seconds, signed with
+`DOWNLOAD_LINK_HMAC_KEY`. Exports are removed after 24 hours by the jobs.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::<files bucket>/*"
-    }
-  ]
-}
-```
+GridFS shares the database's storage limit and backups (B3); it is not write-once storage.
 
-Presigned downloads are signed with these keys and live 60 seconds. Exports are deleted by the
-application; a lifecycle rule that expires noncurrent versions after a period Sigvitas chooses
-keeps versioning from growing without bound.
-
-**Anchor bucket** (`AUDIT_ANCHOR_BUCKET`, created after B6): Object Lock enabled at creation,
-default retention **COMPLIANCE**, days = audit retention + 1 year, versioning on (required by
-Object Lock), Block Public Access on. A separate IAM user with only:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"],
-      "Resource": "arn:aws:s3:::<anchor bucket>/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
-      "Resource": "arn:aws:s3:::<anchor bucket>"
-    }
-  ]
-}
-```
-
-No delete, no retention or legal-hold changes, no bucket configuration. Never the same keys as
-the files bucket.
-
-**ClamAV** (`hrms-clamav`): a private service on Render's private network only (no public
-address; clamd has no authentication, so it must never be exposed). The first start downloads
-signatures (minutes); until it answers, uploads stay "being checked" and cannot be downloaded.
-Pin the image by digest before go-live.
+ClamAV is not part of this deployment: `DOCUMENT_UPLOADS_ENABLED=false`, so uploads and new
+versions are refused and the UI says why; lists, categories and exports still work. Turning
+uploads on needs a ClamAV daemon reachable only privately from the API (clamd has no
+authentication), `CLAMAV_HOST`, and enough database storage.
 
 ## 11. Deploying (every release)
 
-Order from `database-design.md` §11. Nothing deploys on its own (auto-deploy is off).
-
-1. Confirm CI passed on the commit and that `vercel.json` names the right API host.
-2. Confirm PITR is active; record the time; take a logical export.
-3. **Migrate:** `hrms-migrate` → Deploy the commit, then **Trigger Run**. Read its log: it must end
-   at the expected head (`0027` today). If it fails, stop: the old worker and API keep running on
-   the old schema (expand/contract).
-4. **Worker:** deploy the commit to `hrms-worker`; its log shows every periodic task registered and
-   no errors. Never start a worker or API on a newer commit than the migrated schema: they do not
-   check the schema revision at startup (a startup check is proposed in §17).
-5. **API:** deploy the commit to `hrms-api`; Render waits for `/api/health/ready` before switching
-   traffic.
-6. **Frontend:** promote the Vercel production deployment of the same commit.
-7. Smoke tests (§13, first part).
+1. Confirm CI passed on the commit and `vercel.json` names the right API host.
+2. Record the backup time (B3).
+3. Migrate (§6).
+4. Deploy the commit to `hrms-api`; Render waits for `/api/health/ready`. Its log shows the jobs
+   starting. Never deploy a commit newer than the migrated database.
+5. Promote the Vercel production deployment of the same commit.
+6. Smoke tests (§13, first part).
 
 ## 12. Health checks, logs and alerts
 
-- `/api/health/live` (process up) and `/api/health/ready` (database reachable) reveal nothing but
-  `{"status":"ok"}` or a problem response. Readiness deliberately excludes Redis and object
-  storage: their failures degrade specific features (rate limits per §3.1; uploads, downloads and
-  exports return 503), and taking the API out of rotation would turn them into a full outage.
+- `/api/health/live` and `/api/health/ready` return only `{"status":"ok"}` or a problem response.
 - Logs are JSON on stdout with request IDs and route templates; secrets and personal fields are
-  redacted (`app/platform/logging.py`). uvicorn's own access log is off. Platform request logs
-  (Vercel, and Render's HTTP request logs on Pro workspaces) record raw paths, including the
-  token in `/invite/<token>` and `/api/v1/auth/password-reset/<token>`: limit who can read them.
-  Tokens are single-use and expire (lifetimes in Settings).
-- Alerts to set up before inviting employees: Render service failures and restarts, `hrms-api`
-  health check failures, failed worker jobs in its log, the `audit.chain_mismatch` security
-  event (the worker also emails it to super admins and auditors), Resend bounces and failures, Render Postgres disk and connection usage, and the audit alerts the worker already
-  emails to super admins and auditors. Keep application logs 30 days
-  (`security-architecture.md` §7): use a Render log stream if the workspace keeps less.
-- Error tracking (Sentry or similar) is not in the code; adding it needs a dependency decision and
-  must scrub bodies and personal data (`architecture.md` §11).
+  redacted. uvicorn's access log is off. Platform request logs (Vercel, Render) record raw paths,
+  including invite and reset tokens and `/api/v1/files/<token>`: limit who can read them. Tokens
+  are single-use or expire within 60 seconds.
+- Alerts before inviting employees: Render service failures and restarts, health check failures,
+  failed jobs in the log (`jobs.task_failed`, `jobs.scheduler_failed`, `jobs.runner_stopped`,
+  `health.jobs_unhealthy`), `audit.witness_withheld`, the `audit.chain_mismatch` security event
+  (also emailed to super admins and auditors), Resend bounces, Atlas storage, connection and
+  replication alerts.
 
 ## 13. Smoke tests and the first administrator
 
 **After the first deployment, before inviting anyone:**
 
-1. `curl -si https://<hrms domain>/api/health/ready` → `200 {"status":"ok"}`, with HSTS and the
-   API's CSP. `curl -si https://<hrms domain>/` → the SPA with the SPA's CSP and HSTS.
+1. `curl -si https://<hrms domain>/api/health/ready` → `200 {"status":"ok"}` with HSTS.
 2. `curl -si -X POST https://<hrms domain>/api/v1/auth/login` → `403` with `"code": "csrf"`.
-3. `curl -si https://<render api host>/api/v1/me` → `401` (direct access works but is
-   unauthenticated; after B1 (a) it is refused without Vercel's header).
-4. Browser: the sign-in page loads with no console errors (no CSP violations).
+3. `curl -si https://<render api host>/api/v1/me` → `401`.
+4. Browser: the sign-in page loads with no CSP violations.
 
-**Create the first two super admins** (two different people who do not need HR data, ADR-025),
-from Render's **Shell** on `hrms-api`, not as a job (job output is kept in the logs, and the
-links are secrets):
+**Create the organization and its first two super admins** (two people who do not need HR data,
+ADR-025), from the operator machine as `hrms_app`, never as a logged job (the links are secrets):
 
-```bash
-python -m app.cli bootstrap-super-admins --email <first person> --email <second person>
+```powershell
+$env:APP_ENV = "production"; $env:MONGODB_DATABASE = "hrms"; $env:APP_BASE_URL = "https://<hrms domain>"
+# $env:MONGODB_URI = the hrms_app URI, entered as in §6
+uv run python -m app.cli create-organization --name "Sigvitas" --slug sigvitas --confirm-database hrms
+uv run python -m app.cli bootstrap-super-admins --organization sigvitas --email <first> --email <second> --confirm-database hrms
+Remove-Item Env:MONGODB_URI
 ```
 
-Deliver each link to its owner over a trusted channel. Each sets a password and enrols an
-authenticator (MFA is mandatory); the command refuses to run again once super admins exist.
-Recovery: a super admin who loses their authenticator is reset by the other super admin (the
-administrator MFA reset, `security-architecture.md` §3); if both are locked out, the total
-lock-out recovery procedure is still to be written (§15). There is no backdoor account.
+Deliver each link over a trusted channel. Each person sets a password and enrols an
+authenticator; the command refuses to run again once super admins exist. There is no backdoor
+account.
 
-**Pilot acceptance (a small group, before inviting all employees):**
+**Pilot acceptance** (a small group, no real personal data while B3 is open):
 
 - [ ] Both super admins signed in with MFA; sign-out works; a new sign-in needs MFA again.
-- [ ] HR admin invited through the app; the email arrives from the verified domain with a link to
-      `https://<hrms domain>/invite/...`; activation requires an authenticator.
-- [ ] Account security page: login history shows each person's own public address (not a
-      Vercel or Render address; this checks B1).
-- [ ] Permissions: an employee cannot open HR or admin pages or call their APIs (403); a manager
-      sees only their team; a super admin sees no personal or salary data without an approved
-      elevation.
-- [ ] Attendance: clock in, break, clock out; the day shows the right times in the local zone.
-- [ ] Leave: request, approve, balance changes; the requester gets the notification email.
-- [ ] Documents: upload a PDF; it is "being checked", then downloadable; the download link stops
-      working after 60 seconds; another employee cannot download it; the EICAR test file is
-      blocked.
-- [ ] Exports: an export completes and downloads.
-- [ ] Password reset email arrives; the old sessions end.
-- [ ] `python -m app.cli audit-verify` (Render Shell on `hrms-worker`) reports OK for both streams
-      the next day.
-- [ ] Logs show no errors, no tokens and no personal data; alerts fire when tested.
-
-Only after the owner approves the pilot are the remaining employees invited.
+- [ ] An HR admin invited through the app; the email arrives from the verified domain; activation
+      requires an authenticator.
+- [ ] Login history shows each person's own address (checks B1).
+- [ ] Permissions: an employee gets 403 on HR and admin APIs; a manager sees only their team; a
+      super admin sees no personal data without an approved elevation.
+- [ ] Attendance, leave (request, approve, notification email), exports (download link expires
+      after 60 seconds), password reset (old sessions end).
+- [ ] Uploads are refused with "Document uploads are turned off until virus scanning is set up".
+- [ ] The next day: the witness email arrived at every `AUDIT_WITNESS_EMAILS` mailbox, and
+      `python -m app.cli audit-verify --witness <saved lines>` (as `hrms_worker`) reports OK.
+- [ ] Logs show no errors, tokens or personal data.
 
 ## 14. Rollback
 
-- **Frontend:** Vercel → Deployments → promote the previous production deployment (instant).
-- **API and worker:** Render → service → Deploys → redeploy the previous successful deploy. The
-  schema stays: every migration is expand/contract, so the previous code runs on the new schema.
-- **Migration failure:** the run stops at the failed revision inside its transaction (and its
-  `lock_timeout` of 5 s); fix forward with a new revision. Never `alembic downgrade` in
-  production.
-- **Bad data or a destructive migration:** PITR to a new instance at the recorded time, verify,
-  then point the services' database URLs at it (the roles and passwords come with the restore).
-  Expect data written after that time to be lost; announce it.
-- **Secrets leaked:** rotate the affected key or password (field keys by adding a new version and
-  keeping the old one; signing key by adding the new public key), revoke all sessions, review
-  the audit log.
+- **Frontend:** Vercel → promote the previous production deployment.
+- **API:** Render → Deploys → redeploy the previous successful deploy. Migrations only add
+  collections, validators, indexes and idempotent data changes, so the previous code runs on the
+  migrated database, unless a validator was tightened in a way the older code violates; such a
+  change ships only after the code that satisfies it.
+- **Migration failure:** it stops before changing anything that does not match; fix forward.
+- **Bad data:** restore to a new cluster from backup (B3), verify, point the URIs at it. Data
+  written after the restore point is lost; announce it.
+- **Secrets leaked:** rotate the key or password (field keys by adding a version; signing key by
+  adding the new public key), revoke all sessions, review the audit log.
 
 ## 15. Incident basics
 
-Who to call, in order: the project owner, then the second engineer. First actions: keep the
-evidence (do not delete logs or audit rows), stop the bleeding (rotate the leaked credential,
-disable the account, block the path), then restore service. Detailed runbooks (restore, key
-rotation, revoking sessions, MFA reset, break-glass, audit chain mismatch, Redis outage) are
-still to be written (`engineering-principles.md` §11).
+Who to call, in order: the project owner, then the second engineer. Keep the evidence (do not
+delete logs or audit records), stop the bleeding (rotate the credential, disable the account),
+then restore service. Runbooks for restore, key rotation, session revocation, MFA reset,
+break-glass and audit chain mismatch are still to be written (`engineering-principles.md` §11).
 
 ## 16. Costs and plan limits to confirm
 
-Prices change; confirm on the providers' pricing pages before approval. Categories:
+Prices change; confirm on the providers' pricing pages.
 
 | Service | What is paid for | Limits that matter |
 |---|---|---|
-| Render workspace | Seats; Pro needed for a 7-day PITR window | Log retention per plan |
-| `hrms-api`, `hrms-worker` | Instance plan (`render.yaml`: 0.5 CPU, 512 MB each) | Paid plans do not sleep; free ones do and block SMTP. Watch memory. |
-| `hrms-clamav` | 2 CPU / 4 GB plan and a 2 GB disk | ClamAV needs ~1.5 GB and more while reloading signatures; a disk prevents zero-downtime deploys of that service only |
-| `hrms-migrate` | Per-minute while running | — |
-| Render Postgres 18 | Instance plan and storage | Connections per plan; PITR 3 days (Hobby) or 7 days (Pro) |
-| Redis with TLS | Plan of the chosen provider | TLS and allow list (B4) |
-| Vercel | Plan (Hobby is for non-commercial use; a company system needs Pro) | 30 s limit on forwarded requests; request logs show paths |
-| AWS S3 | Storage, requests, data transfer out (downloads) | Object Lock retention cannot be shortened |
-| Resend | Monthly email volume | Domain verification; sending rate |
+| Render `hrms-api` | Instance plan (`starter` in `render.yaml`) | Free instances sleep (jobs stop) |
+| MongoDB Atlas | Cluster tier, backup | M0: 512 MB, no backups, feature limits (B2, B3) |
+| Vercel | Pro for a company system | 30 s limit on forwarded requests |
+| Resend | Monthly volume | Verified domain; sending rate |
 
 ## 17. Proposed follow-ups (not done, need approval)
 
-- B1 (a): origin secret and trusted visitor address (security-sensitive code, second review).
-- A startup or readiness check that the database is at the code's Alembic head, so a worker or
-  API never runs against an older schema.
-- A read-only backup role and an encrypted daily `pg_dump` to S3 (B8).
-- A staging environment with synthetic data, migrated before production.
-- Error tracking with scrubbing; uptime checks on `/api/health/ready` from outside.
-- An edge request-size limit for JSON bodies (Vercel has none configurable for rewrites).
+- B1 (a): origin secret and trusted visitor address (security-sensitive, second review).
+- A readiness check that the database's recorded migration version matches the code.
+- A separate Background Worker when funded (B5).
+- A staging database (`hrms_staging`) migrated before production.
+- Error tracking with scrubbing; external uptime checks on `/api/health/ready`.
+- Rewriting `docs/database-design.md`, `architecture.md` §3 and `security-architecture.md` §8.1
+  for MongoDB (ADR-030 lists where they are out of date).

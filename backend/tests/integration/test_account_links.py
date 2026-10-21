@@ -2,11 +2,15 @@
 `POST /users/{id}/employee-link`). All data is obviously fake (docs/database-design.md §10)."""
 
 import asyncio
+import json
 import uuid
 from datetime import timedelta
 
+from app.modules.identity.models import User
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Account, Api
+from tests.integration.test_dashboard_access import EXPECTED
 from tests.people_data import add_job, create_employee, create_org_units
 
 REASON = "Test: invited before the record existed"
@@ -19,9 +23,7 @@ async def employee_for(api: Api, account: Account) -> uuid.UUID:
         units = await create_org_units(session)
         employee = await create_employee(session, joined=today - timedelta(days=30))
         await add_job(session, units, employee, manager_id=None, effective_from=today - timedelta(days=30))
-    await api.execute(
-        "UPDATE people.employees SET work_email = :email WHERE id = :id", email=account.email, id=employee
-    )
+    assert await api.update("employees", {"_id": employee}, {"work_email": account.email}) == 1
     return employee
 
 
@@ -48,13 +50,16 @@ async def test_hr_links_an_account_with_step_up_and_a_reason_and_it_is_audited(a
         again = await client.post(path, json=link(employee))
         assert again.status_code == 200
 
-    rows = await api.fetch(
-        "SELECT action, permission_used, subject_employee_id, reason, changes::text FROM audit.audit_log "
-        "WHERE target_id = :id AND action = 'identity.user.employee_linked'",
-        id=str(target.user_id),
+    rows = await api.records(
+        AuditLogRecord, {"target_id": str(target.user_id), "action": "identity.user.employee_linked"}
     )
     assert len(rows) == 1
-    _action, permission, subject, reason, changes = rows[0]
+    permission, subject, reason, changes = (
+        rows[0].permission_used,
+        rows[0].subject_employee_id,
+        rows[0].reason,
+        json.dumps(rows[0].changes),
+    )
     assert (permission, subject, reason) == ("user.invite", employee, REASON)
     assert target.email not in changes
 
@@ -64,6 +69,34 @@ async def test_hr_links_an_account_with_step_up_and_a_reason_and_it_is_audited(a
         me = (await client.get("/api/v1/me")).json()
         assert me["employee_id"] == str(employee)
         assert (await client.get("/api/v1/me/profile")).status_code == 200
+
+
+async def test_an_account_invited_without_a_record_gets_the_employee_dashboard_once_linked(api: Api) -> None:
+    """An account invited from the user list has no employee record: no self-service data (the
+    dashboard says the account is not linked). Linked by HR, the same account loads every source
+    of the employee dashboard."""
+    hr = await api.create_account(roles=(RoleKey.HR_ADMIN.value,))
+    target = await api.create_account()
+    employee = await employee_for(api, target)
+    async with api.client() as client:
+        await api.sign_in(client, target)
+        assert (await client.get("/api/v1/me")).json()["employee_id"] is None
+        unlinked = {path: (await client.get(path)).status_code for path in EXPECTED["employee"]}
+    assert unlinked["/api/v1/attendance/today"] != 200
+    assert unlinked["/api/v1/me/leave/balances"] != 200
+
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        await api.step_up(client, hr)
+        linked = await client.post(f"/api/v1/users/{target.user_id}/employee-link", json=link(employee))
+        assert linked.status_code == 200, linked.text
+
+    async with api.client() as client:
+        await api.sign_in(client, target)
+        assert (await client.get("/api/v1/me")).json()["employee_id"] == str(employee)
+        got = {path: (await client.get(path)).status_code for path in EXPECTED["employee"]}
+        assert (await client.get("/api/v1/me/profile")).status_code == 200
+    assert got == EXPECTED["employee"]
 
 
 async def test_linking_is_refused_without_both_permissions(api: Api) -> None:
@@ -87,9 +120,7 @@ async def test_linking_is_refused_without_both_permissions(api: Api) -> None:
         await api.sign_in(client, narrow)
         await api.step_up(client, narrow)
         assert (await client.post(path, json=link(employee))).status_code == 404
-    assert (await api.fetch("SELECT employee_id FROM identity.users WHERE id = :id", id=target.user_id)) == [
-        (None,)
-    ]
+    assert [row.employee_id for row in await api.records(User, {"id": target.user_id})] == [None]
 
 
 async def test_conflicting_links_are_refused(api: Api) -> None:
@@ -104,7 +135,7 @@ async def test_conflicting_links_are_refused(api: Api) -> None:
     free_employee = await employee_for(api, await api.create_account())
     disabled = await api.create_account()
     disabled_employee = await employee_for(api, disabled)
-    await api.execute("UPDATE identity.users SET status = 'disabled' WHERE id = :id", id=disabled.user_id)
+    assert await api.update("users", {"_id": disabled.user_id}, {"status": "disabled"}) == 1
 
     async with api.client() as client:
         await api.sign_in(client, hr)
@@ -136,7 +167,9 @@ async def test_two_accounts_racing_for_one_employee_leave_one_link(api: Api) -> 
     employee = await employee_for(api, one)
     two = await api.create_account()
     # Both accounts carry the work email in turn would be impossible (emails are unique), so the
-    # race is the same account linked twice at once: one change, one audit row, no error.
+    # race is the same account linked twice at once: one change and one audit row. The second
+    # request either finds the link made (200) or collides with it and is told to retry (409
+    # concurrent_change: MongoDB fails the second writer instead of making it wait).
     async with api.client() as a, api.client() as b:
         for client in (a, b):
             await api.sign_in(client, hr)
@@ -145,12 +178,9 @@ async def test_two_accounts_racing_for_one_employee_leave_one_link(api: Api) -> 
             a.post(f"/api/v1/users/{one.user_id}/employee-link", json=link(employee)),
             b.post(f"/api/v1/users/{one.user_id}/employee-link", json=link(employee)),
         )
-        assert sorted(r.status_code for r in responses) == [200, 200]
+        outcomes = sorted((r.status_code, r.json().get("code")) for r in responses)
+        assert outcomes in ([(200, None), (200, None)], [(200, None), (409, "concurrent_change")])
         late = await a.post(f"/api/v1/users/{two.user_id}/employee-link", json=link(employee))
         assert late.status_code == 409
-    audit = await api.fetch(
-        "SELECT count(*) FROM audit.audit_log "
-        "WHERE target_id = :id AND action = 'identity.user.employee_linked'",
-        id=str(one.user_id),
-    )
-    assert audit == [(1,)]
+    query = {"target_id": str(one.user_id), "action": "identity.user.employee_linked"}
+    assert await api.count("audit_log", query) == 1

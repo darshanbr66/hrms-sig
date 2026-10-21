@@ -11,18 +11,15 @@
 import uuid
 from datetime import date
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance.days import dates
 from app.modules.attendance.emails import AttendanceEmails
 from app.modules.attendance.exports import DAYS_HEADER, SUMMARY_HEADER, day_rows, summary_rows
 from app.modules.attendance.schedule import Schedule, shift_times
 from app.modules.leave import public as leave
+from app.platform.db import Session
 
 
-async def weekly_off_dates(
-    session: AsyncSession, employee_id: uuid.UUID, start: date, end: date
-) -> set[date]:
+async def weekly_off_dates(session: Session, employee_id: uuid.UUID, start: date, end: date) -> set[date]:
     schedule = await Schedule.load(session, [employee_id], start, end)
     offs = set()
     for day in dates(start, end):

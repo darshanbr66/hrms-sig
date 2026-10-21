@@ -11,7 +11,7 @@ differ, the difference is noted. Run each command from the folder named above it
 
 | Tool | Version | Notes |
 |---|---|---|
-| Docker Desktop (Docker Engine with Compose v2) | Current | Runs PostgreSQL 18, Redis, the Mailpit mail catcher and the RustFS S3 emulator (write-once audit anchors). The backend tests also start their own containers. |
+| Docker Desktop (Docker Engine with Compose v2) | Current | Runs MongoDB 8 (a one-member replica set) and the Mailpit mail catcher. The backend tests also start their own MongoDB container. Atlas is never needed locally. |
 | [uv](https://docs.astral.sh/uv/) | Current | Installs and manages Python 3.13 for the backend (`backend/.python-version`). You do not need to install Python separately. |
 | Node.js | 20.19 or later (`frontend/package.json` `engines`) | |
 | pnpm | 12.8.1, through corepack (`frontend/package.json` `packageManager`) | Run `corepack enable` once; corepack then provides the pinned pnpm. |
@@ -19,8 +19,8 @@ differ, the difference is noted. Run each command from the folder named above it
 | An authenticator app | Any TOTP app, such as Google Authenticator, Microsoft Authenticator or 1Password | Every account, including local test accounts, must set up MFA. |
 | A browser | Chrome, Edge or Firefox | The session cookies are `Secure`; these browsers accept them on `http://localhost`. |
 
-Ports used on `127.0.0.1`: 5173 (web app), 8000 (API), 5433 (PostgreSQL), 6380 (Redis),
-1025 (Mailpit SMTP), 8025 (Mailpit inbox) and 9000 (RustFS S3). They must be free.
+Ports used on `127.0.0.1`: 5173 (web app), 8000 (API), 27017 (MongoDB), 1025 (Mailpit SMTP),
+8025 (Mailpit inbox), and 3310 (ClamAV, only with the `scan` profile). They must be free.
 
 ## 2. Environment setup (`.env`)
 
@@ -40,9 +40,8 @@ documents, tickets or chat.
    step 3.2) so that uv provides Python:
 
    ```powershell
-   # A password or token: the six passwords and nothing else
-   uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
-   # A base64 32-byte key: RATE_LIMIT_KEY_HMAC_KEY, EMAIL_LOOKUP_HMAC_KEY, FIELD_ENCRYPTION_KEYS
+   # A base64 32-byte key: RATE_LIMIT_KEY_HMAC_KEY, EMAIL_LOOKUP_HMAC_KEY,
+   # DOWNLOAD_LINK_HMAC_KEY, FIELD_ENCRYPTION_KEYS
    uv run python -c "import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"
    # The audit checkpoint signing key pair: prints AUDIT_SIGNING_KEY_ID,
    # AUDIT_SIGNING_PRIVATE_KEY and AUDIT_VERIFY_PUBLIC_KEYS, ready to paste
@@ -56,101 +55,102 @@ documents, tickets or chat.
 
    | Purpose | Variable | Local value |
    |---|---|---|
-   | PostgreSQL container superuser (first start only) | `POSTGRES_SUPERUSER_PASSWORD` | `<generated password>` |
-   | Database login roles | `HRMS_DB_MIGRATOR_PASSWORD`, `HRMS_DB_APP_PASSWORD`, `HRMS_DB_WORKER_PASSWORD`, `HRMS_DB_AUDIT_RETENTION_PASSWORD` | `<generated password>` each |
-   | Redis rate-limit user | `REDIS_RATELIMIT_PASSWORD` | `<generated password>` |
    | Environment | `APP_ENV` | `local` |
    | Logging | `LOG_LEVEL` | `INFO` |
    | Interactive API docs | `API_DOCS_ENABLED` | `true` to serve `/api/v1/docs` locally (refused in staging and production) |
    | Proxy trust | `TRUSTED_PROXY_CIDRS` | empty |
-   | Database connections | `DATABASE_URL_APP` | `postgresql://hrms_app:<HRMS_DB_APP_PASSWORD>@127.0.0.1:5433/hrms` |
-   | | `DATABASE_URL_WORKER` | `postgresql://hrms_worker:<HRMS_DB_WORKER_PASSWORD>@127.0.0.1:5433/hrms` |
-   | | `DATABASE_URL_MIGRATOR` | `postgresql://hrms_migrator:<HRMS_DB_MIGRATOR_PASSWORD>@127.0.0.1:5433/hrms` |
-   | | `DATABASE_URL_AUDIT_RETENTION` | `postgresql://hrms_audit_retention:<HRMS_DB_AUDIT_RETENTION_PASSWORD>@127.0.0.1:5433/hrms` |
-   | Rate limiter | `REDIS_URL` | `redis://hrms_ratelimit:<REDIS_RATELIMIT_PASSWORD>@127.0.0.1:6380/0` |
-   | | `RATE_LIMIT_KEY_HMAC_KEY` | `<generated base64 key>` |
+   | Database | `MONGODB_URI` | `mongodb://127.0.0.1:27017/?replicaSet=rs0&directConnection=true` (the Compose MongoDB; no user locally) |
+   | | `MONGODB_DATABASE` | `hrms_local`. **Never `hrms`**: that is the production database, and local and test settings refuse it |
+   | Jobs | `RUN_JOBS_IN_API` | `true` (the jobs run inside the API, as on Render); `false` with a separate worker (8) |
+   | | `MONGODB_WORKER_URI`, `MONGODB_AUDIT_RETENTION_URI` | empty locally (the jobs use `MONGODB_URI`) |
+   | Rate limiter | `RATE_LIMIT_KEY_HMAC_KEY` | `<generated base64 key>` |
+   | Download links | `DOWNLOAD_LINK_HMAC_KEY` | `<generated base64 key>` |
    | Web app origin (CSRF check, invite and reset links) | `APP_BASE_URL` | `http://localhost:5173` |
    | Field encryption (TOTP secrets) | `FIELD_ENCRYPTION_KEYS` | `{"1": "<generated base64 key>"}` |
    | | `FIELD_ENCRYPTION_ACTIVE_VERSION` | `1` |
    | Breached-password check (needs internet) | `HIBP_ENABLED` | `true`, or `false` when working offline |
-   | Keyed hash of attempted emails | `EMAIL_LOOKUP_HMAC_KEY` | `<generated base64 key>`, different from `RATE_LIMIT_KEY_HMAC_KEY` |
-   | Worker email (Mailpit) | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURITY` | `127.0.0.1` / `1025` / `none` |
-   | | `SMTP_FROM` | `hrms@example.com` |
+   | Keyed hash of attempted emails | `EMAIL_LOOKUP_HMAC_KEY` | `<generated base64 key>`; the three HMAC keys must all differ |
+   | Email | `EMAIL_TRANSPORT` | `smtp` (Mailpit). `resend` sends real email and is what deployed environments use |
+   | | `EMAIL_FROM` | `HRMS <hrms@example.com>` |
+   | | `RESEND_API_KEY` | empty locally (required with `resend`) |
+   | | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURITY` | `127.0.0.1` / `1025` / `none` |
    | | `SMTP_USERNAME`, `SMTP_PASSWORD` | empty (set both or neither) |
-   | Audit checkpoint signing (worker) | `AUDIT_SIGNING_KEY_ID`, `AUDIT_SIGNING_PRIVATE_KEY`, `AUDIT_VERIFY_PUBLIC_KEYS` | the three lines printed by `scripts.generate_audit_signing_key` |
-   | Write-once audit anchors (RustFS) | `S3_ENDPOINT_URL` / `S3_REGION` / `AUDIT_ANCHOR_BUCKET` | `http://127.0.0.1:9000` / `us-east-1` / `hrms-audit-anchors-local` |
-   | | `AUDIT_ANCHOR_ACCESS_KEY_ID`, `AUDIT_ANCHOR_SECRET_ACCESS_KEY` | an access key name and a `<generated password>`; they become the emulator's root credentials |
+   | Audit checkpoint signing (jobs) | `AUDIT_SIGNING_KEY_ID`, `AUDIT_SIGNING_PRIVATE_KEY`, `AUDIT_VERIFY_PUBLIC_KEYS` | the three lines printed by `scripts.generate_audit_signing_key` |
+   | Audit witness | `AUDIT_WITNESS_EMAILS` | empty, or a fake address; locally the witness goes to Mailpit |
    | Audit retention | `AUDIT_LOG_RETENTION_MONTHS`, `SECURITY_EVENTS_RETENTION_MONTHS` | empty (nothing is removed locally) |
-   | Private files bucket for documents and exports (RustFS) | `FILES_BUCKET` | `hrms-files-local` (a bucket per database, never the anchor bucket); leave all three empty to run without documents and exports |
-   | | `FILES_ACCESS_KEY_ID`, `FILES_SECRET_ACCESS_KEY` | locally the same values as `AUDIT_ANCHOR_ACCESS_KEY_ID` and `AUDIT_ANCHOR_SECRET_ACCESS_KEY` (the emulator's root credentials) |
-   | Virus scanning (ClamAV, worker) | `CLAMAV_HOST` / `CLAMAV_PORT` | `127.0.0.1` / `3310`; empty host means uploads stay "being checked" and are never downloadable |
+   | Document uploads | `DOCUMENT_UPLOADS_ENABLED` | `false` (uploads refused); `true` needs ClamAV |
+   | Virus scanning (ClamAV) | `CLAMAV_HOST` / `CLAMAV_PORT` | empty / `3310`; `127.0.0.1` with the `scan` profile |
 
-   The PostgreSQL and Redis passwords are read only when their containers are first created.
-   If you change them later, reset the local database (section 4.4).
+   Documents and exports are stored in GridFS in the local database, so there is no bucket to
+   create.
 
 ## 3. Repository setup and start-up
 
-### 3.1 Start the local services (repository root)
+### Windows shortcut (recommended)
 
-Start Docker Desktop and wait until it is running. Then:
+From the repository root:
 
 ```powershell
-docker compose --env-file .env -f infra/compose.yaml up -d --wait
+.\run-backend.cmd
 ```
 
-This starts PostgreSQL 18, Redis, Mailpit and RustFS and waits until they are healthy. The first start
-creates the database login roles from `infra/db/bootstrap-roles.sql`. To stop the services
-and keep the data, run `docker compose --env-file .env -f infra/compose.yaml stop`.
+It runs 3.1 to 3.4 in one window (the steps are in `run-backend.ps1`; the `.cmd` file lets you
+double-click it): it checks that Docker is running and that no API (port 8000) or separate worker
+is running, starts MongoDB and Mailpit, runs `uv sync`, checks the target database
+(`scripts.check_local_target`), applies the migrations, then runs the API with the scheduled jobs
+inside it (`RUN_JOBS_IN_API=true`, as on Render). When `CLAMAV_HOST` is set in `.env` it also
+starts ClamAV (the `scan` profile). Press `Ctrl+C` to stop. Start the web app separately (3.5).
+
+With no arguments it uses the database `hrms_local` on the local MongoDB. Other forms:
+
+```powershell
+.\run-backend.cmd -Database hrms_acceptance          # another local database
+.\run-backend.cmd -Database hrms_dev_darshan -Atlas  # a database of its own on the cluster in MONGODB_URI
+```
+
+`-Atlas` uses `MONGODB_URI` from `.env` and is only for a separate development database. The
+script and the settings both refuse `hrms`, the production database, and the script never drops
+or resets a database. The database is set explicitly for the migrations and the API, so variables
+left in the window cannot redirect them. The window title shows the database
+(`HRMS API (hrms_local)`); an account exists only in the database where it was created.
+
+### 3.1 Start the local services (repository root)
+
+```powershell
+docker compose -f infra/compose.yaml up -d --wait
+```
+
+This starts MongoDB (`mongo:8.0`, replica set `rs0`, `127.0.0.1:27017`, no authentication,
+reachable from this machine only) and Mailpit, and waits until MongoDB is the replica set's
+primary. The first start initiates the replica set. The application's units of work are
+multi-document transactions, which a standalone MongoDB refuses, so the replica set is required.
+To stop the services and keep the data: `docker compose -f infra/compose.yaml stop`.
 
 ClamAV, which scans uploaded documents, runs only with the `scan` profile because it needs
 about 1.5 GB of memory and downloads its virus signatures on first start (several minutes):
 
 ```powershell
-docker compose --env-file .env -f infra/compose.yaml --profile scan up -d --wait
+docker compose -f infra/compose.yaml --profile scan up -d --wait
 ```
 
-Without it, uploads stay "being checked" and cannot be downloaded (fail closed).
+Then set `DOCUMENT_UPLOADS_ENABLED=true` and `CLAMAV_HOST=127.0.0.1`. Without ClamAV, keep uploads
+off: they are refused, and nothing unscanned is stored.
 
 ### 3.2 Install dependencies and apply migrations (`backend/`)
 
 ```powershell
 uv sync
-uv run --env-file ../.env alembic upgrade head
+uv run --env-file ../.env python -m scripts.check_local_target --database hrms_local
+uv run --env-file ../.env python -m app.cli migrate --confirm-database hrms_local
 ```
 
-Migrations run as `hrms_migrator`. Alembic is the only migration runner, and it also installs
-the Procrastinate job-queue schema. Never run `procrastinate schema --apply`.
+`check_local_target` stops unless `APP_ENV` is `local` or `test`, `MONGODB_DATABASE` is the name
+given and is not `hrms`, `MONGODB_URI` is on this machine, and the server is a replica set
+primary. It prints no URI or credential.
 
-Then create the write-once bucket for the audit checkpoint anchors (once per RustFS volume;
-running it again changes nothing):
-
-```powershell
-uv run --env-file ../.env python -m scripts.create_local_anchor_bucket
-```
-
-It creates `AUDIT_ANCHOR_BUCKET` with S3 Object Lock in compliance mode and a default retention
-of 10 years, so local anchors cannot be deleted either. The script refuses to run unless
-`APP_ENV` is `local` or `test`; staging and production buckets are created by infrastructure.
-
-Each database needs a bucket of its own. Anchors are named by stream and checkpoint number
-only (`audit_log/000000000001.json`), and a recreated database starts again at checkpoint 1,
-so two databases sharing a bucket write different anchors under the same names, and the old
-ones can never be deleted. The reset in 4.4 removes the RustFS volume too, so it is safe. If you
-drop and recreate a database any other way, or point a second database (for example
-`hrms_acceptance`) at the anchors, set a new `AUDIT_ANCHOR_BUCKET` for it and run the script
-again.
-
-For documents and exports, create the private files bucket the same way (once per database;
-running it again changes nothing):
-
-```powershell
-uv run --env-file ../.env python -m scripts.create_local_files_bucket
-```
-
-It creates `FILES_BUCKET` with no bucket policy and stops with an error if the bucket has a
-policy or answers an anonymous request, so files are reachable only through the API's
-60-second signed links. Like anchors, each database needs its own files bucket: give a second
-database a new `FILES_BUCKET` before running it.
+`migrate` creates the collections, their validators and indexes, and applies the numbered data
+migrations. It never drops anything, and running it again changes nothing. `--confirm-database`
+must repeat `MONGODB_DATABASE`. `migrate --status` only reports.
 
 ### 3.3 Start the API (`backend/`)
 
@@ -158,16 +158,20 @@ database a new `FILES_BUCKET` before running it.
 uv run --env-file ../.env uvicorn app.main:app_factory --factory --loop asyncio:SelectorEventLoop
 ```
 
-The API listens on `http://127.0.0.1:8000`. On Windows, `--loop asyncio:SelectorEventLoop` is
-required because psycopg's async driver does not support the default Proactor event loop.
+The API listens on `http://127.0.0.1:8000`. With `RUN_JOBS_IN_API=true` its log shows
+`jobs.worker_started` with the task names.
 
-### 3.4 Start the worker (`backend/`, second terminal)
+### 3.4 A separate worker (optional, `backend/`, second terminal)
+
+Only with `RUN_JOBS_IN_API=false` in `.env`:
 
 ```powershell
 uv run --env-file ../.env python -m app.worker
 ```
 
-### 3.5 Start the web app (`frontend/`, third terminal)
+Never run both: `run-backend.cmd` refuses to start while a separate worker runs.
+
+### 3.5 Start the web app (`frontend/`, another terminal)
 
 ```powershell
 corepack enable
@@ -175,106 +179,64 @@ pnpm install
 pnpm dev
 ```
 
-### Windows shortcut
+## 4. Database (MongoDB)
 
-`run-backend.cmd` in the repository root runs 3.1 to 3.4 in one go (the steps are in
-`run-backend.ps1`; the `.cmd` file lets you double-click it). It checks that Docker is running
-and that no API (port 8000) or worker is already running, starts the services, runs `uv sync`,
-checks the target database, runs the migrations, creates the anchor bucket and the files bucket
-if they are missing, opens the worker in a new window and then runs the API in the current one.
-When `CLAMAV_HOST` is set it also starts ClamAV (the `scan` profile). Run it from the
-repository root with `.\run-backend.cmd`, or double-click it. Press `Ctrl+C` to stop the API.
-Close the worker window to stop the worker. Start the web app separately (3.5).
-
-With no arguments it uses the database named in the `DATABASE_URL_*` settings in `.env`
-(normally `hrms`), `AUDIT_ANCHOR_BUCKET` and `FILES_BUCKET`. To run against another existing
-local database, name it and its own buckets (3.2):
-
-```powershell
-.\run-backend.cmd -Database <database name> -AnchorBucket <anchor bucket> -FilesBucket <files bucket>
-```
-
-The script sets the database and bucket explicitly for the migrations, the worker and the API,
-so variables left in the window from an earlier session cannot redirect them. Before migrating
-it runs `python -m scripts.check_local_target`, which stops unless all four `DATABASE_URL_*`
-settings name that database on this machine, the migrator really connects to it, and the anchor
-and files buckets match. It never creates or resets a database, and it refuses another database
-without buckets of its own. Each window title shows the database (`HRMS API (hrms)`), and an account
-exists only in the database where it was created: signing in to the wrong one fails as an
-unknown account.
-
-## 4. Database (PostgreSQL 18)
-
-PostgreSQL is the only system of record: data, jobs, sessions, lockout state, audit and the
-email outbox.
+MongoDB is the only data store: records, sessions, lockout state, rate-limit counters, the email
+outbox, job leases, audit and files (GridFS). Every company's records carry their organization
+(`organization_id`), and every query is scoped to it.
 
 ### 4.1 Start
 
-Started by the Compose command in 3.1, on `127.0.0.1:5433`, database `hrms`.
+Started by the Compose command in 3.1, on `127.0.0.1:27017`, replica set `rs0`. Databases are
+created on first use; `hrms_local` by default.
 
 ### 4.2 Migrate
 
 From `backend/`:
 
 ```powershell
-uv run --env-file ../.env alembic upgrade head
-uv run --env-file ../.env alembic current
+uv run --env-file ../.env python -m app.cli migrate --confirm-database hrms_local
+uv run --env-file ../.env python -m app.cli migrate --status
 ```
-
-`alembic current` prints the applied revision followed by `(head)`.
 
 ### 4.3 Check health
 
 From the repository root:
 
 ```powershell
-docker compose --env-file .env -f infra/compose.yaml ps
-docker compose --env-file .env -f infra/compose.yaml exec postgres pg_isready --username postgres --dbname hrms
+docker compose -f infra/compose.yaml ps
+docker compose -f infra/compose.yaml exec mongo mongosh --quiet --eval "rs.status().members[0].stateStr"
 ```
 
-Expected: the `postgres` service shows `(healthy)`, and `pg_isready` prints
-`/var/run/postgresql:5432 - accepting connections`. With the API running,
-`http://127.0.0.1:8000/api/health/ready` returns `{"status":"ok"}` only when the API can reach
-the database.
+Expected: the `mongo` service shows `(healthy)`, and `mongosh` prints `PRIMARY`. With the API
+running, `http://127.0.0.1:8000/api/health/ready` returns `{"status":"ok"}` only when the API can
+reach the database.
 
 ### 4.4 Reset the local database (local only, deletes all local data)
 
-This deletes the local PostgreSQL volume: every account, the audit log and the job queue.
-Run it only on your own machine. Never use it against a shared, staging or production
-environment. Stop the API and worker first. Then, from the repository root:
+Stop the API first. To drop one local database (for example `hrms_local`), from the repository
+root:
 
 ```powershell
-docker compose --env-file .env -f infra/compose.yaml down -v
-docker compose --env-file .env -f infra/compose.yaml up -d --wait
+docker compose -f infra/compose.yaml exec mongo mongosh --quiet hrms_local --eval "db.dropDatabase()"
 ```
 
-Then apply the migrations (4.2) and create the test accounts again (section 9). Mailpit keeps
-its messages in memory, so restarting it empties the inbox. Never use `alembic downgrade` as a
-reset.
+To delete every local database, remove the volume: `docker compose -f infra/compose.yaml down -v`,
+then start again (3.1). Either way, migrate again (4.2) and create the organization and test
+accounts again (section 9). Mailpit keeps its messages in memory, so restarting it empties the
+inbox. Never run either command against Atlas.
 
-## 5. Redis
+## 5. Rate limits
 
-Redis holds only short-lived, HMAC-keyed rate-limit counters with a time-to-live. It is not a
-system of record: it never holds data, sessions, permissions, lockout state, audit, jobs or
-caches of personal data. If Redis is down, the general API limits fail open and the rest of
-the API keeps working, so the readiness check does not include Redis. The authentication
+Rate-limit counters are short-lived MongoDB documents (`rate_limit_counters`) holding an
+HMAC-ed key, request times and an expiry; a TTL index removes them. They hold no personal data.
+If the database cannot be reached, the general API limits fail open, and the authentication
 limits fail closed: sign-in, step-up, password reset, invite activation and MFA re-enrolment
 answer `503 temporarily-unavailable`, which the web app shows as "Sign-in is temporarily
-unavailable. Try again in a minute." The API log shows `ratelimit.store_unavailable` with
-`"failure_mode": "closed"`.
+unavailable. Try again in a minute." Locally that means MongoDB is not running (3.1).
 
 The Compose services have no restart policy. After Docker Desktop or the computer restarts,
 they stay stopped until you run the Compose command in 3.1 again (or `run-backend.cmd`).
-
-- Start: started by the Compose command in 3.1, on `127.0.0.1:6380`, with the ACL user
-  `hrms_ratelimit`.
-- Check health (repository root):
-
-  ```powershell
-  docker compose --env-file .env -f infra/compose.yaml exec redis sh -c 'redis-cli --no-auth-warning --user hrms_ratelimit --pass $REDIS_RATELIMIT_PASSWORD ping'
-  ```
-
-  Expected: `PONG`. `docker compose ... ps` also shows the `redis` service as `(healthy)`.
 
 ## 6. Backend API
 
@@ -303,41 +265,32 @@ these headers yourself.
   `http://127.0.0.1:8000` (`frontend/vite.config.ts`). The app and the API therefore share one
   origin, as in production, and there is no CORS. The API must be running for any page beyond
   the static shell.
-- Pages: the dashboard (`/`, the page after sign-in), My attendance (`/attendance`), Holidays
-  (`/holidays`), My profile (`/profile`), Account security (`/account/security`), Team attendance
-  (`/team/attendance`), Employees (`/employees`, `/employees/new`, `/employees/:id`), Directory
-  (`/directory`), Organization (`/organization`), Holiday calendars
-  (`/setup/holiday-calendars`), and the administration pages Users (`/admin/users`,
-  `/admin/users/:id`), Roles (`/admin/roles`), Access requests (`/admin/access-requests`),
-  Security events (`/admin/security-events`), Audit log (`/admin/audit-log`) and Settings
-  (`/settings`). The navigation lists only the pages the signed-in account's permissions reach.
-- Not built yet, so not in the navigation: leave requests and balances, documents, in-app
-  notifications, reports and exports, attendance corrections, shifts and attendance policies.
+- The navigation lists only the pages the signed-in account's permissions reach;
+  `docs/roles-and-permissions.md` lists them per role.
 
-## 8. Worker and background jobs
+## 8. Scheduled jobs
 
-- Start (`backend/`): `uv run --env-file ../.env python -m app.worker`
-- What it does: every minute it sends pending emails from the outbox (`notify.dispatch_email`)
-  to Mailpit, records expired access requests and ended elevations
-  (`access.expire_grants`; access already stops at the end time without it) and seals new
-  audit rows into the hash chain (`audit.seal`). Every hour it creates audit-log partitions
-  ahead of time (`audit.ensure_partitions`) and writes signed audit checkpoints and their
-  write-once copies in RustFS (`audit.checkpoint`). Every day it verifies recent audit records
-  (`audit.verify_recent`), and on the first of each month all of them (`audit.verify_full`).
-  The daily audit retention job (`audit.retention`) removes nothing unless a retention period
-  is set.
-- Check it is running: its log shows `Starting worker on all queues`. About once a minute it
-  shows `Job notify.dispatch_email[...] ended with status: Success`. Emails such as password
-  resets reach `http://127.0.0.1:8025` within about a minute. On Windows it also logs
-  `Skipping signal handling, does not work on Windows`, which is expected.
-- Queue state (repository root):
+- Where they run: inside the API with `RUN_JOBS_IN_API=true` (the default of `run-backend.cmd`),
+  or in `python -m app.worker` with `false`. Each task has a lease in `job_leases`, so a slot runs
+  once even if both were started.
+- What they do: every minute they send pending emails from the outbox (`notify.dispatch_email`)
+  to Mailpit, record expired access requests and ended elevations (`access.expire_grants`;
+  access already stops at the end time without it), seal new audit records into the hash chain
+  (`audit.seal`), build queued exports and, with uploads on, scan documents. Hourly they write
+  signed audit checkpoints (`audit.checkpoint`); daily they verify recent audit records
+  (`audit.verify_recent`), send the audit witness (`audit.witness`, only with
+  `AUDIT_WITNESS_EMAILS`), accrue leave (`leave.accrue`) and run audit retention
+  (`audit.retention`, which removes nothing unless a retention period is set); monthly they
+  verify everything (`audit.verify_full`).
+- Check they run: the log shows `jobs.worker_started`. Emails such as password resets reach
+  `http://127.0.0.1:8025` within about a minute.
+- Task state (repository root):
 
   ```powershell
-  docker compose --env-file .env -f infra/compose.yaml exec postgres psql -U postgres -d hrms -c "SELECT task_name, status, count(*) FROM procrastinate.procrastinate_jobs GROUP BY 1, 2"
+  docker compose -f infra/compose.yaml exec mongo mongosh --quiet hrms_local --eval "db.job_leases.find({}, {last_slot: 1, failures: 1, last_error_at: 1}).toArray()"
   ```
 
-  If the worker is not running, emails stay in the outbox with status `pending` until it
-  starts. Nothing is lost.
+  If the jobs are not running, emails stay in the outbox with status `pending`. Nothing is lost.
 
 ## 9. Test sign-in
 
@@ -356,11 +309,16 @@ address locally.
 
 ### 9.2 Create the test accounts (`backend/`, once per database)
 
-Run this after the migrations, with the services running:
+Run this after the migrations, with the services running. First the organization (a tenant;
+there is no API to create one), then its two super admins:
 
 ```powershell
-uv run --env-file ../.env python -m app.cli bootstrap-super-admins --email first.admin@example.com --email second.admin@example.com
+uv run --env-file ../.env python -m app.cli create-organization --name "Local test company" --slug local-test --confirm-database hrms_local
+uv run --env-file ../.env python -m app.cli bootstrap-super-admins --organization local-test --email first.admin@example.com --email second.admin@example.com --confirm-database hrms_local
 ```
+
+`run-backend.cmd` prints both commands for the database it started. If `.env` does not set
+`MONGODB_DATABASE=hrms_local`, set `$env:MONGODB_DATABASE` first, as the script shows.
 
 Expected output (the tokens are random, and each run prints different ones):
 
@@ -371,7 +329,7 @@ Invite links (valid for 72 hours, single use). Deliver each to its owner only:
 ```
 
 - The invite links are printed in the terminal only. No email is sent for them.
-- The command runs once per installation. Run it again and it prints
+- The command runs once per organization. Run it again and it prints
   `Refused: this installation already has super admins.` and exits with code 1. To start
   over, reset the local database (4.4).
 - The links are secrets. Do not commit them or paste them into shared places.
@@ -467,7 +425,7 @@ that employee to clock in and out and see the dashboard as an employee. Create a
 calendar for the current year, add holidays and assign the location to see them on the
 employee's dashboard. Use obviously fake names and `dev.example`-style addresses only.
 
-To try leave (revision 0018), with the elevated `hr_admin` account: open **Leave types**
+To try leave, with the elevated `hr_admin` account: open **Leave types**
 (`/setup/leave-types`), add a test leave type (every rule is a yes or no you choose) and a policy
 version for the employee's location (leave year start, optionally days given each leave year).
 Use **Allocate a leave year**, or record an opening balance on **Leave balances**. Make a second
@@ -487,7 +445,7 @@ password and then a new authenticator, and shows new recovery codes.
 
 ## 10. Sign-in test checklist (browser)
 
-Run through these with the web app, API and worker running.
+Run through these with the web app and the API (with its jobs) running.
 
 - [ ] Open `http://localhost:5173`. You are sent to the sign-in page.
 - [ ] Sign in with the test email and password. The code screen appears.
@@ -520,27 +478,25 @@ Run through these with the web app, API and worker running.
 | Problem | Fix |
 |---|---|
 | `failed to connect to the docker API` / `docker info` fails | Start Docker Desktop and wait until it says it is running, then repeat the command. `run-backend.cmd` checks this first. |
-| Compose says `set POSTGRES_SUPERUSER_PASSWORD in .env` (or another variable) | `.env` is missing or the variable is empty. Create `.env` (section 2) and fill in every value. Run Compose from the repository root with `--env-file .env`. |
-| API or worker fails at start-up with a settings validation error | A required variable is missing or invalid, such as a key that is not base64 or shorter than 32 bytes, or a non-`http(s)` `APP_BASE_URL`. The error names the variable. Fix it in `.env`. |
-| PostgreSQL unavailable (`/api/health/ready` returns 503, or `connection refused` on 5433) | Run `docker compose --env-file .env -f infra/compose.yaml ps`. If `postgres` is not healthy, run `up -d --wait` again and read `docker compose --env-file .env -f infra/compose.yaml logs postgres`. |
-| `password authentication failed for user "hrms_..."` | The role passwords in `.env` changed after the volume was created. Put the old values back, or reset the local database (4.4). |
-| Sign-in says "Sign-in is temporarily unavailable. Try again in a minute." (API answers `503`, log shows `ratelimit.store_unavailable`) | Redis is not reachable, and the sign-in limits fail closed by design (section 5). Usually the Compose services stopped when Docker Desktop or the computer restarted. Run `docker compose --env-file .env -f infra/compose.yaml up -d --wait` (or `run-backend.cmd`), check with the `ping` in section 5, then sign in again. The API does not need a restart. `/api/health/ready` stays `ok` because it checks only PostgreSQL. |
-| Sign-in or other requests fail with "We couldn't complete this request" after updating the code (API log shows `UndefinedColumn` or `UndefinedTable`) | The database is behind the code. Apply the migrations (3.2) to every local database you use, for example `hrms` and `hrms_acceptance`, then retry. |
-| Sign-in fails for an account that worked before, and the API's `audit.security_events` rows show `login.failed` with `"known_user": false` | The API is running against a different local database from the one the account was created in, for example after a restart with plain `run-backend.cmd` (which uses `.env`, normally `hrms`). Stop the API and the worker and start them again with `.\run-backend.cmd -Database NAME -AnchorBucket NAME` for that database. The window titles show the database in use. |
+| API fails at start-up with a settings validation error | A required variable is missing or invalid, such as a key that is not base64 or shorter than 32 bytes, two HMAC keys with the same value, or a non-`http(s)` `APP_BASE_URL`. The error names the variable, never its value. Fix it in `.env`. |
+| `MONGODB_DATABASE=hrms is the production database` | Local and test runs refuse `hrms`. Use `hrms_local` (or another name) in `.env` or `-Database`. |
+| `Refused: --confirm-database ... does not match MONGODB_DATABASE` | The confirmation must repeat the database the command will change. Check which database `.env` or `$env:MONGODB_DATABASE` names. |
+| `check_local_target` stops: not a replica set primary | The local MongoDB is still starting, or was started without `--replSet`. Run `docker compose -f infra/compose.yaml up -d --wait` and check 4.3 shows `PRIMARY`. |
+| MongoDB unavailable (`/api/health/ready` returns 503, or `ServerSelectionTimeoutError`) | Run `docker compose -f infra/compose.yaml ps`. If `mongo` is not healthy, run `up -d --wait` again and read `docker compose -f infra/compose.yaml logs mongo`. |
+| Sign-in says "Sign-in is temporarily unavailable. Try again in a minute." (API answers `503`, log shows `ratelimit.store_unavailable`) | The rate-limit counters cannot be written because MongoDB is not reachable; the sign-in limits fail closed by design (section 5). Start the services (3.1). The API does not need a restart. |
+| `migrate` stops naming a collection whose documents do not match its validator | Data written by an older version of the code no longer fits the model. On a local database, reset it (4.4). Never loosen a validator to get past it. |
+| Sign-in fails for an account that worked before, and the security events show `login.failed` with `"known_user": false` | The API is running against a different local database from the one the account was created in. Restart with `.\run-backend.cmd -Database NAME`; the window title shows the database in use. |
 | Sign-in says the email "is not a valid email address" for an `@example.test` account | The `.test` domain is a special-use name that address validation refuses. Use accounts on `example.com` (section 9.2). |
-| Migration fails | Check that PostgreSQL is healthy and that `DATABASE_URL_MIGRATOR` uses `hrms_migrator` and port 5433. Read the error. A half-applied local database can be reset (4.4). Never fix it with `alembic downgrade` or `procrastinate schema --apply`. |
-| Port 8000, 5173, 5433, 6380, 1025 or 8025 already in use | Find the process with `Get-NetTCPConnection -LocalPort 8000 -State Listen \| Select-Object OwningProcess`, then stop it with `Stop-Process -Id <pid>` if it is an old API or Vite instance. On macOS or Linux, use `lsof -i :8000`. Vite refuses to pick another port, because the origin must match `APP_BASE_URL`. |
-| API start fails with a Proactor or event-loop error on Windows | Include `--loop asyncio:SelectorEventLoop` in the uvicorn command (3.3). |
+| Port 8000, 5173, 27017, 1025 or 8025 already in use | Find the process with `Get-NetTCPConnection -LocalPort 8000 -State Listen \| Select-Object OwningProcess`, then stop it with `Stop-Process -Id <pid>` if it is an old API or Vite instance. On macOS or Linux, use `lsof -i :8000`. Vite refuses to pick another port, because the origin must match `APP_BASE_URL`. |
 | Sign-in fails with "This request was blocked because it did not come from the HRMS application" | The page origin differs from `APP_BASE_URL`. Open `http://localhost:5173`, not `127.0.0.1:5173`, or change both to match. |
 | Signed in but immediately signed out again, or cookies missing | Use Chrome, Edge or Firefox on `http://localhost`. The `Secure` session cookies are not kept on other hosts over plain HTTP. |
-| Worker fails at start-up with `AUDIT_VERIFY_PUBLIC_KEYS must list the public key of AUDIT_SIGNING_PRIVATE_KEY` | The three audit key values do not belong together. Generate a new set with `uv run python -m scripts.generate_audit_signing_key` and replace all three. Existing local checkpoints then fail verification against the new key unless the old public key stays listed in `AUDIT_VERIFY_PUBLIC_KEYS` under its old ID. |
-| Worker log shows `anchor storage is unavailable` or `NoSuchBucket` | RustFS is not running or the bucket does not exist. Run the Compose command in 3.1, then `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket` (3.2). Checkpoints already written are anchored on the next hourly run. |
-| `audit-verify` reports `anchor_without_checkpoint` or `anchor_mismatch` on a local database that was recreated | The bucket still holds write-once anchors from an earlier database (3.2). They cannot be deleted. Set a new `AUDIT_ANCHOR_BUCKET` in `.env`, run `uv run --env-file ../.env python -m scripts.create_local_anchor_bucket`, and restart the worker. |
-| Emails (reset, notices) never arrive | The worker is not running, or SMTP is wrong. Start it (3.4) and check `SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`, `SMTP_SECURITY=none`. Then wait up to a minute and look at `http://127.0.0.1:8025`. |
+| Start-up fails with `AUDIT_VERIFY_PUBLIC_KEYS must list the public key of AUDIT_SIGNING_PRIVATE_KEY` | The three audit key values do not belong together. Generate a new set with `uv run python -m scripts.generate_audit_signing_key` and replace all three. Existing local checkpoints then fail verification against the new key unless the old public key stays listed in `AUDIT_VERIFY_PUBLIC_KEYS` under its old ID. |
+| Emails (reset, notices) never arrive | The jobs are not running (`RUN_JOBS_IN_API=false` and no worker), or SMTP is wrong. Check `EMAIL_TRANSPORT=smtp`, `SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`, `SMTP_SECURITY=none`, then wait up to a minute and look at `http://127.0.0.1:8025`. |
+| An upload answers "Document uploads are turned off until virus scanning is set up" | `DOCUMENT_UPLOADS_ENABLED=false`, the default. Start ClamAV (3.1) and set `DOCUMENT_UPLOADS_ENABLED=true` and `CLAMAV_HOST=127.0.0.1`. |
 | Invite link says it doesn't work | It was used, expired (72 hours) or mistyped. On a local database with no other accounts, reset (4.4) and bootstrap again. |
 | Authenticator codes refused | Sync the clocks (9.4). Make sure the app entry is the one created in the latest setup. Each new setup gives a new key. |
 | New password refused as breached while offline | Set `HIBP_ENABLED=false` in `.env` and restart the API. The bundled common-password list still applies. |
-| `bootstrap-super-admins` prints `Refused: this installation already has super admins.` | Super admins already exist. Use the existing accounts, or reset the local database (4.4). |
+| `bootstrap-super-admins` prints `Refused: this installation already has super admins.` | Super admins already exist in that organization. Use the existing accounts, or reset the local database (4.4). |
 
 ## 12. Verification commands
 
@@ -554,11 +510,11 @@ Backend (`backend/`):
 | Lint | `uv run ruff check .` |
 | Types | `uv run mypy .` |
 | Module boundaries | `uv run lint-imports` |
-| Tests (Docker must be running; starts its own containers) | `uv run pytest` |
+| Tests (Docker must be running; starts its own MongoDB replica set container, never Atlas) | `uv run pytest` |
 | Dependency audit | `uv run pip-audit --strict --progress-spinner off` |
 | Regenerate the API contract `api/openapi.json` | `uv run python -m scripts.export_openapi` |
-| Verify the local audit chain and its anchors (read-only; exit code 1 on any problem) | `uv run --env-file ../.env python -m app.cli audit-verify` |
-| Build the production image (API, worker, migrations; `docs/deployment.md` §4) | `docker build -t hrms-backend .` |
+| Verify the local audit chain and checkpoints (read-only; exit code 1 on any problem; `--witness FILE` also checks saved witness lines) | `uv run --env-file ../.env python -m app.cli audit-verify` |
+| Build the production image (API with jobs, worker, operator commands; `docs/deployment.md` §1) | `docker build -t hrms-backend .` |
 
 Frontend (`frontend/`):
 
@@ -594,7 +550,8 @@ with the first slices of M2 (organization and employee records, then organizatio
 account linking and department heads on 2026-10-11), M3 (attendance clock events, without
 shifts or policies) and M4 (holiday calendars, then leave management on 2026-10-11),
 then on 2026-10-15 notifications, shifts, attendance policies and corrections, leave accrual
-and year end, documents with ClamAV scanning, and exports, migrations up to `0026`. See
+and year end, documents with ClamAV scanning, and exports. On 2026-10-20 the backend moved to
+MongoDB (ADR-030); the PostgreSQL migrations are replaced by `app.cli migrate`. See
 `docs/m1-implementation-plan.md` §12, and `docs/roles-and-permissions.md` for what each role
 can open after signing in.
 

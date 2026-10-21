@@ -2,12 +2,16 @@
 
 import asyncio
 from datetime import timedelta
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pyotp
 import pytest
 
 from app.modules.identity import public as identity
+from app.modules.identity.invariants import MfaInvariantError, require_mfa
+from app.modules.identity.models import AuthSession, MfaFactor, RecoveryCode, User
+from app.platform.security import totp
 from tests.api_support import PASSWORD, Account, Api, refresh_cookie
 
 STEP_UP = "/api/v1/auth/step-up"
@@ -51,10 +55,8 @@ async def test_a_password_or_recovery_code_never_satisfies_step_up(api: Api, pay
         await api.sign_in(client, account)
         response = await client.post(STEP_UP, json=payload)
         assert response.status_code == 422
-        [(step_up_at,)] = await api.fetch(
-            "SELECT step_up_at FROM identity.sessions WHERE user_id = :id", id=account.user_id
-        )
-        assert step_up_at is None
+        [session] = await api.records(AuthSession, {"user_id": account.user_id})
+        assert session.step_up_at is None
 
 
 async def test_step_up_attempts_are_limited_per_session(api: Api) -> None:
@@ -80,19 +82,16 @@ async def test_a_locked_account_still_steps_up_and_step_up_failures_count(api: A
             await attacker.post(
                 "/api/v1/auth/login", json={"email": account.email, "password": "wrong guess 123"}
             )
-        [(locked_until, failures)] = await api.fetch(
-            "SELECT locked_until, failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-        )
+        [user] = await api.records(User, {"id": account.user_id})
+        locked_until, failures = user.locked_until, user.failed_login_count
         assert locked_until is not None
         assert locked_until > api.clock.now()
         # The locked account's own session can still step up with its authenticator.
         assert (await api.step_up(client, account)).status_code == 200
         # A wrong step-up code counts like any failed attempt.
         assert (await client.post(STEP_UP, json={"code": "000000"})).status_code == 422
-        [(after,)] = await api.fetch(
-            "SELECT failed_login_count FROM identity.users WHERE id = :id", id=account.user_id
-        )
-        assert after == failures + 1
+        [user] = await api.records(User, {"id": account.user_id})
+        assert user.failed_login_count == failures + 1
         # And the lock still refuses sign-in.
         login = await attacker.post("/api/v1/auth/login", json={"email": account.email, "password": PASSWORD})
         assert login.status_code == 401
@@ -160,10 +159,8 @@ async def test_a_locked_account_cannot_check_its_password_through_a_password_cha
         for _ in range(10):  # the default lockout threshold
             response = await client.post("/api/v1/me/password", json=wrong)
             assert response.json()["errors"][0]["code"] == "password.incorrect"
-        [(locked_until,)] = await api.fetch(
-            "SELECT locked_until FROM identity.users WHERE id = :id", id=account.user_id
-        )
-        assert locked_until is not None
+        [user] = await api.records(User, {"id": account.user_id})
+        assert user.locked_until is not None
 
         right = {"current_password": PASSWORD, "new_password": new_password}
         locked = await client.post("/api/v1/me/password", json=right)
@@ -259,28 +256,25 @@ async def test_concurrent_removals_cannot_remove_every_factor(api: Api) -> None:
         ids = [f["id"] for f in (await client.get("/api/v1/me/mfa/factors")).json()["items"]]
         results = await asyncio.gather(*(client.delete(f"/api/v1/me/mfa/factors/{factor}") for factor in ids))
         assert sorted(r.status_code for r in results) == [204, 409]
-    rows = await api.fetch(
-        "SELECT count(*) FROM identity.mfa_factors "
-        "WHERE user_id = :id AND confirmed_at IS NOT NULL AND revoked_at IS NULL",
-        id=account.user_id,
-    )
-    assert rows == [(1,)]
+    query = {"user_id": account.user_id, "confirmed_at": {"$ne": None}, "revoked_at": None}
+    assert await api.count("mfa_factors", query) == 1
 
 
-async def test_the_database_refuses_an_active_account_without_a_factor(api: Api) -> None:
+async def test_a_change_leaving_an_active_account_without_a_factor_never_commits(api: Api) -> None:
+    """The MFA backstop (identity/invariants.py): checked before every commit that registers it."""
     account = await api.create_account()
-    with pytest.raises(Exception, match="must keep a confirmed MFA factor"):
-        await api.execute(
-            "UPDATE identity.mfa_factors SET revoked_at = now() WHERE user_id = :id", id=account.user_id
-        )
+    with pytest.raises(MfaInvariantError, match="needs a confirmed MFA factor"):  # noqa: PT012
+        async with api.database.unit_of_work() as session:
+            for factor in await session.find(MfaFactor, {"user_id": account.user_id}):
+                factor.revoked_at = api.clock.now()
+            require_mfa(session, account.user_id)
+    assert await api.count("mfa_factors", {"user_id": account.user_id, "revoked_at": None}) == 1
 
 
 async def test_secrets_are_encrypted_at_rest(api: Api) -> None:
     account = await api.create_account()
-    [(ciphertext,)] = await api.fetch(
-        "SELECT secret_ciphertext FROM identity.mfa_factors WHERE user_id = :id", id=account.user_id
-    )
-    assert account.totp_secret.encode() not in bytes(ciphertext)
+    [factor] = await api.records(MfaFactor, {"user_id": account.user_id})
+    assert account.totp_secret.encode() not in factor.secret_ciphertext
 
 
 async def test_regenerating_recovery_codes_replaces_the_old_ones(api: Api) -> None:
@@ -299,10 +293,9 @@ async def test_regenerating_recovery_codes_replaces_the_old_ones(api: Api) -> No
         assert old.status_code == 401
         new = await client.post("/api/v1/auth/login/mfa", json={**token, "recovery_code": second[0]})
         assert new.json() == {"session_scope": "mfa_enrolment"}
-    stored = await api.fetch(
-        "SELECT code_hash FROM identity.recovery_codes WHERE user_id = :id", id=account.user_id
-    )
-    assert all(code.replace("-", "").encode() not in bytes(row[0]) for row in stored for code in second)
+    stored = await api.records(RecoveryCode, {"user_id": account.user_id})
+    assert stored
+    assert all(code.replace("-", "").encode() not in row.code_hash for row in stored for code in second)
 
 
 # --- invite activation --------------------------------------------------------------------
@@ -351,11 +344,67 @@ async def test_invite_activation_end_to_end(api: Api) -> None:
             "code"
         ] == "invite.invalid"
 
-    [(status, verified)] = await api.fetch(
-        "SELECT status, email_verified_at FROM identity.users WHERE email = :e", e=email
-    )
-    assert status == "active"
-    assert verified is not None
+    [user] = await api.records(User, {"email": email})
+    assert user.status == "active"
+    assert user.email_verified_at is not None
+
+
+async def test_invite_enrolment_uses_one_key_and_a_restart_replaces_it(api: Api) -> None:
+    """The QR code, the key shown and the confirmation use one secret. Starting the step again
+    (a reload) issues a new key: codes from an app entry made with the old key are refused."""
+    _, token = await invited_account(api)
+    base = f"/api/v1/auth/invite/{token}"
+
+    async def start(client: httpx.AsyncClient) -> tuple[str, dict[str, str]]:
+        enrolment = (await client.post(f"{base}/password", json={"password": PASSWORD})).json()[
+            "enrolment_token"
+        ]
+        setup = (await client.post(f"{base}/mfa/totp/setup", json={"enrolment_token": enrolment})).json()
+        # The QR code is the rendering of the provisioning URI, and the URI holds the key shown.
+        assert setup["qr_code"] == totp.qr_svg_data_uri(setup["otpauth_uri"])
+        assert parse_qs(urlsplit(setup["otpauth_uri"]).query)["secret"] == [setup["secret"]]
+        return enrolment, setup
+
+    def code_from_qr(setup: dict[str, str]) -> str:
+        # Computed the way an authenticator app does, from the scanned URI alone.
+        app = pyotp.parse_uri(setup["otpauth_uri"])
+        assert isinstance(app, pyotp.TOTP)
+        return app.at(api.clock.now())
+
+    async with api.client() as client:
+        first_enrolment, first = await start(client)
+        wrong = f"{(int(code_from_qr(first)) + 500_000) % 1_000_000:06d}"
+        refused = await client.post(
+            f"{base}/mfa/totp/confirm",
+            json={"enrolment_token": first_enrolment, "factor_id": first["factor_id"], "code": wrong},
+        )
+        assert refused.status_code == 422
+        assert refused.json()["errors"][0]["code"] == "mfa.invalid_code"
+
+        enrolment, second = await start(client)
+        assert second["secret"] != first["secret"]
+        stale = code_from_qr(first)
+        if stale != code_from_qr(second):  # one chance in a million that the keys agree now
+            replaced = await client.post(
+                f"{base}/mfa/totp/confirm",
+                json={"enrolment_token": enrolment, "factor_id": second["factor_id"], "code": stale},
+            )
+            assert replaced.status_code == 422
+        old_setup = await client.post(
+            f"{base}/mfa/totp/confirm",
+            json={"enrolment_token": enrolment, "factor_id": first["factor_id"], "code": stale},
+        )
+        assert old_setup.json()["code"] == "mfa.setup_expired"
+
+        activated = await client.post(
+            f"{base}/mfa/totp/confirm",
+            json={
+                "enrolment_token": enrolment,
+                "factor_id": second["factor_id"],
+                "code": code_from_qr(second),
+            },
+        )
+        assert activated.status_code == 200, activated.text
 
 
 async def test_an_invite_expires_after_72_hours(api: Api) -> None:

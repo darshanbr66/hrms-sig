@@ -41,9 +41,10 @@ jobs:
         run: uv run mypy .
       - name: Import boundaries (import-linter)
         run: uv run lint-imports
-      # Runs against real PostgreSQL 18 and Redis containers. Includes the migration gates
-      # (single Alembic head, upgrade/downgrade/upgrade, grants and role settings, vendored
-      # Procrastinate checksums) and the OpenAPI contract check.
+      # Runs against a real MongoDB 8 replica set container with authentication and the Atlas
+      # custom roles (scripts/mongo_roles.py). Includes the database guarantees (validators,
+      # unique indexes, append-only privileges, transactions), tenant isolation and the OpenAPI
+      # contract check.
       - name: Tests
         run: uv run pytest
 

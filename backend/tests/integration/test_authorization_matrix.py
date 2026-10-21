@@ -13,6 +13,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
+from app.modules.access.models import UserRole, role_id
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.catalog import PERMISSIONS
 from app.platform.authz.engine import Authorizer
 from app.platform.authz.roles import ACCOUNT_BASELINE, ROLE_DEFINITIONS, RoleKey
@@ -724,37 +726,39 @@ ROUTES = (
         "POST", "/api/v1/documents/{document}/versions", "document.read", allowed_statuses=frozenset({404})
     ),
     Route("PATCH", "/api/v1/documents/{document}", "document.read", {}, allowed_statuses=frozenset({422})),
-    # Exports: test APIs have no file storage, so an allowed request ends at 503 after the
-    # permission and step-up checks.
+    # Exports: an allowed request is queued (202); one account has one export in preparation at a
+    # time, so its next export request in the same run is refused with 409 export.in_progress.
     Route(
         "POST",
         "/api/v1/exports/attendance-summary",
         "attendance.export",
         {"from": "2026-01-01", "to": "2026-01-31"},
-        allowed_statuses=frozenset({503}),
+        allowed_statuses=frozenset({202, 409}),
     ),
     Route(
         "POST",
         "/api/v1/exports/attendance-days",
         "attendance.export",
         {"from": "2026-01-01", "to": "2026-01-31"},
-        allowed_statuses=frozenset({503}),
+        allowed_statuses=frozenset({202, 409}),
     ),
     Route(
         "POST",
         "/api/v1/exports/leave-requests",
         "leave.export",
         {"from": "2026-01-01", "to": "2026-01-31"},
-        allowed_statuses=frozenset({503}),
+        allowed_statuses=frozenset({202, 409}),
     ),
-    Route("POST", "/api/v1/exports/leave-balances", "leave.export", {}, allowed_statuses=frozenset({503})),
-    Route("POST", "/api/v1/exports/employees", "employee.export", {}, allowed_statuses=frozenset({503})),
+    Route(
+        "POST", "/api/v1/exports/leave-balances", "leave.export", {}, allowed_statuses=frozenset({202, 409})
+    ),
+    Route("POST", "/api/v1/exports/employees", "employee.export", {}, allowed_statuses=frozenset({202, 409})),
     Route(
         "POST",
         "/api/v1/exports/audit-log",
         "audit.export",
         {"from": "2026-01-01", "to": "2026-01-31"},
-        allowed_statuses=frozenset({503}),
+        allowed_statuses=frozenset({202, 409}),
     ),
     # People: exit and emergency contacts. {employee} does not exist.
     Route(
@@ -810,10 +814,8 @@ def held_keys(role: RoleKey | None, permission: str) -> list[str]:
 
 async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Response:
     target = await api.create_account(roles=(RoleKey.AUDITOR.value,))
-    [(assignment,)] = await api.fetch(
-        "SELECT id FROM access.user_roles WHERE user_id = :id", id=target.user_id
-    )
-    [(role,)] = await api.fetch("SELECT id FROM access.roles WHERE key = 'hr'")
+    [stored] = await api.records(UserRole, {"user_id": target.user_id})
+    assignment, role = stored.id, role_id(RoleKey.HR.value)
     path = route.path.format(
         target=target.user_id,
         assignment=assignment,
@@ -908,10 +910,10 @@ async def test_a_revoked_session_reaches_nothing(api: Api) -> None:
     async with api.client() as client:
         await api.sign_in(client, account)
         assert (await client.get("/api/v1/users")).status_code == 200
-        await api.execute(
-            "UPDATE identity.sessions SET revoked_at = now(), revoked_reason = 'revoked_by_admin' "
-            "WHERE user_id = :id",
-            id=account.user_id,
+        await api.update(
+            "sessions",
+            {"user_id": account.user_id},
+            {"revoked_at": api.clock.now(), "revoked_reason": "revoked_by_admin"},
         )
         assert (await client.get("/api/v1/users")).status_code == 401
 
@@ -921,9 +923,8 @@ async def test_a_removed_role_stops_applying_on_the_next_request(api: Api) -> No
     async with api.client() as client:
         await api.sign_in(client, account)
         assert (await client.get("/api/v1/users")).status_code == 200
-        await api.execute(
-            "UPDATE access.user_roles SET revoked_at = now() WHERE user_id = :id AND revoked_at IS NULL",
-            id=account.user_id,
+        await api.update(
+            "user_roles", {"user_id": account.user_id, "revoked_at": None}, {"revoked_at": api.clock.now()}
         )
         assert (await client.get("/api/v1/users")).status_code == 403
 
@@ -933,13 +934,17 @@ async def test_an_expired_or_future_assignment_does_not_apply(api: Api) -> None:
     windows = [(now - timedelta(hours=2), now - timedelta(hours=1)), (now + timedelta(days=1), None)]
     for valid_from, valid_until in windows:
         account = await api.create_account()
-        await api.execute(
-            "INSERT INTO access.user_roles (user_id, role_id, valid_from, valid_until, grant_reason) "
-            "SELECT :id, id, :valid_from, :valid_until, 'Cover' FROM access.roles WHERE key = 'hr'",
-            id=account.user_id,
-            valid_from=valid_from,
-            valid_until=valid_until,
-        )
+        async with api.database.unit_of_work() as session:
+            session.add(
+                UserRole(
+                    user_id=account.user_id,
+                    role_id=role_id(RoleKey.HR.value),
+                    role_key=RoleKey.HR.value,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    grant_reason="Cover",
+                )
+            )
         async with api.client() as client:
             await api.sign_in(client, account)
             assert (await client.get("/api/v1/users")).status_code == 403
@@ -952,12 +957,10 @@ async def test_a_denied_attempt_at_an_audited_permission_leaves_a_trace(api: Api
         assert (await client.get("/api/v1/audit-log")).status_code == 403
         # A denial on a non-audited permission is just a 403.
         assert (await client.get("/api/v1/roles")).status_code == 403
-    events = await api.fetch(
-        "SELECT details->>'permission' FROM audit.security_events "
-        "WHERE user_id = :id AND event_type = 'access.denied_sensitive'",
-        id=account.user_id,
+    events = await api.find(
+        "security_events", {"user_id": account.user_id, "event_type": "access.denied_sensitive"}
     )
-    assert events == [("audit.read",)]
+    assert [event["details"]["permission"] for event in events] == ["audit.read"]
 
 
 async def test_audited_reads_are_recorded(api: Api) -> None:
@@ -966,9 +969,10 @@ async def test_audited_reads_are_recorded(api: Api) -> None:
         await api.sign_in(client, auditor)
         assert (await client.get("/api/v1/security-events", params={"limit": 5})).status_code == 200
         assert (await client.get("/api/v1/audit-log", params={"limit": 5})).status_code == 200
-    rows = await api.fetch(
-        "SELECT action, permission_used FROM audit.audit_log "
-        "WHERE actor_user_id = :id ORDER BY recorded_at, id",
-        id=auditor.user_id,
-    )
+    rows = [
+        (row.action, row.permission_used)
+        for row in await api.records(
+            AuditLogRecord, {"actor_user_id": auditor.user_id}, sort=[("recorded_at", 1), ("id", 1)]
+        )
+    ]
     assert rows == [("security.events.read", "security.event.read"), ("audit.log.read", "audit.read")]

@@ -4,6 +4,8 @@ Status: Draft v0.1
 Baseline: OWASP ASVS 5.0 Level 2; Level 3 for authentication, session management, payroll and documents.
 Related: `threat-model.md`, `authorization-model.md`, `api-architecture.md`
 
+> **2026-10-20, ADR-030:** on MongoDB Atlas, database grants are Atlas custom roles (enforced only once created and verified on Atlas, `deployment.md` §4), rate-limit counters are in MongoDB, files are in GridFS with same-origin signed links, email goes through Resend's HTTPS API, and the write-once S3 anchors of §8.1 are replaced by the daily audit witness email, which detects truncation of the audit trail but does not prevent it. Production refuses to start without witness recipients; a head is witnessed only after its stream's checkpoint chain verifies. Audit retention never runs inside the internet-facing API (its database user is refused there). Where this document says otherwise, ADR-030 and the code win.
+
 ## 1. Principles
 
 1. **The server decides.** Every authorization decision is made in the API. The frontend only reflects decisions.

@@ -17,22 +17,19 @@ import uuid
 from dataclasses import dataclass
 from typing import Final
 
-import procrastinate
-from sqlalchemy import select
-
 from app.modules.documents.models import DocumentVersion, ScanStatus
 from app.platform.audit.records import AuditActor, AuditEvent, ValueChange
 from app.platform.audit.writer import AuditWriter
 from app.platform.clock import Clock
 from app.platform.db import Database
 from app.platform.files import FileStore, FileStoreError
+from app.platform.jobs import Scheduler
 from app.platform.scanning import ScanError, Scanner, Verdict
 
 logger = logging.getLogger(__name__)
 
 TASK_NAME: Final = "documents.scan"
 SCHEDULE: Final = "* * * * *"
-QUEUE: Final = "documents"
 BATCH: Final = 20
 MAX_ATTEMPTS: Final = 5
 
@@ -52,18 +49,12 @@ async def scan_pending(
     tried: list[uuid.UUID] = []
     for _ in range(BATCH):
         async with database.unit_of_work() as session:
-            version = (
-                await session.scalars(
-                    select(DocumentVersion)
-                    .where(
-                        DocumentVersion.scan_status == ScanStatus.PENDING.value,
-                        DocumentVersion.id.not_in(tried),
-                    )
-                    .order_by(DocumentVersion.uploaded_at, DocumentVersion.id)
-                    .limit(1)
-                    .with_for_update(skip_locked=True)
-                )
-            ).first()
+            version = await session.find_one(
+                DocumentVersion,
+                {"scan_status": ScanStatus.PENDING.value, "id": {"$nin": tried}},
+                sort=[("uploaded_at", 1), ("id", 1)],
+                for_update=True,
+            )
             if version is None:
                 break
             tried.append(version.id)
@@ -110,7 +101,7 @@ async def scan_pending(
 
 
 def register_document_scan(
-    job_app: procrastinate.App,
+    scheduler: Scheduler,
     database: Database,
     *,
     store: FileStore,
@@ -118,9 +109,8 @@ def register_document_scan(
     clock: Clock,
     audit: AuditWriter,
 ) -> None:
-    @job_app.periodic(cron=SCHEDULE, periodic_id=TASK_NAME)
-    @job_app.task(name=TASK_NAME, queue=QUEUE, lock=TASK_NAME)
-    async def scan_documents(timestamp: int) -> None:
+    @scheduler.periodic(TASK_NAME, SCHEDULE, per_organization=True)
+    async def scan_documents() -> None:
         run = await scan_pending(database, store, scanner, clock, audit)
         if run != ScanRun():
             logger.info(

@@ -1,119 +1,32 @@
-"""SQLAlchemy models for the `access` schema (docs/database-design.md §4.2, revisions 0008-0009, 0012).
+"""Role assignments and grant requests (docs/database-design.md §4.2).
 
-The catalog tables are read-only for the runtime roles. `user_roles` rows are revoked, never
-deleted, and cannot hold a derived role (database constraints and trigger). Grant requests
-are history too: their limits are CHECK constraints and a trigger allows only forward status
-changes and one-time decisions (revision 0012).
+The role and permission catalog lives in code (`app.platform.authz.roles`, `catalog`); a role
+is identified by its key, and by a stable identifier derived from it (`role_id`). Assignments
+are revoked, never deleted, and never name a derived role. Grant requests are history: what
+was asked for never changes, statuses only move forward, and a decision, revocation or
+acknowledgement is recorded once (update rules below). The rules within one document are part
+of each collection's validator, as the CHECK constraints were. Whether an assignment matches
+the request it comes from is checked before every commit that adds one (`invariants.py`).
 """
 
+import dataclasses
 import uuid
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Any, ClassVar, Final
 
-from sqlalchemy import (
-    Boolean,
-    ForeignKey,
-    ForeignKeyConstraint,
-    Index,
-    UniqueConstraint,
-    func,
-    text,
-)
-from sqlalchemy.orm import Mapped, mapped_column
+from app.platform.authz.roles import ROLES
+from app.platform.db import Index, Record, allowed, asc, utcnow
 
-from app.platform.db import Base
-
-SCHEMA = "access"
+ROLE_NAMESPACE: Final = uuid.UUID("6d6b6f2e-6872-6d73-2e72-6f6c65732e31")
 
 
-class PermissionRow(Base):
-    __tablename__ = "permissions"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    key: Mapped[str] = mapped_column(unique=True)
-    description: Mapped[str]
-    requires_step_up: Mapped[bool]
-    audit_reads: Mapped[bool]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+def role_id(key: str) -> uuid.UUID:
+    """The stable identifier of a role, the same in every installation."""
+    return uuid.uuid5(ROLE_NAMESPACE, key)
 
 
-class Role(Base):
-    __tablename__ = "roles"
-    __table_args__ = (
-        UniqueConstraint("id", "is_derived"),
-        UniqueConstraint("id", "key", name="uq_roles_id_key"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    key: Mapped[str] = mapped_column(unique=True)
-    name: Mapped[str]
-    description: Mapped[str]
-    is_system: Mapped[bool]
-    is_derived: Mapped[bool]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-
-
-class RolePermission(Base):
-    __tablename__ = "role_permissions"
-    __table_args__ = (Index("ix_role_permissions_permission_id", "permission_id"), {"schema": SCHEMA})
-
-    role_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("access.roles.id", ondelete="RESTRICT"), primary_key=True
-    )
-    permission_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("access.permissions.id", ondelete="RESTRICT"), primary_key=True
-    )
-
-
-class UserRole(Base):
-    __tablename__ = "user_roles"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["role_id", "role_is_derived"],
-            ["access.roles.id", "access.roles.is_derived"],
-            ondelete="RESTRICT",
-        ),
-        Index(
-            "uq_user_roles_active_assignment",
-            "user_id",
-            "role_id",
-            text("coalesce(department_id, '00000000-0000-0000-0000-000000000000'::uuid)"),
-            text("coalesce(location_id, '00000000-0000-0000-0000-000000000000'::uuid)"),
-            unique=True,
-            postgresql_where=text("revoked_at IS NULL"),
-        ),
-        Index("ix_user_roles_user_id", "user_id", postgresql_where=text("revoked_at IS NULL")),
-        Index("ix_user_roles_role_id", "role_id", postgresql_where=text("revoked_at IS NULL")),
-        Index(
-            "uq_user_roles_grant_request_id",
-            "grant_request_id",
-            unique=True,
-            postgresql_where=text("grant_request_id IS NOT NULL"),
-        ),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    role_id: Mapped[uuid.UUID]
-    role_is_derived: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
-    department_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("org.departments.id", ondelete="RESTRICT")
-    )
-    location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("org.locations.id", ondelete="RESTRICT"))
-    valid_from: Mapped[datetime] = mapped_column(server_default=func.now())
-    valid_until: Mapped[datetime | None]
-    granted_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    grant_reason: Mapped[str]
-    revoked_at: Mapped[datetime | None]
-    revoked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    # The request (elevation, super admin assignment, break-glass) the assignment came from.
-    grant_request_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("access.role_grant_requests.id", ondelete="RESTRICT")
-    )
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+_ASSIGNABLE: Final = tuple(role.key.value for role in ROLES if not role.derived)
 
 
 class GrantKind(StrEnum):
@@ -132,57 +45,312 @@ class GrantStatus(StrEnum):
     REVOKED = "revoked"  # withdrawn while pending, or ended early
 
 
-class RoleGrantRequest(Base):
-    __tablename__ = "role_grant_requests"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["role_id", "role_key"], ["access.roles.id", "access.roles.key"], ondelete="RESTRICT"
-        ),
-        Index(
-            "uq_role_grant_requests_pending",
-            "subject_user_id",
-            "kind",
-            unique=True,
-            postgresql_where=text("status = 'pending'"),
-        ),
-        Index(
-            "uq_role_grant_requests_active",
-            "subject_user_id",
-            unique=True,
-            postgresql_where=text("status = 'active'"),
-        ),
-        Index(
-            "ix_role_grant_requests_status",
-            "status",
-            postgresql_where=text("status IN ('pending', 'active')"),
-        ),
-        {"schema": SCHEMA},
-    )
+ELEVATION_MAX: Final = timedelta(hours=8)
+BREAK_GLASS_MAX: Final = timedelta(hours=1)
+_MS = 1000
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    kind: Mapped[str]
-    subject_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    role_id: Mapped[uuid.UUID]
-    role_key: Mapped[str]
-    department_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("org.departments.id", ondelete="RESTRICT")
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class UserRole(Record):
+    __collection__ = "user_roles"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "user_id", "role_key", "department_id", "location_id"),
+            name="uq_user_roles_active_assignment",
+            unique=True,
+            partial={"revoked_at": {"$type": "null"}},
+        ),
+        Index(asc("organization_id", "user_id", "revoked_at"), name="ix_user_roles_user_id"),
+        Index(asc("organization_id", "role_key", "revoked_at"), name="ix_user_roles_role_key"),
+        Index(
+            asc("organization_id", "grant_request_id"),
+            name="uq_user_roles_grant_request_id",
+            unique=True,
+            partial={"grant_request_id": {"$type": "binData"}},
+        ),
     )
-    location_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("org.locations.id", ondelete="RESTRICT"))
-    reason: Mapped[str]
-    requested_duration: Mapped[timedelta | None]
-    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    requested_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    status: Mapped[str]
-    decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    decided_at: Mapped[datetime | None]
-    decision_note: Mapped[str | None]
-    starts_at: Mapped[datetime | None]
-    ends_at: Mapped[datetime | None]
-    revoked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    revoked_at: Mapped[datetime | None]
-    acknowledged_by: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("identity.users.id", ondelete="RESTRICT")
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "role_key": allowed(_ASSIGNABLE),
+        "grant_reason": {"minLength": 1, "maxLength": 500},
+    }
+    __expr_rules__ = (
+        {"$or": [{"$eq": ["$valid_until", None]}, {"$gt": ["$valid_until", "$valid_from"]}]},
+        {
+            "$or": [
+                {"$eq": ["$granted_by", None]},
+                {"$ne": ["$granted_by", "$user_id"]},
+                {"$ne": ["$grant_request_id", None]},
+            ]
+        },
+        {"$or": [{"$eq": ["$revoked_by", None]}, {"$ne": ["$revoked_at", None]}]},
     )
-    acknowledged_at: Mapped[datetime | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Only the end of an assignment is recorded later, once.
+    # History: an assignment ends by revocation and is never deleted.
+    __deletable__ = False
+    __mutable__ = frozenset({"revoked_at", "revoked_by"})
+    __set_once__ = frozenset({"revoked_at", "revoked_by"})
+
+    user_id: uuid.UUID
+    role_id: uuid.UUID
+    role_key: str
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    valid_from: datetime = dataclasses.field(default_factory=utcnow)
+    valid_until: datetime | None = None
+    granted_by: uuid.UUID | None = None
+    grant_reason: str
+    revoked_at: datetime | None = None
+    revoked_by: uuid.UUID | None = None
+    # The request (elevation, super admin assignment, break-glass) the assignment came from.
+    grant_request_id: uuid.UUID | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+def _is(field: str, *values: str) -> dict[str, Any]:
+    return {"$in": [f"${field}", list(values)]}
+
+
+def _null(field: str) -> dict[str, Any]:
+    return {"$eq": [f"${field}", None]}
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class RoleGrantRequest(Record):
+    __collection__ = "role_grant_requests"
+    # History: a request ends in a final status and is never deleted.
+    __deletable__ = False
+    __indexes__ = (
+        Index(
+            asc("organization_id", "subject_user_id", "kind"),
+            name="uq_role_grant_requests_pending",
+            unique=True,
+            partial={"status": "pending"},
+        ),
+        Index(
+            asc("organization_id", "subject_user_id"),
+            name="uq_role_grant_requests_active",
+            unique=True,
+            partial={"status": "active"},
+        ),
+        Index(asc("organization_id", "status", "_id"), name="ix_role_grant_requests_status"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "kind": allowed(GrantKind),
+        "status": allowed(GrantStatus),
+        "reason": {"minLength": 1, "maxLength": 500},
+        "decision_note": {"minLength": 1, "maxLength": 500},
+    }
+    __expr_rules__ = (
+        # Statuses per kind.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        _is("kind", "elevation"),
+                        _is("status", "pending", "active", "rejected", "expired", "ended", "revoked"),
+                    ]
+                },
+                {
+                    "$and": [
+                        _is("kind", "super_admin_assignment"),
+                        _is("status", "pending", "approved", "rejected", "expired", "revoked"),
+                    ]
+                },
+                {"$and": [_is("kind", "break_glass"), _is("status", "active", "ended", "revoked")]},
+            ]
+        },
+        # Roles per kind.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        _is("kind", "elevation"),
+                        {"$not": [_is("role_key", "super_admin", "employee", "manager")]},
+                    ]
+                },
+                {"$and": [_is("kind", "super_admin_assignment"), _is("role_key", "super_admin")]},
+                {
+                    "$and": [
+                        _is("kind", "break_glass"),
+                        _is("role_key", "system_admin"),
+                        _null("department_id"),
+                        _null("location_id"),
+                    ]
+                },
+            ]
+        },
+        # Who asks.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        _is("kind", "elevation", "break_glass"),
+                        {"$eq": ["$requested_by", "$subject_user_id"]},
+                    ]
+                },
+                {
+                    "$and": [
+                        _is("kind", "super_admin_assignment"),
+                        {"$ne": ["$requested_by", "$subject_user_id"]},
+                    ]
+                },
+            ]
+        },
+        # Who decides: never the requester or the subject (separation of duties).
+        {
+            "$or": [
+                _null("decided_by"),
+                {
+                    "$and": [
+                        {"$ne": ["$decided_by", "$requested_by"]},
+                        {"$ne": ["$decided_by", "$subject_user_id"]},
+                    ]
+                },
+            ]
+        },
+        {"$eq": [_null("decided_by"), _null("decided_at")]},
+        {"$or": [_null("decision_note"), {"$ne": ["$decided_by", None]}]},
+        {"$or": [{"$ne": ["$kind", "break_glass"]}, _null("decided_by")]},
+        {"$or": [{"$not": [_is("status", "approved", "rejected")]}, {"$ne": ["$decided_by", None]}]},
+        # An elevation is active only once someone else approved it.
+        {
+            "$or": [
+                {"$ne": ["$kind", "elevation"]},
+                {"$ne": ["$status", "active"]},
+                {"$ne": ["$decided_by", None]},
+            ]
+        },
+        # Durations, in milliseconds.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        _is("kind", "elevation"),
+                        {"$gt": ["$requested_duration", 0]},
+                        {"$lte": ["$requested_duration", int(ELEVATION_MAX.total_seconds() * _MS)]},
+                    ]
+                },
+                {
+                    "$and": [
+                        _is("kind", "break_glass"),
+                        {"$gt": ["$requested_duration", 0]},
+                        {"$lte": ["$requested_duration", int(BREAK_GLASS_MAX.total_seconds() * _MS)]},
+                    ]
+                },
+                {"$and": [_is("kind", "super_admin_assignment"), _null("requested_duration")]},
+            ]
+        },
+        # The window.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        _is("kind", "super_admin_assignment"),
+                        _null("ends_at"),
+                        {"$eq": [{"$ne": ["$status", "approved"]}, _null("starts_at")]},
+                    ]
+                },
+                {
+                    "$and": [
+                        _is("kind", "elevation", "break_glass"),
+                        {"$eq": [_null("starts_at"), _null("ends_at")]},
+                        {
+                            "$eq": [
+                                _null("starts_at"),
+                                {
+                                    "$or": [
+                                        _is("status", "pending", "rejected", "expired"),
+                                        {
+                                            "$and": [
+                                                {"$eq": ["$status", "revoked"]},
+                                                _null("decided_by"),
+                                                {"$eq": ["$kind", "elevation"]},
+                                            ]
+                                        },
+                                    ]
+                                },
+                            ]
+                        },
+                        {
+                            "$or": [
+                                _null("ends_at"),
+                                {"$eq": [{"$subtract": ["$ends_at", "$starts_at"]}, "$requested_duration"]},
+                            ]
+                        },
+                    ]
+                },
+            ]
+        },
+        {
+            "$and": [
+                {"$eq": [_null("revoked_by"), _null("revoked_at")]},
+                {"$eq": [{"$eq": ["$status", "revoked"]}, {"$ne": ["$revoked_at", None]}]},
+            ]
+        },
+        {"$eq": [_null("acknowledged_by"), _null("acknowledged_at")]},
+        {
+            "$or": [
+                _null("acknowledged_by"),
+                {"$and": [{"$eq": ["$kind", "break_glass"]}, {"$ne": ["$acknowledged_by", "$requested_by"]}]},
+            ]
+        },
+    )
+    # What was asked for never changes; a decision, revocation or acknowledgement is recorded
+    # once; statuses only move forward.
+    __mutable__ = frozenset(
+        {
+            "status",
+            "decided_by",
+            "decided_at",
+            "decision_note",
+            "starts_at",
+            "ends_at",
+            "revoked_by",
+            "revoked_at",
+            "acknowledged_by",
+            "acknowledged_at",
+            "updated_at",
+        }
+    )
+    __set_once__ = frozenset(
+        {
+            "decided_by",
+            "decided_at",
+            "decision_note",
+            "starts_at",
+            "ends_at",
+            "revoked_by",
+            "revoked_at",
+            "acknowledged_by",
+            "acknowledged_at",
+        }
+    )
+    __transitions__: ClassVar[dict[str, dict[str, frozenset[str]]]] = {
+        "status": {
+            "pending": frozenset({"approved", "active", "rejected", "expired", "revoked"}),
+            "active": frozenset({"ended", "revoked"}),
+        }
+    }
+
+    kind: str
+    subject_user_id: uuid.UUID
+    role_id: uuid.UUID
+    role_key: str
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    reason: str
+    requested_duration: timedelta | None = None
+    requested_by: uuid.UUID
+    requested_at: datetime = dataclasses.field(default_factory=utcnow)
+    status: str
+    decided_by: uuid.UUID | None = None
+    decided_at: datetime | None = None
+    decision_note: str | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    revoked_by: uuid.UUID | None = None
+    revoked_at: datetime | None = None
+    acknowledged_by: uuid.UUID | None = None
+    acknowledged_at: datetime | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)

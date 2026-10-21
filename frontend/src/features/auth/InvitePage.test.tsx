@@ -83,8 +83,11 @@ describe("invite activation", () => {
 
     await user.click(screen.getByRole("button", { name: "Set password and continue" }));
     expect(await screen.findByRole("img", { name: /QR code/ })).toBeInTheDocument();
-    expect(screen.getByText(SETUP.secret)).toBeInTheDocument();
-    await user.type(screen.getByLabelText("Enter the 6-digit code to confirm"), "123456");
+    // The key in groups of four, easier to type; it is the same key as in the QR code.
+    expect(screen.getByText("JBSW Y3DP EHPK 3PXP")).toBeInTheDocument();
+    // Apps show codes as "123 456": the space is dropped, and the code sent is six digits.
+    await user.type(screen.getByLabelText("Enter the 6-digit code to confirm"), "123 456");
+    expect(screen.getByLabelText("Enter the 6-digit code to confirm")).toHaveValue("123456");
     await user.click(screen.getByRole("button", { name: "Confirm authenticator" }));
 
     expect(await screen.findByRole("list", { name: "Recovery codes" })).toHaveTextContent(

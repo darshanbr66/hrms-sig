@@ -2,12 +2,13 @@
 
 A periodic job (every minute) calls `OutboxDispatcher.run_once`:
 
-1. **Claim.** In one short transaction, take up to BATCH due rows with
-   `FOR UPDATE SKIP LOCKED` (pending and due, or sending with an expired lease), mark them
-   `sending` with a lease and count the attempt. Several workers never claim the same row.
-   Rows are taken in a fixed order, earliest `next_attempt_at` first and then oldest row
-   (UUIDv7 `id`), so rows due at the same moment are claimed oldest first instead of in
-   whatever order the database returns them.
+1. **Claim.** Up to BATCH due messages (pending and due, or sending with an expired lease),
+   each with one atomic update that marks it `sending` with a lease and counts the attempt,
+   or marks it `failed` when its attempts are used up. A message one worker claimed is no
+   longer due for another, so several workers never claim the same one (a claim lost to another
+   worker at the same moment is skipped). Messages are taken
+   earliest `next_attempt_at` first and then oldest (UUIDv7 `id`). The dispatcher runs once
+   for every organization, each in its own scope.
 2. **Render.** For each claimed row, in its own transaction: re-read and lock the row (it must
    still be ours), then call the template's renderer, which resolves the recipient address
    and may create a link token (only its hash is stored). This commits before the email
@@ -28,16 +29,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-import procrastinate
-from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.notify.models import EmailOutbox, EmailTemplate, OutboxStatus
 from app.modules.notify.public import OutboxItem, Renderer
 from app.platform import settings
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import ConcurrentChangeError, Database, Session
 from app.platform.email import EmailDeliveryError, EmailSender
+from app.platform.jobs import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,6 @@ LEASE: Final = timedelta(minutes=5)
 MAX_BACKOFF: Final = timedelta(hours=1)
 TASK_NAME: Final = "notify.dispatch_email"
 SCHEDULE: Final = "* * * * *"
-QUEUE: Final = "email"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,36 +93,45 @@ class OutboxDispatcher:
         now = self._clock.now()
         async with self._db.unit_of_work() as session:
             max_attempts = (await settings.load(session))[settings.EMAIL_MAX_ATTEMPTS]
-            due = or_(
-                (EmailOutbox.status == OutboxStatus.PENDING.value) & (EmailOutbox.next_attempt_at <= now),
-                (EmailOutbox.status == OutboxStatus.SENDING.value) & (EmailOutbox.lease_expires_at < now),
-            )
-            query = (
-                select(EmailOutbox)
-                .where(due)
-                .order_by(EmailOutbox.next_attempt_at, EmailOutbox.id)
-                .limit(BATCH)
-                .with_for_update(skip_locked=True)
-                .execution_options(populate_existing=True)
-            )
-            claimed: list[object] = []
-            for row in (await session.execute(query)).scalars():
-                row.updated_at = now
-                if row.attempts >= max_attempts:
+        exhausted = {"$gte": ["$attempts", max_attempts]}
+        due = {
+            "$or": [
+                {"status": OutboxStatus.PENDING.value, "next_attempt_at": {"$lte": now}},
+                {"status": OutboxStatus.SENDING.value, "lease_expires_at": {"$lt": now}},
+            ]
+        }
+        claim = [
+            {
+                "$set": {
+                    "updated_at": now,
                     # Its last allowed attempt was abandoned (the worker stopped mid-send).
-                    row.status = OutboxStatus.FAILED.value
-                    row.lease_expires_at = None
-                    row.last_error = "LeaseExpired"
-                    logger.error(
-                        "email.delivery_failed",
-                        extra={"outbox_id": str(row.id), "template": row.template, "attempts": row.attempts},
+                    "status": {"$cond": [exhausted, OutboxStatus.FAILED.value, OutboxStatus.SENDING.value]},
+                    "last_error": {"$cond": [exhausted, "LeaseExpired", "$last_error"]},
+                    "lease_expires_at": {"$cond": [exhausted, None, now + LEASE]},
+                    "attempts": {"$cond": [exhausted, "$attempts", {"$add": ["$attempts", 1]}]},
+                }
+            }
+        ]
+        claimed: list[object] = []
+        for _ in range(BATCH):
+            try:
+                async with self._db.unit_of_work() as session:
+                    row = await session.find_one_and_update(
+                        EmailOutbox, due, claim, sort=[("next_attempt_at", 1), ("id", 1)]
                     )
-                    continue
-                row.status = OutboxStatus.SENDING.value
-                row.attempts += 1
-                row.lease_expires_at = now + LEASE
-                claimed.append(row.id)
-            return claimed, max_attempts
+            except ConcurrentChangeError:
+                # Another dispatcher claimed this message at the same moment: it is theirs.
+                continue
+            if row is None:
+                break
+            if row.status == OutboxStatus.FAILED:
+                logger.error(
+                    "email.delivery_failed",
+                    extra={"outbox_id": str(row.id), "template": row.template, "attempts": row.attempts},
+                )
+                continue
+            claimed.append(row.id)
+        return claimed, max_attempts
 
     async def _deliver(self, row_id: object, max_attempts: int) -> str:
         async with self._db.unit_of_work() as session:
@@ -152,16 +158,12 @@ class OutboxDispatcher:
         await self._record(row_id, status=OutboxStatus.SENT, sent_at=self._clock.now())
         return "sent"
 
-    async def _locked_row(self, session: AsyncSession, row_id: object) -> EmailOutbox | None:
-        """The row, only if it is still claimed by this run (a lease can expire under a very
-        slow send, and another worker may have taken it)."""
-        query = (
-            select(EmailOutbox)
-            .where(EmailOutbox.id == row_id, EmailOutbox.status == OutboxStatus.SENDING.value)
-            .with_for_update()
-            .execution_options(populate_existing=True)
+    async def _locked_row(self, session: Session, row_id: object) -> EmailOutbox | None:
+        """The message, only if it is still claimed (a lease can expire under a very slow send,
+        and another worker may have taken it)."""
+        return await session.find_one(
+            EmailOutbox, {"id": row_id, "status": OutboxStatus.SENDING.value}, for_update=True
         )
-        return (await session.execute(query)).scalar_one_or_none()
 
     async def _record_failure(self, row_id: object, reason: str, max_attempts: int) -> str:
         async with self._db.unit_of_work() as session:
@@ -209,12 +211,11 @@ class OutboxDispatcher:
             row.updated_at = sent_at
 
 
-def register_email_dispatch(job_app: procrastinate.App, dispatcher: OutboxDispatcher) -> None:
-    """Register the every-minute dispatch on the worker's job app."""
+def register_email_dispatch(scheduler: Scheduler, dispatcher: OutboxDispatcher) -> None:
+    """Register the every-minute dispatch, run for each organization."""
 
-    @job_app.periodic(cron=SCHEDULE, periodic_id=TASK_NAME)
-    @job_app.task(name=TASK_NAME, queue=QUEUE, lock=TASK_NAME)
-    async def dispatch_email(timestamp: int) -> None:
+    @scheduler.periodic(TASK_NAME, SCHEDULE, per_organization=True)
+    async def dispatch_email() -> None:
         result = await dispatcher.run_once()
         if result != DispatchResult():
             logger.info(

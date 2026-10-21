@@ -11,6 +11,7 @@ from datetime import date
 
 import httpx
 
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from tests.api_support import Api
 from tests.integration.test_leave_api import allocate, draft, key, world
@@ -90,11 +91,10 @@ async def test_an_entry_is_edited_but_keeps_its_date_and_kind(api: Api) -> None:
         refused = await client.patch(holiday, json={"name": "Test"}, headers={"If-Match": '"4"'})
         assert refused.status_code == 403
 
-    [(changes, permission)] = await api.fetch(
-        "SELECT changes, permission_used FROM audit.audit_log "
-        "WHERE action = 'holiday.updated' AND target_id = :id",
-        id=path.rsplit("/", 1)[1],
+    [updated] = await api.records(
+        AuditLogRecord, {"action": "holiday.updated", "target_id": path.rsplit("/", 1)[1]}
     )
+    changes, permission = updated.changes or {}, updated.permission_used
     assert permission == "holiday.manage"
     assert changes["name"] == {"old": "Test holiday", "new": "Test renamed"}
     assert changes["is_optional"] == {"old": False, "new": True}
@@ -144,14 +144,13 @@ async def test_a_calendar_in_use_is_not_archived_and_an_archived_one_is_read_onl
         assert removed.status_code == 200, removed.text
         assert [item["kind"] for item in removed.json()["holidays"]] == ["working_day"]
 
-    rows = await api.fetch(
-        "SELECT action, changes FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id",
-        id=path.rsplit("/", 1)[1],
+    rows = await api.records(
+        AuditLogRecord, {"target_id": path.rsplit("/", 1)[1]}, sort=[("recorded_at", 1), ("id", 1)]
     )
-    statuses = [row[1]["status"] for row in rows if row[0] == "holiday.calendar.updated"]
+    statuses = [(row.changes or {})["status"] for row in rows if row.action == "holiday.calendar.updated"]
     assert statuses == [{"old": "active", "new": "archived"}, {"old": "archived", "new": "active"}]
-    assert [row[0] for row in rows][-1] == "holiday.removed"
-    assert rows[-1][1]["name"] == {"old": "Test holiday", "new": None}
+    assert rows[-1].action == "holiday.removed"
+    assert (rows[-1].changes or {})["name"] == {"old": "Test holiday", "new": None}
 
 
 async def test_a_leave_type_with_requests_awaiting_a_decision_is_not_archived(api: Api) -> None:
@@ -187,8 +186,8 @@ async def test_a_leave_type_with_requests_awaiting_a_decision_is_not_archived(ap
         closed = await client.post("/api/v1/me/leave-requests", json=draft(w, 1), headers=key())
         assert closed.status_code in (404, 409, 422), closed.text
 
-    [(changes,)] = await api.fetch(
-        "SELECT changes FROM audit.audit_log WHERE action = 'leave.type.updated' AND target_id = :id",
-        id=w.leave_type_id,
+    [updated] = await api.records(
+        AuditLogRecord, {"action": "leave.type.updated", "target_id": w.leave_type_id}
     )
+    changes = updated.changes or {}
     assert changes["status"] == {"old": "active", "new": "archived"}

@@ -4,9 +4,10 @@
 #   docker build -t hrms-backend .
 #
 # The service decides what runs (docs/deployment.md §3):
-#   API        the default command below
-#   worker     python -m app.worker
-#   migration  alembic upgrade head        (as hrms_migrator, before the worker and the API)
+#   API        the default command below (with RUN_JOBS_IN_API=true it also runs the jobs)
+#   worker     python -m app.worker        (optional: a separate worker, if one is ever wanted)
+#   migration  python -m app.cli migrate --confirm-database hrms
+#                                          (as the migration user, before deploying the API)
 #   operator   python -m app.cli ...       (from an interactive shell, never a logged job)
 #
 # Pin the base images by digest when the production image is first built and record the
@@ -26,8 +27,8 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-dev --no-install-project
 
 FROM python:3.13-slim-trixie
-# ca-certificates: the system trust store that PostgreSQL (sslmode=verify-full), Redis (rediss),
-# S3 and SMTP certificates are verified against. Deliberately unpinned (hadolint DL3008): it
+# ca-certificates: the system trust store that MongoDB Atlas (TLS) and Resend (HTTPS)
+# certificates are verified against. Deliberately unpinned (hadolint DL3008): it
 # must follow Debian's current certificate authorities, which the image digest then fixes.
 # hadolint ignore=DL3008
 RUN apt-get update \
@@ -40,7 +41,6 @@ ENV PATH=/opt/venv/bin:$PATH \
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
 # Code and migrations stay owned by root: the running process can read them, not change them.
-COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
 USER 10001

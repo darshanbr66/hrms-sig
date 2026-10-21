@@ -10,9 +10,8 @@ Template data is display text only: never a token, a code, an address or a passw
 import uuid
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.notify.public import EmailTemplate, cancel_pending, enqueue
+from app.platform.db import Session
 
 # Bytes of a user agent kept for display in an email (the full string is in the session).
 _BROWSER_CHARS = 120
@@ -33,7 +32,7 @@ def browser_label(user_agent: str | None) -> str:
     return label or "an unknown browser"
 
 
-async def invite(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+async def invite(session: Session, user_id: uuid.UUID, now: datetime) -> None:
     """Queue an invite; any invite still waiting to be sent is cancelled (only the newest link works)."""
     await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.INVITE], now=now)
     await enqueue(
@@ -45,7 +44,7 @@ async def invite(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> No
     )
 
 
-async def password_reset(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+async def password_reset(session: Session, user_id: uuid.UUID, now: datetime) -> None:
     await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.PASSWORD_RESET], now=now)
     await enqueue(
         session,
@@ -56,9 +55,7 @@ async def password_reset(session: AsyncSession, user_id: uuid.UUID, now: datetim
     )
 
 
-async def password_changed(
-    session: AsyncSession, user_id: uuid.UUID, now: datetime, *, by_reset: bool
-) -> None:
+async def password_changed(session: Session, user_id: uuid.UUID, now: datetime, *, by_reset: bool) -> None:
     await enqueue(
         session,
         user_id=user_id,
@@ -70,7 +67,7 @@ async def password_changed(
 
 
 async def new_device(
-    session: AsyncSession, user_id: uuid.UUID, device_id: uuid.UUID, user_agent: str | None, now: datetime
+    session: Session, user_id: uuid.UUID, device_id: uuid.UUID, user_agent: str | None, now: datetime
 ) -> None:
     await enqueue(
         session,
@@ -83,7 +80,7 @@ async def new_device(
 
 
 async def account_locked(
-    session: AsyncSession, user_id: uuid.UUID, locked_until: datetime, minutes: int, now: datetime
+    session: Session, user_id: uuid.UUID, locked_until: datetime, minutes: int, now: datetime
 ) -> None:
     await enqueue(
         session,
@@ -96,7 +93,7 @@ async def account_locked(
 
 
 async def recovery_code_used(
-    session: AsyncSession, user_id: uuid.UUID, session_id: uuid.UUID, remaining: int, now: datetime
+    session: Session, user_id: uuid.UUID, session_id: uuid.UUID, remaining: int, now: datetime
 ) -> None:
     await enqueue(
         session,
@@ -108,7 +105,7 @@ async def recovery_code_used(
     )
 
 
-async def mfa_changed(session: AsyncSession, user_id: uuid.UUID, change: str, now: datetime) -> None:
+async def mfa_changed(session: Session, user_id: uuid.UUID, change: str, now: datetime) -> None:
     """`change` is one of: authenticator_added, authenticator_removed, recovery_codes_replaced."""
     await enqueue(
         session,
@@ -120,7 +117,7 @@ async def mfa_changed(session: AsyncSession, user_id: uuid.UUID, change: str, no
     )
 
 
-async def mfa_reset(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+async def mfa_reset(session: Session, user_id: uuid.UUID, now: datetime) -> None:
     """Queue the re-enrolment email of an administrator's MFA reset; only the newest link works."""
     await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.MFA_RESET], now=now)
     await enqueue(
@@ -132,5 +129,5 @@ async def mfa_reset(session: AsyncSession, user_id: uuid.UUID, now: datetime) ->
     )
 
 
-async def cancel_invites(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
+async def cancel_invites(session: Session, user_id: uuid.UUID, now: datetime) -> None:
     await cancel_pending(session, user_id=user_id, templates=[EmailTemplate.INVITE], now=now)

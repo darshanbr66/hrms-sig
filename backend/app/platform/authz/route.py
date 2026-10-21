@@ -24,7 +24,7 @@ from app.platform.audit.writer import AuditWriter
 from app.platform.authz.catalog import PERMISSIONS
 from app.platform.authz.context import Actor
 from app.platform.authz.engine import AccessDenied, Authorizer, MfaEnrolmentRequired
-from app.platform.db import Database
+from app.platform.db import Database, enter_tenant
 
 ACCESS_ATTRIBUTE: Final = "__hrms_route_access__"
 
@@ -41,6 +41,8 @@ PUBLIC_ROUTES: Final = frozenset(
         "/api/v1/auth/password-reset",
         "/api/v1/auth/password-reset/{token}",
         "/api/v1/auth/mfa-reenrolment/{token}",
+        # A 60-second signed download link; the token itself is the authorization (rule 9).
+        "/api/v1/files/{token}",
         "/api/health/live",
         "/api/health/ready",
     }
@@ -83,6 +85,8 @@ async def current_actor(request: Request) -> Actor:
         return cached
     provider: ActorProvider = request.app.state.actor_provider
     actor = await provider.actor_for(request)
+    # Every unit of work for the rest of this request belongs to the actor's organization.
+    enter_tenant(actor.organization_id)
     request.state.actor = actor
     return actor
 
@@ -141,4 +145,4 @@ async def _record_denial(request: Request, actor: Actor, permission: str) -> Non
         session_id=actor.session_id,
         details={"permission": permission},
     )
-    await writer.record_separately(database, event)
+    await writer.record_separately(database, event, tenant=actor.organization_id)

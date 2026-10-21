@@ -14,6 +14,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.platform.config import IPNetwork
+from app.platform.db import reset_tenant, restore_tenant
 from app.platform.errors import PROBLEM_MEDIA_TYPE, internal_error_body
 from app.platform.logging import request_id_var
 
@@ -95,6 +96,9 @@ class RequestContextMiddleware:
         # Always generated here; an incoming X-Request-ID is never trusted or echoed.
         request_id = uuid.uuid4().hex
         token = request_id_var.set(request_id)
+        # Every request starts outside any organization; authentication (or a public flow's
+        # lookup) binds it to one, and the binding ends with the request.
+        tenant_token = reset_tenant()
         client = scope.get("client")
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
@@ -141,6 +145,7 @@ class RequestContextMiddleware:
                     "duration_ms": round((time.perf_counter() - started) * 1000, 1),
                 },
             )
+            restore_tenant(tenant_token)
             request_id_var.reset(token)
 
     @staticmethod

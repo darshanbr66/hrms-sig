@@ -13,7 +13,7 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.modules.notify.dispatcher import BATCH, OutboxDispatcher
-from app.modules.notify.models import EmailTemplate
+from app.modules.notify.models import EmailOutbox, EmailTemplate
 from app.modules.notify.public import enqueue
 from app.platform.config import SmtpSecurity
 from app.platform.email import EmailDeliveryError, OutgoingEmail, SmtpSender
@@ -37,10 +37,8 @@ async def queue(
 
 
 async def row(api: Api, key: str) -> tuple[str, int, str | None]:
-    [(status, attempts, error)] = await api.fetch(
-        "SELECT status, attempts, last_error FROM notify.email_outbox WHERE idempotency_key = :k", k=key
-    )
-    return status, attempts, error
+    [stored] = await api.records(EmailOutbox, {"idempotency_key": key})
+    return stored.status, stored.attempts, stored.last_error
 
 
 async def test_an_email_exists_only_if_its_transaction_commits(api: Api) -> None:
@@ -63,7 +61,7 @@ async def test_an_email_exists_only_if_its_transaction_commits(api: Api) -> None
 
     with pytest.raises(Aborted):
         await change_that_fails()
-    assert await api.fetch("SELECT 1 FROM notify.email_outbox WHERE idempotency_key = :k", k=key) == []
+    assert await api.count("email_outbox", {"idempotency_key": key}) == 0
 
 
 async def test_the_same_event_is_queued_once(api: Api) -> None:
@@ -71,8 +69,7 @@ async def test_the_same_event_is_queued_once(api: Api) -> None:
     key = f"test:{uuid.uuid4()}"
     assert await queue(api, account.user_id, key)
     assert not await queue(api, account.user_id, key)
-    rows = await api.fetch("SELECT count(*) FROM notify.email_outbox WHERE idempotency_key = :k", k=key)
-    assert rows == [(1,)]
+    assert await api.count("email_outbox", {"idempotency_key": key}) == 1
 
 
 @pytest.mark.parametrize(
@@ -104,10 +101,8 @@ async def test_delivery_resolves_the_address_at_send_time(api: Api) -> None:
     account = await api.create_account()
     key = f"test:{uuid.uuid4()}"
     await queue(api, account.user_id, key)
-    stored = await api.fetch(
-        "SELECT to_jsonb(o)::text FROM notify.email_outbox o WHERE idempotency_key = :k", k=key
-    )
-    assert account.email not in stored[0][0]
+    stored = await api.find("email_outbox", {"idempotency_key": key})
+    assert account.email not in repr(stored[0])
     await api.deliver()
     [message] = api.mail_to(account.email)
     assert "Test browser" in message.body
@@ -151,38 +146,30 @@ async def test_rows_due_together_are_claimed_oldest_first(isolated_api: Api) -> 
     keys = [f"test:{uuid.uuid4()}" for _ in range(BATCH + 1)]
     for key in keys:  # same clock, so every row has the same next_attempt_at
         await queue(api, account.user_id, key)
-    [(oldest,)] = await api.fetch(
-        "SELECT id FROM notify.email_outbox WHERE user_id = :u ORDER BY id LIMIT 1", u=account.user_id
-    )
-    [(newest,)] = await api.fetch(
-        "SELECT id FROM notify.email_outbox WHERE user_id = :u ORDER BY id DESC LIMIT 1", u=account.user_id
-    )
-    # Move the oldest row to the end of the table and of the index (two changes to an indexed
-    # column that end on its original value), so storage order no longer matches age.
-    for shift in ("+", "-"):
-        await api.execute(
-            f"UPDATE notify.email_outbox SET next_attempt_at = next_attempt_at {shift} interval '1 second' "
-            "WHERE id = :id",
-            id=oldest,
+    queued = await api.records(EmailOutbox, {"user_id": account.user_id}, sort=[("id", 1)])
+    oldest, newest = queued[0], queued[-1].id
+    # Rewrite the oldest document (two changes to an indexed field that end on its original
+    # value), so storage order no longer matches age.
+    for shift in (timedelta(seconds=1), timedelta(0)):
+        await api.update(
+            "email_outbox", {"_id": oldest.id}, {"next_attempt_at": oldest.next_attempt_at + shift}
         )
 
     assert (await api.dispatcher().run_once()).sent == BATCH
-    after = dict(
-        await api.fetch("SELECT id, status FROM notify.email_outbox WHERE user_id = :u", u=account.user_id)
-    )
+    after = {item.id: item.status for item in await api.records(EmailOutbox, {"user_id": account.user_id})}
     assert [row_id for row_id, status in after.items() if status != "sent"] == [newest]
 
     # The row that waited is taken by the next run.
     assert (await api.dispatcher().run_once()).sent == 1
-    final = await api.fetch("SELECT status FROM notify.email_outbox WHERE user_id = :u", u=account.user_id)
-    assert {status for (status,) in final} == {"sent"}
+    final = await api.records(EmailOutbox, {"user_id": account.user_id})
+    assert {item.status for item in final} == {"sent"}
 
 
 async def test_an_email_that_no_longer_applies_is_cancelled(api: Api) -> None:
     account = await api.create_account()
     key = f"test:{uuid.uuid4()}"
     await queue(api, account.user_id, key)
-    await api.execute("UPDATE identity.users SET status = 'disabled' WHERE id = :id", id=account.user_id)
+    await api.update("users", {"_id": account.user_id}, {"status": "disabled"})
     await api.deliver()
     assert api.mail_to(account.email) == []
     assert (await row(api, key))[0] == "cancelled"
@@ -193,11 +180,10 @@ async def test_an_abandoned_claim_is_taken_again_after_its_lease(api: Api) -> No
     account = await api.create_account()
     key = f"test:{uuid.uuid4()}"
     await queue(api, account.user_id, key)
-    await api.execute(
-        "UPDATE notify.email_outbox SET status = 'sending', attempts = 1, lease_expires_at = :t "
-        "WHERE idempotency_key = :k",
-        t=api.clock.now() + timedelta(minutes=5),
-        k=key,
+    await api.update(
+        "email_outbox",
+        {"idempotency_key": key},
+        {"status": "sending", "attempts": 1, "lease_expires_at": api.clock.now() + timedelta(minutes=5)},
     )
     await api.deliver()
     assert api.mail_to(account.email) == []
@@ -310,11 +296,10 @@ async def test_an_abandoned_last_attempt_is_marked_failed(api: Api) -> None:
     account = await api.create_account()
     key = f"test:{uuid.uuid4()}"
     await queue(api, account.user_id, key)
-    await api.execute(
-        "UPDATE notify.email_outbox SET status = 'sending', attempts = 5, lease_expires_at = :t "
-        "WHERE idempotency_key = :k",
-        t=api.clock.now() - timedelta(seconds=1),
-        k=key,
+    await api.update(
+        "email_outbox",
+        {"idempotency_key": key},
+        {"status": "sending", "attempts": 5, "lease_expires_at": api.clock.now() - timedelta(seconds=1)},
     )
     await api.deliver()
     assert await row(api, key) == ("failed", 5, "LeaseExpired")

@@ -6,12 +6,11 @@ from collections.abc import Collection
 from datetime import date, datetime
 from typing import Final
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.attendance.days import judge
 from app.modules.attendance.service import totals_for
 from app.modules.people import public as people
 from app.platform.csvfile import Cell
+from app.platform.db import Session
 
 STATUSES: Final = (
     "present",
@@ -56,16 +55,16 @@ DAYS_HEADER: Final = (
 
 
 async def _colleagues(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date
 ) -> list[people.Colleague]:
     found, _ = await people.employed_colleagues(
-        session, people.employee_id_column().in_(list(employee_ids)), on=end, since=start
+        session, {people.EMPLOYEE_ID_FIELD: {"$in": list(employee_ids)}}, on=end, since=start
     )
     return found
 
 
 async def summary_rows(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
 ) -> list[list[Cell]]:
     colleagues = await _colleagues(session, employee_ids, start, end)
     judged = await judge(session, [c.id for c in colleagues], start, end, now)
@@ -91,7 +90,7 @@ async def summary_rows(
 
 
 async def day_rows(
-    session: AsyncSession, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
+    session: Session, employee_ids: Collection[uuid.UUID], start: date, end: date, now: datetime
 ) -> list[list[Cell]]:
     colleagues = await _colleagues(session, employee_ids, start, end)
     judged = await judge(session, [c.id for c in colleagues], start, end, now)

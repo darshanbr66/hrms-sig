@@ -8,6 +8,8 @@ import httpx
 import pyotp
 import pytest
 
+from app.modules.people.models import Employee
+from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
 from app.platform.security import passwords
 from tests.api_support import PASSWORD, Account, Api, link_token
@@ -68,10 +70,12 @@ async def test_an_invite_is_emailed_and_activates_once(api: Api) -> None:
     assert [m for m in await api.deliver() if m.to == email] == []
     async with api.client() as again:
         assert (await again.get(f"/api/v1/auth/invite/{token}")).json()["valid"] is False
-    rows = await api.fetch(
-        "SELECT action, permission_used FROM audit.audit_log WHERE target_id = :id ORDER BY recorded_at, id",
-        id=user_id,
-    )
+    rows = [
+        (row.action, row.permission_used)
+        for row in await api.records(
+            AuditLogRecord, {"target_id": str(user_id)}, sort=[("recorded_at", 1), ("id", 1)]
+        )
+    ]
     assert rows[0] == ("identity.user.invited", "user.invite")
     assert ("identity.user.activated", None) in rows
     assert inviter.user_id
@@ -138,7 +142,8 @@ async def test_linking_an_employee_needs_hr_authority_and_their_work_email(api: 
         units = await create_org_units(session)
         employee = await create_employee(session, joined=today)
         await add_job(session, units, employee, manager_id=None, effective_from=today)
-    [(work_email,)] = await api.fetch("SELECT work_email FROM people.employees WHERE id = :id", id=employee)
+    [stored] = await api.records(Employee, {"id": employee})
+    work_email = stored.work_email
 
     # A system admin has user.invite but no authority over employee records.
     async with api.client() as client:

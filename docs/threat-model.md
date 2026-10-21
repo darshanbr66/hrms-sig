@@ -3,6 +3,8 @@
 Status: Draft v0.1. Review at the end of each phase and whenever a new module, integration or data category is added.
 Method: asset- and actor-driven scenarios, checked against STRIDE per trust boundary.
 
+> **2026-10-20, ADR-030:** PostgreSQL, Redis and object storage are replaced by MongoDB Atlas (records, counters, files). T25a (Redis) now applies to the `rate_limit_counters` collection: same contents, same fail-closed behaviour, protected by the database's TLS and users. The audit write-once anchors are replaced by an emailed witness (detection, not prevention). Trust boundary 2 is API ↔ Atlas over TLS.
+
 ## 1. Assets
 
 | Asset | Why it matters | Classification |

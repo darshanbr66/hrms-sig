@@ -1,21 +1,23 @@
-"""SQLAlchemy models for the core `people` tables (docs/database-design.md §4.4, revision 0004).
+"""People records (docs/database-design.md §4.4).
 
-Length limits and allowed values are CHECK constraints in the migration; the enums below
-mirror the allowed values. Job history rows are never deleted and only `effective_to` may
-change (database trigger `people.guard_job_history`).
+Allowed values, lengths and the rules within one document are part of each collection's
+validator. Job history is never deleted and only `effective_to` (and `updated_at`) may change;
+status history is append-only. Overlapping job rows of one person are refused by the service,
+which writes them only while holding the employee record's lock (formerly an exclusion
+constraint).
+
+`Employee` keeps three derived fields current on every write: `sort_name` and `code_key`
+(lower case, for sorting and keyset pages) and `search_text` (lower-cased names, code and work
+email, for the directory's text search).
 """
 
+import dataclasses
 import uuid
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Any, ClassVar
 
-from sqlalchemy import ForeignKey, Index, SmallInteger, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import CITEXT, DATERANGE, JSONB, ExcludeConstraint
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.platform.db import Base
-
-SCHEMA = "people"
+from app.platform.db import CASE_INSENSITIVE, Document, Index, Record, allowed, asc, utcnow
 
 
 class EmployeeStatus(StrEnum):
@@ -41,124 +43,200 @@ class JobChangeReason(StrEnum):
     OTHER = "other"
 
 
-# Directory search over names, the employee code and the work email. Revision 0014 indexes
-# exactly this expression with pg_trgm (`ix_employees_search`, not modelled here because the
-# schema comparison cannot compare operator-class expressions), so queries must use it verbatim.
-SEARCH_TEXT = (
-    "legal_first_name || ' ' || coalesce(legal_last_name, '') || ' ' || coalesce(preferred_name, '') "
-    "|| ' ' || employee_code::text || ' ' || coalesce(work_email::text, '')"
-)
+_EMAIL = {"maxLength": 254, "pattern": r"^[^@\s]+@[^@\s]+$"}
+_NAME = {"minLength": 1, "maxLength": 100}
 
 
-class Employee(Base):
-    __tablename__ = "employees"
-    __table_args__ = (
-        Index("ix_employees_status", "status"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    employee_code: Mapped[str] = mapped_column(CITEXT(), unique=True)
-    legal_first_name: Mapped[str]
-    legal_last_name: Mapped[str | None]
-    preferred_name: Mapped[str | None]
-    work_email: Mapped[str | None] = mapped_column(CITEXT(), unique=True)
-    work_phone: Mapped[str | None]
-    date_of_joining: Mapped[date]
-    date_of_exit: Mapped[date | None]
-    status: Mapped[str]
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+def display_name_of(preferred: str | None, first: str, last: str | None) -> str:
+    """Preferred name (else legal first name), then legal last name."""
+    return f"{preferred or first} {last or ''}".strip()
 
 
-class EmployeeJob(Base):
-    __tablename__ = "employee_jobs"
-    __table_args__ = (
-        ExcludeConstraint(
-            ("employee_id", "="),
-            (func.daterange(text("effective_from"), text("effective_to"), type_=DATERANGE), "&&"),
-            name="ex_employee_jobs_employee_id_effective",
-            using="gist",
+@dataclasses.dataclass(kw_only=True, eq=False)
+class Employee(Record):
+    __collection__ = "employees"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "employee_code"),
+            name="uq_employees_employee_code",
+            unique=True,
+            collation=CASE_INSENSITIVE,
         ),
         Index(
-            "ix_employee_jobs_manager_employee_id",
-            "manager_employee_id",
-            postgresql_where=text("manager_employee_id IS NOT NULL"),
+            asc("organization_id", "work_email"),
+            name="uq_employees_work_email",
+            unique=True,
+            collation=CASE_INSENSITIVE,
+            partial={"work_email": {"$type": "string"}},
         ),
-        Index("ix_employee_jobs_department_id", "department_id"),
-        Index("ix_employee_jobs_designation_id", "designation_id"),
-        Index("ix_employee_jobs_location_id", "location_id"),
-        {"schema": SCHEMA},
+        Index(asc("organization_id", "status"), name="ix_employees_status"),
+        Index(asc("organization_id", "sort_name", "_id"), name="ix_employees_sort_name"),
+        Index(asc("organization_id", "code_key", "_id"), name="ix_employees_code_key"),
+        Index(asc("organization_id", "date_of_joining", "_id"), name="ix_employees_date_of_joining"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "employee_code": {"minLength": 1, "maxLength": 32},
+        "legal_first_name": _NAME,
+        "legal_last_name": _NAME,
+        "preferred_name": _NAME,
+        "work_email": _EMAIL,
+        "work_phone": {"minLength": 1, "maxLength": 32},
+        "status": allowed(EmployeeStatus),
+        "version": {"minimum": 1},
+    }
+    __expr_rules__ = (
+        # The exit is on or after joining.
+        {"$or": [{"$eq": ["$date_of_exit", None]}, {"$gte": ["$date_of_exit", "$date_of_joining"]}]},
+        # An exited record has its last working day.
+        {"$or": [{"$ne": ["$status", "exited"]}, {"$ne": ["$date_of_exit", None]}]},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.employees.id", ondelete="RESTRICT"))
-    effective_from: Mapped[date]
-    # Exclusive end; NULL while the row is open-ended.
-    effective_to: Mapped[date | None]
-    department_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("org.departments.id", ondelete="RESTRICT"))
-    designation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("org.designations.id", ondelete="RESTRICT"))
-    location_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("org.locations.id", ondelete="RESTRICT"))
-    manager_employee_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("people.employees.id", ondelete="RESTRICT")
+    employee_code: str
+    legal_first_name: str
+    legal_last_name: str | None = None
+    preferred_name: str | None = None
+    work_email: str | None = None
+    work_phone: str | None = None
+    date_of_joining: date
+    date_of_exit: date | None = None
+    status: str
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
+    # Derived (before_write).
+    sort_name: str = ""
+    code_key: str = ""
+    search_text: str = ""
+
+    @property
+    def display_name(self) -> str:
+        return display_name_of(self.preferred_name, self.legal_first_name, self.legal_last_name)
+
+    def before_write(self) -> None:
+        self.sort_name = self.display_name.lower()
+        self.code_key = self.employee_code.lower()
+        parts = (
+            self.legal_first_name,
+            self.legal_last_name or "",
+            self.preferred_name or "",
+            self.employee_code,
+            self.work_email or "",
+        )
+        self.search_text = " ".join(parts).lower()
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class EmployeeJob(Record):
+    __collection__ = "employee_jobs"
+    # Job history is preserved: only the end of a row (and its update time) ever changes.
+    __deletable__ = False
+    __mutable__ = frozenset({"effective_to", "updated_at"})
+    __indexes__ = (
+        Index(asc("organization_id", "employee_id", "effective_from"), name="ix_employee_jobs_employee"),
+        Index(asc("organization_id", "manager_employee_id"), name="ix_employee_jobs_manager"),
+        Index(asc("organization_id", "department_id"), name="ix_employee_jobs_department_id"),
+        Index(asc("organization_id", "designation_id"), name="ix_employee_jobs_designation_id"),
+        Index(asc("organization_id", "location_id"), name="ix_employee_jobs_location_id"),
     )
-    employment_type: Mapped[str]
-    change_reason: Mapped[str]
-    notes: Mapped[str | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
-
-
-class EmployeePersonal(Base):
-    """The `personal` tier (docs/security-architecture.md §2), kept apart from the employee row
-    so `internal` queries never read it."""
-
-    __tablename__ = "employee_personal"
-    __table_args__ = {"schema": SCHEMA}  # noqa: RUF012 (SQLAlchemy declarative attribute)
-
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("people.employees.id", ondelete="RESTRICT"), primary_key=True
-    )
-    date_of_birth: Mapped[date | None]
-    personal_email: Mapped[str | None] = mapped_column(CITEXT())
-    personal_phone: Mapped[str | None]
-    current_address: Mapped[dict[str, str] | None] = mapped_column(JSONB())
-    permanent_address: Mapped[dict[str, str] | None] = mapped_column(JSONB())
-    version: Mapped[int] = mapped_column(server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
-
-
-class EmergencyContact(Base):
-    """The `personal` tier (revision 0024): up to five per person, in priority order."""
-
-    __tablename__ = "emergency_contacts"
-    __table_args__ = (UniqueConstraint("employee_id", "priority"), {"schema": SCHEMA})
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.employees.id", ondelete="RESTRICT"))
-    priority: Mapped[int] = mapped_column(SmallInteger())
-    name: Mapped[str]
-    relationship: Mapped[str]
-    phone: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-
-
-class EmployeeStatusChange(Base):
-    """Append-only (database trigger `people.guard_status_history`)."""
-
-    __tablename__ = "employee_status_history"
-    __table_args__ = (
-        Index("ix_employee_status_history_employee_id", "employee_id"),
-        {"schema": SCHEMA},
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "employment_type": allowed(EmploymentType),
+        "change_reason": allowed(JobChangeReason),
+        "notes": {"maxLength": 1000},
+    }
+    __expr_rules__ = (
+        {"$or": [{"$eq": ["$effective_to", None]}, {"$gt": ["$effective_to", "$effective_from"]}]},
+        {"$ne": ["$manager_employee_id", "$employee_id"]},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=text("uuidv7()"))
-    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.employees.id", ondelete="RESTRICT"))
-    from_status: Mapped[str]
-    to_status: Mapped[str]
-    effective_date: Mapped[date]
-    reason: Mapped[str]
-    changed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("identity.users.id", ondelete="RESTRICT"))
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    employee_id: uuid.UUID
+    effective_from: date
+    # Exclusive end; None while the row is open-ended.
+    effective_to: date | None = None
+    department_id: uuid.UUID
+    designation_id: uuid.UUID
+    location_id: uuid.UUID
+    manager_employee_id: uuid.UUID | None = None
+    employment_type: str
+    change_reason: str
+    notes: str | None = None
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class EmployeePersonal(Document):
+    """The `personal` tier (docs/security-architecture.md §2), kept apart from the employee
+    document so `internal` reads never load it. Its `_id` is the employee's."""
+
+    __collection__ = "employee_personal"
+    __id_field__ = "employee_id"
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "personal_email": _EMAIL,
+        "personal_phone": {"minLength": 1, "maxLength": 32},
+        "current_address": {"maxProperties": 12},
+        "permanent_address": {"maxProperties": 12},
+        "version": {"minimum": 1},
+    }
+
+    employee_id: uuid.UUID
+    organization_id: uuid.UUID | None = None
+    date_of_birth: date | None = None
+    personal_email: str | None = None
+    personal_phone: str | None = None
+    current_address: dict[str, str] | None = None
+    permanent_address: dict[str, str] | None = None
+    version: int = 1
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+    updated_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class EmergencyContact(Record):
+    """The `personal` tier: up to five per person, in priority order."""
+
+    __collection__ = "emergency_contacts"
+    __indexes__ = (
+        Index(
+            asc("organization_id", "employee_id", "priority"),
+            name="uq_emergency_contacts_priority",
+            unique=True,
+        ),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "priority": {"minimum": 1, "maximum": 5},
+        "name": {"minLength": 1, "maxLength": 200},
+        "relationship": {"minLength": 1, "maxLength": 100},
+        "phone": {"pattern": r"^\+?[0-9 ()-]{5,30}$"},
+    }
+
+    employee_id: uuid.UUID
+    priority: int
+    name: str
+    relationship: str
+    phone: str
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class EmployeeStatusChange(Record):
+    """Append-only."""
+
+    __collection__ = "employee_status_history"
+    __append_only__ = True
+    __indexes__ = (
+        Index(asc("organization_id", "employee_id", "created_at"), name="ix_employee_status_history"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "from_status": allowed(EmployeeStatus),
+        "to_status": allowed(EmployeeStatus),
+        "reason": {"minLength": 1, "maxLength": 500},
+    }
+    __expr_rules__ = ({"$ne": ["$from_status", "$to_status"]},)
+
+    employee_id: uuid.UUID
+    from_status: str
+    to_status: str
+    effective_date: date
+    reason: str
+    changed_by: uuid.UUID
+    created_at: datetime = dataclasses.field(default_factory=utcnow)

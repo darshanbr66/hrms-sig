@@ -23,13 +23,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.modules.access import repository as repo
 from app.modules.access.grant_requests import GrantRequestService
-from app.modules.access.models import GrantKind, Role, RoleGrantRequest, UserRole
+from app.modules.access.models import GrantKind, RoleGrantRequest, UserRole
+from app.modules.access.repository import Role
 from app.modules.identity import public as identity
+from app.modules.org import public as org
 from app.platform.audit.records import AuditEvent, RequestContext, ValueChange
 from app.platform.audit.writer import AuditWriter
 from app.platform.authz.context import Actor
@@ -37,7 +36,7 @@ from app.platform.authz.engine import Authorizer
 from app.platform.authz.roles import DATA_ROLES, MIN_SUPER_ADMINS, RoleKey
 from app.platform.authz.sod import SodRule, refuse_self
 from app.platform.clock import Clock
-from app.platform.db import Database
+from app.platform.db import Database, Session, UniqueViolationError
 from app.platform.errors import ProblemError, ProblemType
 
 
@@ -152,6 +151,7 @@ class AccessService:
             record = UserRole(
                 user_id=user_id,
                 role_id=role.id,
+                role_key=role.key,
                 department_id=request.department_id,
                 location_id=request.location_id,
                 valid_from=now,
@@ -182,7 +182,7 @@ class AccessService:
             )
         return Assignment(record, role.key)
 
-    async def _insert(self, session: AsyncSession, record: UserRole) -> None:
+    async def _insert(self, session: Session, record: UserRole) -> None:
         # A lapsed assignment of the same role still holds the unique slot until it is closed.
         await repo.close_lapsed(
             session,
@@ -192,26 +192,37 @@ class AccessService:
             department_id=record.department_id,
             location_id=record.location_id,
         )
+        missing = await org.missing_units(
+            session, department_id=record.department_id, location_id=record.location_id
+        )
+        if "department_id" in missing:
+            raise _field("department_id", "org.unknown_department", "Choose an existing department.")
+        if "location_id" in missing:
+            raise _field("location_id", "org.unknown_location", "Choose an existing location.")
         try:
-            async with session.begin_nested():
-                session.add(record)
-                await session.flush()
-        except IntegrityError as exc:
-            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-            if constraint == "uq_user_roles_active_assignment":
+            repo.add_assignment(session, record)
+            await session.flush()
+        except UniqueViolationError as exc:
+            if exc.index == "uq_user_roles_active_assignment":
                 raise _conflict("role.already_assigned", "This person already has this role.") from exc
-            if constraint == "fk_user_roles_department_id":
-                raise _field(
-                    "department_id", "org.unknown_department", "Choose an existing department."
-                ) from exc
-            if constraint == "fk_user_roles_location_id":
-                raise _field("location_id", "org.unknown_location", "Choose an existing location.") from exc
             raise
 
     async def remove(
         self, actor: Actor, context: RequestContext, user_id: uuid.UUID, assignment_id: uuid.UUID
     ) -> None:
+        """Concurrent removals collide on the holders they lock; each loser runs again and is
+        judged on what the winner committed (the assignment gone, or too few super admins left)."""
         now = self._clock.now()
+        await self._db.retry_on_conflict(lambda: self._remove(actor, context, user_id, assignment_id, now))
+
+    async def _remove(
+        self,
+        actor: Actor,
+        context: RequestContext,
+        user_id: uuid.UUID,
+        assignment_id: uuid.UUID,
+        now: datetime,
+    ) -> None:
         async with self._db.unit_of_work() as session:
             granted = await self._authz.require(session, actor, "role.assign")
             refuse_self(actor, user_id, SodRule.OWN_ROLES)
@@ -265,6 +276,6 @@ class AccessService:
             )
 
     @staticmethod
-    async def _require_user(session: AsyncSession, user_id: uuid.UUID) -> None:
+    async def _require_user(session: Session, user_id: uuid.UUID) -> None:
         if await identity.user_status(session, user_id) is None:
             raise ProblemError(ProblemType.NOT_FOUND)

@@ -1,18 +1,18 @@
 """Data access for accounts, credentials, factors, sessions and tokens.
 
-Lookups use the unique indexes (email, token digests) or the account's primary key. Counters
-that concurrent requests can race on (failed sign-ins, one-time token attempts) change in a
-single UPDATE ... RETURNING, so no update is lost. Changes that must see a consistent set of
-an account's factors or sessions lock the account row first (`lock_user`).
+Lookups use the unique indexes (email, token digests) or the account's identifier. A sign-in
+email or a token is looked up across organizations, and the unit of work is then bound to the
+organization it belongs to (`_resolve`); everything after that runs inside it. Counters that
+concurrent requests can race on (failed sign-ins, one-time token attempts, TOTP steps) change
+in one atomic update, so no update is lost. Changes that must see a consistent set of an
+account's factors or sessions lock the account document first (`lock_user`).
 """
 
 import uuid
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
-from sqlalchemy import case, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from app.modules.identity.models import (
     AuthSession,
@@ -28,32 +28,47 @@ from app.modules.identity.models import (
     User,
     UserStatus,
 )
+from app.platform.db import Record, Session, enter_tenant
 from app.platform.security.emails import canonical_email
+
+
+def _resolve[T: Record](session: Session, found: T | None) -> T | None:
+    """Bind an unauthenticated unit of work, and the rest of its request, to the organization
+    of what it found."""
+    if found is not None and found.organization_id is not None:
+        session.bind_tenant(found.organization_id)
+        enter_tenant(found.organization_id)
+    return found
+
 
 # --- accounts --------------------------------------------------------------------------
 
 
-async def user_by_email(session: AsyncSession, email: str) -> User | None:
-    query = select(User).where(User.email == canonical_email(email))
-    return (await session.execute(query)).scalar_one_or_none()
+async def user_by_email(session: Session, email: str) -> User | None:
+    """The account with this email in any organization; the unit of work then belongs to it."""
+    return _resolve(session, await session.find_any_tenant(User, {"email": canonical_email(email)}))
 
 
-async def get_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
+async def email_in_use(session: Session, email: str) -> bool:
+    """Whether any organization has an account with this email (addresses are unique overall)."""
+    return await session.exists_any_tenant(User, {"email": canonical_email(email)})
+
+
+async def get_user(session: Session, user_id: uuid.UUID) -> User | None:
     return await session.get(User, user_id)
 
 
-async def user_for_employee(session: AsyncSession, employee_id: uuid.UUID) -> User | None:
+async def user_for_employee(session: Session, employee_id: uuid.UUID) -> User | None:
     """The account linked to an employee record, if any (at most one, `uq_users_employee_id`)."""
-    return (await session.execute(select(User).where(User.employee_id == employee_id))).scalar_one_or_none()
+    return await session.find_one(User, {"employee_id": employee_id})
 
 
-async def lock_user(session: AsyncSession, user_id: uuid.UUID) -> User | None:
-    """The account row, locked for the rest of the transaction."""
-    query = select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True)
-    return (await session.execute(query)).scalar_one_or_none()
+async def lock_user(session: Session, user_id: uuid.UUID) -> User | None:
+    """The account document, locked for the rest of the transaction."""
+    return await session.get(User, user_id, for_update=True)
 
 
-async def credential(session: AsyncSession, user_id: uuid.UUID) -> Credential | None:
+async def credential(session: Session, user_id: uuid.UUID) -> Credential | None:
     return await session.get(Credential, user_id)
 
 
@@ -71,44 +86,62 @@ class LockoutPolicy:
 
 
 async def register_failure(
-    session: AsyncSession, user_id: uuid.UUID, now: datetime, policy: LockoutPolicy
+    session: Session, user_id: uuid.UUID, now: datetime, policy: LockoutPolicy
 ) -> FailureState:
-    """Count a failed sign-in attempt in the current window; lock at the threshold."""
-    window_expired = or_(
-        User.failed_login_window_started_at.is_(None),
-        User.failed_login_window_started_at <= now - policy.window,
+    """Count a failed sign-in attempt in the current window; lock at the threshold. One atomic
+    update, so concurrent failures are all counted."""
+    window_expired = {
+        "$or": [
+            {"$eq": ["$failed_login_window_started_at", None]},
+            {"$lte": ["$failed_login_window_started_at", now - policy.window]},
+        ]
+    }
+    user = await session.find_one_and_update(
+        User,
+        {"id": user_id},
+        [
+            {"$set": {"_expired": window_expired}},
+            {
+                "$set": {
+                    "failed_login_count": {"$cond": ["$_expired", 1, {"$add": ["$failed_login_count", 1]}]},
+                    "failed_login_window_started_at": {
+                        "$cond": ["$_expired", now, "$failed_login_window_started_at"]
+                    },
+                    "last_failed_login_at": now,
+                }
+            },
+            {
+                "$set": {
+                    "locked_until": {
+                        "$cond": [
+                            {"$gte": ["$failed_login_count", policy.threshold]},
+                            now + policy.duration,
+                            "$locked_until",
+                        ]
+                    }
+                }
+            },
+            {"$unset": "_expired"},
+        ],
     )
-    new_count = case((window_expired, 1), else_=User.failed_login_count + 1)
-    statement = (
-        update(User)
-        .where(User.id == user_id)
-        .values(
-            failed_login_count=new_count,
-            failed_login_window_started_at=case(
-                (window_expired, now), else_=User.failed_login_window_started_at
-            ),
-            last_failed_login_at=now,
-            locked_until=case(
-                (new_count >= policy.threshold, now + policy.duration), else_=User.locked_until
-            ),
-        )
-        .returning(User.failed_login_count, User.locked_until)
-    )
-    row = (await session.execute(statement)).one()
-    return FailureState(row.failed_login_count, row.locked_until)
+    if user is None:
+        raise LookupError("the account disappeared during sign-in")
+    return FailureState(user.failed_login_count, user.locked_until)
 
 
-async def clear_failures(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
-    await session.execute(
-        update(User)
-        .where(User.id == user_id)
-        .values(
-            failed_login_count=0,
-            failed_login_window_started_at=None,
-            locked_until=None,
-            last_login_at=now,
-            updated_at=now,
-        )
+async def clear_failures(session: Session, user_id: uuid.UUID, now: datetime) -> None:
+    await session.update_many(
+        User,
+        {"id": user_id},
+        {
+            "$set": {
+                "failed_login_count": 0,
+                "failed_login_window_started_at": None,
+                "locked_until": None,
+                "last_login_at": now,
+                "updated_at": now,
+            }
+        },
     )
 
 
@@ -119,7 +152,7 @@ class UserPage:
 
 
 async def list_users(
-    session: AsyncSession,
+    session: Session,
     *,
     after: uuid.UUID | None,
     limit: int,
@@ -128,173 +161,135 @@ async def list_users(
 ) -> UserPage:
     """Accounts in creation order (UUIDv7 IDs are time-ordered), keyset-paginated, optionally
     narrowed to an email fragment or the account linked to an employee record."""
-    query = select(User).order_by(User.id).limit(limit + 1)
+    query: dict[str, Any] = {}
     if after is not None:
-        query = query.where(User.id > after)
+        query["id"] = {"$gt": after}
     if email_contains:
-        escaped = email_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        query = query.where(User.email.ilike(f"%{escaped}%"))
+        query["email"] = {"$regex": _escape(email_contains), "$options": "i"}
     if employee_id is not None:
-        query = query.where(User.employee_id == employee_id)
-    rows = list((await session.execute(query)).scalars())
+        query["employee_id"] = employee_id
+    rows = await session.find(User, query, sort=[("id", 1)], limit=limit + 1)
     has_more = len(rows) > limit
     rows = rows[:limit]
     return UserPage(rows, rows[-1].id if has_more and rows else None)
 
 
+def _escape(text: str) -> str:
+    return "".join(f"\\{c}" if c in r"\.^$|?*+()[]{}" else c for c in text)
+
+
 # --- factors and recovery codes ---------------------------------------------------------
 
 
-async def confirmed_factors(session: AsyncSession, user_id: uuid.UUID) -> Sequence[MfaFactor]:
-    query = (
-        select(MfaFactor)
-        .where(
-            MfaFactor.user_id == user_id, MfaFactor.confirmed_at.is_not(None), MfaFactor.revoked_at.is_(None)
-        )
-        .order_by(MfaFactor.id)
+async def confirmed_factors(session: Session, user_id: uuid.UUID) -> Sequence[MfaFactor]:
+    return await session.find(
+        MfaFactor,
+        {"user_id": user_id, "confirmed_at": {"$ne": None}, "revoked_at": None},
+        sort=[("id", 1)],
     )
-    return list((await session.execute(query)).scalars())
 
 
 async def pending_factor(
-    session: AsyncSession, user_id: uuid.UUID, factor_id: uuid.UUID, created_after: datetime
+    session: Session, user_id: uuid.UUID, factor_id: uuid.UUID, created_after: datetime
 ) -> MfaFactor | None:
-    query = select(MfaFactor).where(
-        MfaFactor.id == factor_id,
-        MfaFactor.user_id == user_id,
-        MfaFactor.confirmed_at.is_(None),
-        MfaFactor.revoked_at.is_(None),
-        MfaFactor.created_at > created_after,
-    )
-    return (await session.execute(query)).scalar_one_or_none()
-
-
-async def revoke_pending_factors(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
-    await session.execute(
-        update(MfaFactor)
-        .where(MfaFactor.user_id == user_id, MfaFactor.confirmed_at.is_(None), MfaFactor.revoked_at.is_(None))
-        .values(revoked_at=now, updated_at=now)
+    return await session.find_one(
+        MfaFactor,
+        {
+            "id": factor_id,
+            "user_id": user_id,
+            "confirmed_at": None,
+            "revoked_at": None,
+            "created_at": {"$gt": created_after},
+        },
     )
 
 
-async def record_factor_use(session: AsyncSession, factor_id: uuid.UUID, step: int, now: datetime) -> bool:
+async def revoke_pending_factors(session: Session, user_id: uuid.UUID, now: datetime) -> None:
+    await session.update_many(
+        MfaFactor,
+        {"user_id": user_id, "confirmed_at": None, "revoked_at": None},
+        {"$set": {"revoked_at": now, "updated_at": now}},
+    )
+
+
+async def record_factor_use(session: Session, factor_id: uuid.UUID, step: int, now: datetime) -> bool:
     """Accept a TOTP step only if it is later than the last one used (replay protection).
     Atomic, so two requests with the same code cannot both succeed."""
-    statement = (
-        update(MfaFactor)
-        .where(
-            MfaFactor.id == factor_id,
-            or_(MfaFactor.last_used_step.is_(None), MfaFactor.last_used_step < step),
-        )
-        .values(last_used_step=step, last_used_at=now, updated_at=now)
-        .returning(MfaFactor.id)
+    used = await session.find_one_and_update(
+        MfaFactor,
+        {"id": factor_id, "$or": [{"last_used_step": None}, {"last_used_step": {"$lt": step}}]},
+        {"$set": {"last_used_step": step, "last_used_at": now, "updated_at": now}},
     )
-    return (await session.execute(statement)).scalar_one_or_none() is not None
+    return used is not None
 
 
-async def use_recovery_code(session: AsyncSession, user_id: uuid.UUID, digest: bytes, now: datetime) -> bool:
-    statement = (
-        update(RecoveryCode)
-        .where(
-            RecoveryCode.user_id == user_id,
-            RecoveryCode.code_hash == digest,
-            RecoveryCode.used_at.is_(None),
-            RecoveryCode.revoked_at.is_(None),
-        )
-        .values(used_at=now)
-        .returning(RecoveryCode.id)
+async def use_recovery_code(session: Session, user_id: uuid.UUID, digest: bytes, now: datetime) -> bool:
+    used = await session.find_one_and_update(
+        RecoveryCode,
+        {"user_id": user_id, "code_hash": digest, "used_at": None, "revoked_at": None},
+        {"$set": {"used_at": now}},
     )
-    return (await session.execute(statement)).scalar_one_or_none() is not None
+    return used is not None
 
 
-async def revoke_all_factors(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> int:
+async def revoke_all_factors(session: Session, user_id: uuid.UUID, now: datetime) -> int:
     """Revoke every factor of an account, confirmed or pending (an administrator's MFA reset).
-    The caller sets `mfa_reenrolment_required` in the same transaction, or the database's MFA
-    invariant refuses the commit."""
-    result = await session.execute(
-        update(MfaFactor)
-        .where(MfaFactor.user_id == user_id, MfaFactor.revoked_at.is_(None))
-        .values(revoked_at=now, updated_at=now)
-        .returning(MfaFactor.id)
+    The caller sets `mfa_reenrolment_required` in the same transaction, or the MFA invariant
+    refuses the commit."""
+    return await session.update_many(
+        MfaFactor, {"user_id": user_id, "revoked_at": None}, {"$set": {"revoked_at": now, "updated_at": now}}
     )
-    return len(result.all())
 
 
-async def revoke_recovery_codes(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> None:
-    await session.execute(
-        update(RecoveryCode)
-        .where(
-            RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None), RecoveryCode.revoked_at.is_(None)
-        )
-        .values(revoked_at=now)
+async def revoke_recovery_codes(session: Session, user_id: uuid.UUID, now: datetime) -> None:
+    await session.update_many(
+        RecoveryCode, {"user_id": user_id, "used_at": None, "revoked_at": None}, {"$set": {"revoked_at": now}}
     )
 
 
 async def replace_recovery_codes(
-    session: AsyncSession, user_id: uuid.UUID, digests: Sequence[bytes], now: datetime
+    session: Session, user_id: uuid.UUID, digests: Sequence[bytes], now: datetime
 ) -> None:
-    await session.execute(
-        update(RecoveryCode)
-        .where(
-            RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None), RecoveryCode.revoked_at.is_(None)
-        )
-        .values(revoked_at=now)
-    )
-    session.add_all(RecoveryCode(user_id=user_id, code_hash=digest) for digest in digests)
+    await revoke_recovery_codes(session, user_id, now)
+    session.add_all([RecoveryCode(user_id=user_id, code_hash=digest) for digest in digests])
 
 
-async def unused_recovery_code_count(session: AsyncSession, user_id: uuid.UUID) -> int:
-    query = select(func.count()).where(
-        RecoveryCode.user_id == user_id, RecoveryCode.used_at.is_(None), RecoveryCode.revoked_at.is_(None)
-    )
-    return int((await session.execute(query)).scalar_one())
+async def unused_recovery_code_count(session: Session, user_id: uuid.UUID) -> int:
+    return await session.count(RecoveryCode, {"user_id": user_id, "used_at": None, "revoked_at": None})
 
 
 # --- one-time tokens --------------------------------------------------------------------
 
 
+def _usable(digest: bytes, purpose: OneTimePurpose, now: datetime) -> dict[str, Any]:
+    return {"token_hash": digest, "purpose": purpose.value, "used_at": None, "expires_at": {"$gt": now}}
+
+
 async def lock_one_time_token(
-    session: AsyncSession, digest: bytes, purpose: OneTimePurpose, now: datetime
+    session: Session, digest: bytes, purpose: OneTimePurpose, now: datetime
 ) -> OneTimeToken | None:
-    """A usable token (unused, unexpired), locked for the rest of the transaction."""
-    query = (
-        select(OneTimeToken)
-        .where(
-            OneTimeToken.token_hash == digest,
-            OneTimeToken.purpose == purpose.value,
-            OneTimeToken.used_at.is_(None),
-            OneTimeToken.expires_at > now,
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    return (await session.execute(query)).scalar_one_or_none()
+    """A usable token (unused, unexpired), locked for the rest of the transaction; the unit of
+    work then belongs to its organization."""
+    found = _resolve(session, await session.find_any_tenant(OneTimeToken, _usable(digest, purpose, now)))
+    if found is None:
+        return None
+    return await session.get(OneTimeToken, found.id, for_update=True)
 
 
 async def find_one_time_token(
-    session: AsyncSession, digest: bytes, purpose: OneTimePurpose, now: datetime
+    session: Session, digest: bytes, purpose: OneTimePurpose, now: datetime
 ) -> OneTimeToken | None:
-    query = select(OneTimeToken).where(
-        OneTimeToken.token_hash == digest,
-        OneTimeToken.purpose == purpose.value,
-        OneTimeToken.used_at.is_(None),
-        OneTimeToken.expires_at > now,
-    )
-    return (await session.execute(query)).scalar_one_or_none()
+    return _resolve(session, await session.find_any_tenant(OneTimeToken, _usable(digest, purpose, now)))
 
 
 async def retire_one_time_tokens(
-    session: AsyncSession, user_id: uuid.UUID, purpose: OneTimePurpose, now: datetime
+    session: Session, user_id: uuid.UUID, purpose: OneTimePurpose, now: datetime
 ) -> None:
     """Mark every outstanding token of a purpose used, so only the newest one works."""
-    await session.execute(
-        update(OneTimeToken)
-        .where(
-            OneTimeToken.user_id == user_id,
-            OneTimeToken.purpose == purpose.value,
-            OneTimeToken.used_at.is_(None),
-        )
-        .values(used_at=now)
+    await session.update_many(
+        OneTimeToken,
+        {"user_id": user_id, "purpose": purpose.value, "used_at": None},
+        {"$set": {"used_at": now}},
     )
 
 
@@ -308,36 +303,36 @@ class AccessRecord:
     token_expires_at: datetime
 
 
-async def access_record(session: AsyncSession, digest: bytes) -> AccessRecord | None:
-    query = (
-        select(SessionToken.expires_at, AuthSession, User)
-        .join(AuthSession, AuthSession.id == SessionToken.session_id)
-        .join(User, User.id == AuthSession.user_id)
-        .where(SessionToken.token_hash == digest, SessionToken.kind == TokenKind.ACCESS.value)
+async def access_record(session: Session, digest: bytes) -> AccessRecord | None:
+    token = _resolve(
+        session,
+        await session.find_any_tenant(SessionToken, {"token_hash": digest, "kind": TokenKind.ACCESS.value}),
     )
-    row = (await session.execute(query)).one_or_none()
-    return AccessRecord(row.AuthSession, row.User, row.expires_at) if row else None
+    if token is None:
+        return None
+    record = await session.get(AuthSession, token.session_id)
+    user = await session.get(User, record.user_id) if record else None
+    if record is None or user is None:
+        return None
+    return AccessRecord(record, user, token.expires_at)
 
 
-async def find_refresh_token(session: AsyncSession, digest: bytes) -> SessionToken | None:
-    query = select(SessionToken).where(
-        SessionToken.token_hash == digest, SessionToken.kind == TokenKind.REFRESH.value
+async def find_refresh_token(session: Session, digest: bytes) -> SessionToken | None:
+    return _resolve(
+        session,
+        await session.find_any_tenant(SessionToken, {"token_hash": digest, "kind": TokenKind.REFRESH.value}),
     )
-    return (await session.execute(query)).scalar_one_or_none()
 
 
-async def lock_refresh_token(session: AsyncSession, digest: bytes) -> SessionToken | None:
-    query = (
-        select(SessionToken)
-        .where(SessionToken.token_hash == digest, SessionToken.kind == TokenKind.REFRESH.value)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    return (await session.execute(query)).scalar_one_or_none()
+async def lock_refresh_token(session: Session, digest: bytes) -> SessionToken | None:
+    found = await find_refresh_token(session, digest)
+    if found is None:
+        return None
+    return await session.get(SessionToken, found.id, for_update=True)
 
 
 async def expire_tokens(
-    session: AsyncSession,
+    session: Session,
     *,
     now: datetime,
     session_id: uuid.UUID | None = None,
@@ -346,41 +341,42 @@ async def expire_tokens(
 ) -> None:
     """End the outstanding access tokens of one session or of every session of a user, and
     (unless `retire_refresh` is false) retire their unused refresh tokens."""
-    sessions = select(AuthSession.id)
+    sessions: dict[str, Any] = {}
     if session_id is not None:
-        sessions = sessions.where(AuthSession.id == session_id)
+        sessions["id"] = session_id
     if user_id is not None:
-        sessions = sessions.where(AuthSession.user_id == user_id)
-    in_scope = SessionToken.session_id.in_(sessions.scalar_subquery())
-    await session.execute(
-        update(SessionToken)
-        .where(in_scope, SessionToken.kind == TokenKind.ACCESS.value, SessionToken.expires_at > now)
-        .values(expires_at=now)
+        sessions["user_id"] = user_id
+    ids = await session.distinct(AuthSession, "id", sessions)
+    if not ids:
+        return
+    await session.update_many(
+        SessionToken,
+        {"session_id": {"$in": ids}, "kind": TokenKind.ACCESS.value, "expires_at": {"$gt": now}},
+        {"$set": {"expires_at": now}},
     )
     if retire_refresh:
-        await session.execute(
-            update(SessionToken)
-            .where(in_scope, SessionToken.kind == TokenKind.REFRESH.value, SessionToken.used_at.is_(None))
-            .values(used_at=now)
+        await session.update_many(
+            SessionToken,
+            {"session_id": {"$in": ids}, "kind": TokenKind.REFRESH.value, "used_at": None},
+            {"$set": {"used_at": now}},
         )
 
 
-async def active_sessions(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> Sequence[AuthSession]:
-    query = (
-        select(AuthSession)
-        .where(
-            AuthSession.user_id == user_id,
-            AuthSession.revoked_at.is_(None),
-            AuthSession.idle_expires_at > now,
-            AuthSession.absolute_expires_at > now,
-        )
-        .order_by(AuthSession.last_activity_at.desc())
+async def active_sessions(session: Session, user_id: uuid.UUID, now: datetime) -> Sequence[AuthSession]:
+    return await session.find(
+        AuthSession,
+        {
+            "user_id": user_id,
+            "revoked_at": None,
+            "idle_expires_at": {"$gt": now},
+            "absolute_expires_at": {"$gt": now},
+        },
+        sort=[("last_activity_at", -1)],
     )
-    return list((await session.execute(query)).scalars())
 
 
 async def revoke_sessions(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     reason: RevokedReason,
@@ -389,21 +385,24 @@ async def revoke_sessions(
     except_session_id: uuid.UUID | None = None,
 ) -> list[uuid.UUID]:
     """Revoke one or all of a user's open sessions; returns the IDs revoked."""
-    statement = update(AuthSession).where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
+    query: dict[str, Any] = {"user_id": user_id, "revoked_at": None}
     if session_id is not None:
-        statement = statement.where(AuthSession.id == session_id)
+        query["id"] = session_id
     if except_session_id is not None:
-        statement = statement.where(AuthSession.id != except_session_id)
-    revoked = list(
-        (
-            await session.execute(
-                statement.values(revoked_at=now, revoked_reason=reason.value).returning(AuthSession.id)
-            )
-        ).scalars()
+        query["id"] = {"$ne": except_session_id} if session_id is None else session_id
+        if session_id is not None and session_id == except_session_id:
+            return []
+    revoked = await session.distinct(AuthSession, "id", query)
+    if not revoked:
+        return []
+    await session.update_many(
+        AuthSession,
+        {"id": {"$in": revoked}, "revoked_at": None},
+        {"$set": {"revoked_at": now, "revoked_reason": reason.value}},
     )
     for revoked_id in revoked:
         await expire_tokens(session, now=now, session_id=revoked_id)
-    return revoked
+    return list(revoked)
 
 
 def session_expiry(now: datetime, absolute_expires_at: datetime, idle: timedelta) -> datetime:
@@ -411,7 +410,7 @@ def session_expiry(now: datetime, absolute_expires_at: datetime, idle: timedelta
 
 
 async def store_password(
-    session: AsyncSession,
+    session: Session,
     user_id: uuid.UUID,
     password_hash: str,
     now: datetime,
@@ -432,38 +431,28 @@ async def store_password(
 
 
 async def lock_trusted_device(
-    session: AsyncSession, user_id: uuid.UUID, digest: bytes, now: datetime
+    session: Session, user_id: uuid.UUID, digest: bytes, now: datetime
 ) -> TrustedDevice | None:
     """The user's unrevoked, unexpired device with this cookie, locked."""
-    query = (
-        select(TrustedDevice)
-        .where(
-            TrustedDevice.user_id == user_id,
-            TrustedDevice.token_hash == digest,
-            TrustedDevice.revoked_at.is_(None),
-            TrustedDevice.expires_at > now,
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
+    found = await session.find_one(
+        TrustedDevice,
+        {"user_id": user_id, "token_hash": digest, "revoked_at": None, "expires_at": {"$gt": now}},
     )
-    return (await session.execute(query)).scalar_one_or_none()
+    if found is None:
+        return None
+    return await session.get(TrustedDevice, found.id, for_update=True)
 
 
-async def active_devices(session: AsyncSession, user_id: uuid.UUID, now: datetime) -> Sequence[TrustedDevice]:
-    query = (
-        select(TrustedDevice)
-        .where(
-            TrustedDevice.user_id == user_id,
-            TrustedDevice.revoked_at.is_(None),
-            TrustedDevice.expires_at > now,
-        )
-        .order_by(TrustedDevice.last_seen_at.desc())
+async def active_devices(session: Session, user_id: uuid.UUID, now: datetime) -> Sequence[TrustedDevice]:
+    return await session.find(
+        TrustedDevice,
+        {"user_id": user_id, "revoked_at": None, "expires_at": {"$gt": now}},
+        sort=[("last_seen_at", -1)],
     )
-    return list((await session.execute(query)).scalars())
 
 
 async def revoke_devices(
-    session: AsyncSession,
+    session: Session,
     *,
     user_id: uuid.UUID,
     reason: str,
@@ -472,24 +461,21 @@ async def revoke_devices(
     except_digest: bytes | None = None,
 ) -> int:
     """Revoke one or all of a user's devices (optionally keeping the one with `except_digest`)."""
-    statement = update(TrustedDevice).where(
-        TrustedDevice.user_id == user_id, TrustedDevice.revoked_at.is_(None)
-    )
+    query: dict[str, Any] = {"user_id": user_id, "revoked_at": None}
     if device_id is not None:
-        statement = statement.where(TrustedDevice.id == device_id)
+        query["id"] = device_id
     if except_digest is not None:
-        statement = statement.where(TrustedDevice.token_hash != except_digest)
-    result = await session.execute(
-        statement.values(revoked_at=now, revoked_reason=reason).returning(TrustedDevice.id)
+        query["token_hash"] = {"$ne": except_digest}
+    return await session.update_many(
+        TrustedDevice, query, {"$set": {"revoked_at": now, "revoked_reason": reason}}
     )
-    return len(result.all())
 
 
-async def active_user_ids(session: AsyncSession, user_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
+async def active_user_ids(session: Session, user_ids: Collection[uuid.UUID]) -> list[uuid.UUID]:
     """The given accounts that are active, in ID order."""
     if not user_ids:
         return []
-    query = (
-        select(User.id).where(User.id.in_(user_ids), User.status == UserStatus.ACTIVE.value).order_by(User.id)
+    users = await session.find(
+        User, {"id": {"$in": list(user_ids)}, "status": UserStatus.ACTIVE.value}, sort=[("id", 1)]
     )
-    return list((await session.execute(query)).scalars())
+    return [user.id for user in users]
