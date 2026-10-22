@@ -184,22 +184,13 @@ temporary copy of the API at it, confirm sign-in and recent records, then delete
 1. New project from the GitHub repository; **Root Directory** `frontend`. `vercel.json` sets
    install, build and output (`pnpm install --frozen-lockfile`,
    `node scripts/check-deploy-config.mjs && pnpm build`, `dist`).
-2. Replace `__RENDER_API_HOST__` in `frontend/vercel.json` with the API's `onrender.com` host in a
-   reviewed commit; the build refuses until then, except in the frontend-first deployment below.
+2. `frontend/vercel.json` forwards `/api/*` to the API's `onrender.com` host
+   (`hrms-sig-api.onrender.com`). The build refuses a placeholder host, a host without https and
+   an `/api` rewrite that drops the prefix.
 
-   **Frontend first.** To get the Vercel production URL before the Render service exists (Render
-   needs it for `APP_BASE_URL`):
-   1. In the Vercel project, add the environment variable `HRMS_FRONTEND_FIRST` = `true`
-      (Production). Leave the placeholder in `vercel.json`; never put a guessed host there.
-   2. Deploy. The check accepts the placeholder (and only the placeholder) and prints a warning.
-      The SPA loads, but every `/api` request fails, because the placeholder is not a resolvable
-      host: nobody can sign in, and nothing reaches any server. Do not invite anyone yet.
-   3. Note the production URL (`<project>.vercel.app`, or the domain of step 3 once added). Create
-      `hrms-api` on Render with `APP_BASE_URL` set to that URL; Render then shows the API's
-      `onrender.com` host.
-   4. Remove `HRMS_FRONTEND_FIRST` from the Vercel project, then commit the real host in
-      `vercel.json` and redeploy. The build refuses while `HRMS_FRONTEND_FIRST` is still set with
-      a real host, and refuses the placeholder without it, so neither can stay in production.
+   The temporary frontend-first deployment (Vercel deployed before the Render service existed,
+   with `HRMS_FRONTEND_FIRST=true`) is over and its mode is removed: the build now refuses while
+   `HRMS_FRONTEND_FIRST` is set in the Vercel project at all, so make sure it is deleted there.
 3. Production domain: add `<hrms domain>`, set its DNS, wait for the certificate, then set
    `APP_BASE_URL=https://<hrms domain>` on `hrms-api`. Unsafe requests from any other origin are
    refused, so `*.vercel.app` cannot sign in.
