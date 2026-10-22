@@ -171,7 +171,8 @@ A small dialog: "Confirm it's you — Enter the 6-digit code from your authentic
 
 ### States
 
-- **Loading:** skeletons shaped like the content for first load; inline spinners only inside buttons. Nothing for loads under 300 ms (delay the skeleton).
+- **Loading:** skeletons shaped like the content for first load; inline spinners only inside buttons. Nothing for loads under 300 ms (delay the skeleton). One exception: the sign-in page's connection status ("Connecting to HRMS…" with a spinner, then "Connected to HRMS"), because a sleeping API can take up to a minute to start; it too appears only after 300 ms.
+- **Sign-in screens:** `AuthLayout` splits the screen: the form on the left, a brand panel on the right (wordmark, a welcome line, three statements of what the HRMS does, nothing invented: no figures, quotes or customer names). Below 1024 px the panel becomes a short band above the form. The panel stays dark in both themes (`--color-brand-*` tokens).
 - **Empty:** one sentence stating what would appear here and, if the user can act, the action. Example: "No leave requests yet. Requests you submit will appear here." No illustrations.
 - **Error:** what failed, what the person can do, and the request ID in small text for support. Example: "We couldn't load attendance for September. Try again. If this keeps happening, contact HR with reference 01J…"
 - **No permission:** pages the user cannot access are not linked. If reached by URL: "You don't have access to this page."

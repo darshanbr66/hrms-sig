@@ -210,6 +210,12 @@ temporary copy of the API at it, confirm sign-in and recent records, then delete
    API's own headers and is never cached. Downloads are same-origin, so the CSP needs no storage
    origin.
 6. Run `pnpm test:csp` after any dependency upgrade.
+   **Sleeping API.** While `hrms-api` runs on a free instance it sleeps when idle (B5). The sign-in
+   page checks `/api/health/ready` through this rewrite when it opens and shows "Connecting to
+   HRMS…" until it passes, then "Connected to HRMS"; after about 90 seconds without an answer it
+   stops and offers Retry. It sends the sign-in request only after a passed check and never
+   repeats it automatically. No separate wake-up endpoint, secret or monitoring service exists,
+   and none is needed; a paid instance (B5) removes the wait.
 7. Hobby is for non-commercial use only; a company system needs Pro.
 
 ## 9. Email (Resend)

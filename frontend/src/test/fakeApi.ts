@@ -80,6 +80,10 @@ export class FakeApi {
       };
       this.calls.push(call);
       const queue = this.handlers.get(`${call.method} ${call.path}`);
+      // The sign-in page checks readiness first; the API is ready unless a test says otherwise.
+      if ((!queue || queue.length === 0) && call.path === "/api/health/ready") {
+        return json({ status: "ok" });
+      }
       if (!queue || queue.length === 0) {
         return problem("not-found", 404);
       }

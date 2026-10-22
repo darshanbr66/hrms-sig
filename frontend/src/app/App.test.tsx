@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 
 import { refreshSession } from "../lib/api";
+import { backendReadiness } from "../lib/readiness";
 import { safeNext } from "../lib/navigation";
 import { FakeApi, ME, json, problem } from "../test/fakeApi";
 import { createQueryClient, routes } from "./App";
@@ -173,6 +174,69 @@ describe("sign-in", () => {
       mfa_token: "t".repeat(43),
       recovery_code: "ABCD-EFGH-JKLM-NPQR",
     });
+  });
+
+  it("says it is connecting, and connected only once the readiness check passes", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    api.on("GET /api/health/ready", () => new Promise<Response>((resolve) => (answer = resolve)));
+    renderAt("/sign-in");
+    expect(await screen.findByText("Connecting to HRMS…")).toBeInTheDocument();
+    expect(screen.queryByText("Connected to HRMS")).not.toBeInTheDocument();
+    // The form is usable while the check runs.
+    expect(screen.getByLabelText("Work email")).toBeEnabled();
+    answer(json({ status: "ok" }));
+    expect(await screen.findByText("Connected to HRMS")).toBeInTheDocument();
+    expect(api.called("GET /api/health/ready")).toHaveLength(1);
+  });
+
+  it("offers Retry when the HRMS does not start, and sends no sign-in until it is ready", async () => {
+    backendReadiness.reset({
+      attemptTimeoutMs: 200,
+      totalTimeoutMs: 400,
+      delaysMs: [10],
+      maxAttempts: 3,
+      slowAfterMs: 10,
+      freshForMs: 60_000,
+    });
+    let awake = false;
+    api
+      .on("GET /api/health/ready", () =>
+        awake ? json({ status: "ok" }) : problem("temporarily-unavailable", 503),
+      )
+      .on("POST /api/v1/auth/login", json({ mfa_token: "t".repeat(43) }));
+    const user = userEvent.setup();
+    const { router } = renderAt("/sign-in");
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByText(/taking longer than usual to start/)).toBeInTheDocument();
+    expect(api.called("GET /api/health/ready")).toHaveLength(3);
+
+    await signInWith(user);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(api.called("POST /api/v1/auth/login")).toHaveLength(0);
+
+    awake = true;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Connected to HRMS")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe("/sign-in/verify");
+    });
+    expect(api.called("POST /api/v1/auth/login")).toHaveLength(1);
+  });
+
+  it("never repeats a sign-in request that got no answer, and checks readiness again", async () => {
+    api.on("POST /api/v1/auth/login", () => Promise.reject(new TypeError("Failed to fetch")));
+    const user = userEvent.setup();
+    renderAt("/sign-in");
+    expect(await screen.findByText("Connected to HRMS")).toBeInTheDocument();
+    await signInWith(user);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "We couldn't reach the HRMS, so you are not signed in.",
+    );
+    await waitFor(() => {
+      expect(api.called("GET /api/health/ready")).toHaveLength(2);
+    });
+    expect(api.called("POST /api/v1/auth/login")).toHaveLength(1);
   });
 
   it("has no accessibility violations", async () => {

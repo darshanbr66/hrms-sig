@@ -58,6 +58,15 @@
   --color-info-50: #eef3fb;
   --color-info-700: #1d3f75;
 
+  /* The brand panel of the sign-in screens: a deep accent gradient with light text, dark in
+     both themes. Ink on brand-600 (the lightest stop) is at least 4.5:1. */
+  --color-brand-950: #0f2240;
+  --color-brand-800: #16305a;
+  --color-brand-600: #264f8f;
+  --color-brand-glow: #5b8ad6;
+  --color-brand-ink: #ffffff;
+  --color-brand-ink-muted: #d3deef;
+
   /* Behind dialogs and the navigation drawer, always dark. */
   --color-scrim: #1c1a18;
 
@@ -127,6 +136,13 @@
   --color-danger-700: #f29088;
   --color-info-50: #1c283b;
   --color-info-700: #a9c4f0;
+
+  --color-brand-950: #0b1526;
+  --color-brand-800: #12233f;
+  --color-brand-600: #1c3863;
+  --color-brand-glow: #3d6aae;
+  --color-brand-ink: #f4f2ef;
+  --color-brand-ink-muted: #c6d1e3;
 
   --color-scrim: #000000;
   --color-scrollbar-thumb: #625c56;

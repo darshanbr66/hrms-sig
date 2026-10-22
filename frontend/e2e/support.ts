@@ -109,6 +109,8 @@ export async function fakeApi(route: Route) {
     return reply(403, { type: "forbidden", title: "You don't have access to this.", status: 403 });
   }
   switch (url.pathname) {
+    case "/api/health/ready":
+      return reply(200, { status: "ok" });
     case "/api/v1/me":
       return reply(200, HR_ADMIN);
     case "/api/v1/employees/statistics":
