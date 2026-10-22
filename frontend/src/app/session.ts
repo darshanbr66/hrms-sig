@@ -21,8 +21,17 @@ export async function fetchMe(): Promise<Me | null> {
   }
 }
 
-export function useMe() {
-  return useQuery({ queryKey: meQueryKey, queryFn: fetchMe, retry: false, staleTime: 30_000 });
+/** `enabled: false` waits (the sign-in page asks only once the API answers its readiness
+ * check); `fresh` asks the API again on mount instead of relying on a cached answer. */
+export function useMe({ enabled = true, fresh = false }: { enabled?: boolean; fresh?: boolean } = {}) {
+  return useQuery({
+    queryKey: meQueryKey,
+    queryFn: fetchMe,
+    retry: false,
+    staleTime: 30_000,
+    enabled,
+    refetchOnMount: fresh ? "always" : true,
+  });
 }
 
 /** Cosmetic only: the API decides every request (CLAUDE.md rule 1). */

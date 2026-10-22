@@ -1306,6 +1306,15 @@ class IdentityService:
                 revoked = await accounts.disable(session, user, now)
                 event_type = SecurityEventType.ACCOUNT_DISABLED
             elif not disabled and user.status == UserStatus.DISABLED:
+                # Someone who has left stays signed out: exited is final until rehire exists.
+                if user.employee_id is not None:
+                    _, left_on = await people.exit_date(session, user.employee_id)
+                    if left_on is not None and left_on <= now.date():
+                        raise conflict(
+                            "user.employee_exited",
+                            "This person has left, so their account cannot be enabled. "
+                            "Their records stay as they are.",
+                        )
                 # An account that was never activated goes back to waiting for its invite.
                 user.status = (UserStatus.ACTIVE if user.email_verified_at else UserStatus.INVITED).value
                 require_mfa(session, user.id)

@@ -1,5 +1,7 @@
 import { Link } from "react-router";
 
+import { HOME } from "../lib/navigation";
+
 import { PageHeader } from "../design-system/PageHeader";
 
 export function AccessDenied() {
@@ -8,7 +10,7 @@ export function AccessDenied() {
       <PageHeader title="You don't have access to this page" />
       <p className="text-sm text-neutral-700">
         If you need it for your work, ask your HR team.{" "}
-        <Link className="text-accent-700 underline" to="/">
+        <Link className="text-accent-700 underline" to={HOME}>
           Go to the dashboard
         </Link>
       </p>
@@ -22,7 +24,7 @@ export function NotFound() {
       <PageHeader title="Page not found" />
       <p className="text-sm text-neutral-700">
         Check the address, or{" "}
-        <Link className="text-accent-700 underline" to="/">
+        <Link className="text-accent-700 underline" to={HOME}>
           go to the dashboard
         </Link>
         .

@@ -98,7 +98,7 @@ describe("invite activation", () => {
     await user.click(screen.getByText("I have saved these codes"));
     await user.click(finish);
     await waitFor(() => {
-      expect(router.state.location.pathname).toBe("/");
+      expect(router.state.location.pathname).toBe("/dashboard");
     });
     const confirm = api.called(`POST /api/v1/auth/invite/${TOKEN}/mfa/totp/confirm`)[0];
     expect(confirm?.body).toEqual({

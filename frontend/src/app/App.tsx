@@ -20,6 +20,7 @@ import { StepUpProvider } from "./StepUp";
 
 // Every page loads on demand (ui-ux-guidelines.md §10), sign-in included, so the first bundle
 // holds only the shell that every page needs.
+const HomePage = lazy(() => import("../features/home/HomePage").then((m) => ({ default: m.HomePage })));
 const SignInPage = lazy(() => import("../features/auth/SignInPage").then((m) => ({ default: m.SignInPage })));
 const VerifyPage = lazy(() => import("../features/auth/VerifyPage").then((m) => ({ default: m.VerifyPage })));
 const SecurityPage = lazy(() =>
@@ -158,7 +159,8 @@ function SessionEndedRedirect() {
     () =>
       onSessionEnded(() => {
         const publicPaths = ["/sign-in", "/invite/", "/mfa-reenrolment/", "/password-reset"];
-        if (publicPaths.some((prefix) => location.pathname.startsWith(prefix))) return;
+        if (location.pathname === "/" || publicPaths.some((prefix) => location.pathname.startsWith(prefix)))
+          return;
         const next = encodeURIComponent(location.pathname + location.search);
         void navigate(`/sign-in?expired=1&next=${next}`, { replace: true });
       }),
@@ -171,6 +173,15 @@ export const routes: RouteObject[] = [
   {
     element: <SessionEndedRedirect />,
     children: [
+      {
+        // The public home page: static, no API request (features/home/HomePage.tsx).
+        path: "/",
+        element: (
+          <Page>
+            <HomePage />
+          </Page>
+        ),
+      },
       {
         path: "/sign-in",
         element: (

@@ -83,7 +83,7 @@ test("keyboard focus is never hidden under the top bar", async ({ page }) => {
 });
 
 for (const path of [
-  "/",
+  "/dashboard",
   "/notifications",
   "/setup/holiday-calendars/c-1",
   "/setup/leave-types",

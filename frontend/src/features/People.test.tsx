@@ -177,6 +177,63 @@ describe("employees", () => {
     expect(await screen.findByText("Status changed")).toBeInTheDocument();
   });
 
+  it("offboards an employee after a confirmation that names them", async () => {
+    api
+      .on(`GET /api/v1/employees/${EMPLOYEE_ID}`, json(employee()))
+      .on("GET /api/v1/users", json({ items: [], next_cursor: null }))
+      .on(
+        `POST /api/v1/employees/${EMPLOYEE_ID}/exit`,
+        json(
+          {
+            status_change: {
+              id: "s-2",
+              from_status: "active",
+              to_status: "exited",
+              effective_date: "2026-10-05",
+              reason: "Test contract ended",
+              created_at: "2026-10-05T00:00:00Z",
+            },
+            account: "disabled",
+            sessions_revoked: 2,
+          },
+          201,
+        ),
+      );
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, `/employees/${EMPLOYEE_ID}`);
+    await user.click(await screen.findByRole("button", { name: "Offboard employee" }));
+    const dialog = await screen.findByRole("dialog", { name: "Offboard Test Person" });
+    await user.type(within(dialog).getByLabelText("Reason"), "Test contract ended");
+    await user.click(within(dialog).getByRole("button", { name: "Review" }));
+    // Nothing is sent before the confirmation, which names the person and their code.
+    expect(api.called(`POST /api/v1/employees/${EMPLOYEE_ID}/exit`)).toHaveLength(0);
+    expect(within(dialog).getByText("Test Person (TEST-0001)")).toBeInTheDocument();
+    expect(within(dialog).getByText(/nothing is deleted/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Offboard Test Person" }));
+    const done = await screen.findByRole("dialog", { name: "Test Person is offboarded" });
+    expect(within(done).getByText(/2 active sessions were ended/)).toBeInTheDocument();
+    expect(api.called(`POST /api/v1/employees/${EMPLOYEE_ID}/exit`)[0]?.body).toMatchObject({
+      reason: "Test contract ended",
+    });
+  });
+
+  it("shows when someone has left and offers no further offboarding or status change", async () => {
+    api
+      .on(
+        `GET /api/v1/employees/${EMPLOYEE_ID}`,
+        json(employee({ status: "exited", date_of_exit: "2026-10-05" })),
+      )
+      .on(`GET /api/v1/employees/${EMPLOYEE_ID}/status-changes`, json({ items: [] }))
+      .on("GET /api/v1/users", json({ items: [], next_cursor: null }));
+    const user = userEvent.setup();
+    renderSignedIn(api, HR_ADMIN_ME, `/employees/${EMPLOYEE_ID}`);
+    expect(await screen.findByText(/Left on .*2026/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Offboard employee" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Status" }));
+    expect(await screen.findByText(/No status changes recorded/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change status" })).not.toBeInTheDocument();
+  });
+
   it("says when a record is outside the people the viewer can see", async () => {
     api.on(`GET /api/v1/employees/${EMPLOYEE_ID}`, problem("not-found", 404));
     renderSignedIn(api, MANAGER_ME, `/employees/${EMPLOYEE_ID}`);

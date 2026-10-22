@@ -1,14 +1,17 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form } from "react-aria-components";
 import { Controller, useForm } from "react-hook-form";
-import { Link, useNavigate, useSearchParams } from "react-router";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { z } from "zod";
 
+import { ENROLMENT_PATH } from "../../app/guards";
+import { useMe } from "../../app/session";
 import { Banner } from "../../design-system/Banner";
 import { Button } from "../../design-system/Button";
 import { TextField } from "../../design-system/TextField";
 import { client, unwrap } from "../../lib/api";
 import { signInProblemText } from "../../lib/forms";
+import { safeNext } from "../../lib/navigation";
 import { ApiError } from "../../lib/problem";
 import { backendReadiness, useBackendReadiness } from "../../lib/readiness";
 import { AuthLayout } from "./AuthLayout";
@@ -41,6 +44,12 @@ export function SignInPage() {
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: { email: "", password: "" } });
   const failure = form.formState.errors.root?.message;
   const phase = useBackendReadiness();
+  // A session this browser still holds (its cookies outlive a browser restart, bounded by the
+  // session's absolute expiry) goes straight on, without the password or a code. The API
+  // decides through /api/v1/me, refreshing an expired access token once; idle and absolute
+  // timeouts, sign-out and revocation all answer "no session". Asked only after the readiness
+  // check, so a sleeping API is woken once.
+  const session = useMe({ enabled: phase === "ready", fresh: true });
 
   // The sign-in request goes out only after the readiness check has passed (waiting for one
   // that is running, or starting a new one), and is never repeated automatically: it counts
@@ -65,6 +74,12 @@ export function SignInPage() {
       });
     }
   });
+
+  // Only an answer fetched since this page opened counts, never a cached one.
+  if (session.data && session.isFetchedAfterMount) {
+    const destination = session.data.session_scope === "full" ? safeNext(params.get("next")) : ENROLMENT_PATH;
+    return <Navigate to={destination} replace />;
+  }
 
   return (
     <AuthLayout title="Sign in">

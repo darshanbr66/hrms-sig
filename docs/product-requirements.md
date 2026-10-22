@@ -69,7 +69,7 @@ Detailed sequencing lives in `development-roadmap.md`. This table is the product
 | 19 | Assets | | Yes | |
 | 20 | Employee lifecycle (status, transfers, promotions) | Core status + job changes | Full timeline view | |
 | 21 | Onboarding | Invite + account activation | Checklists and tasks | |
-| 22 | Offboarding / exit | Deactivation with immediate session revocation | Exit checklist, asset recovery | |
+| 22 | Offboarding / exit | Deactivation with immediate session revocation (built: **Offboard employee**, one step; the account cannot be re-enabled while the record is exited). Records are kept; no hard delete | Exit checklist, asset recovery; anonymization after the retention period Sigvitas legal confirms | |
 | 23 | Reports | Attendance and leave reports, CSV export | Headcount, payroll reports | Scheduled reports |
 | 24 | Audit logs | Yes | Audit viewer filters, export | External log shipping |
 | 25 | Security center | Sessions, login history, security events | Alerting rules | |

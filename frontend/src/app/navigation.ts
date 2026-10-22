@@ -35,6 +35,7 @@ import {
   UsersRound,
 } from "lucide-react";
 
+import { HOME } from "../lib/navigation";
 import { hasPermission, type Me } from "./session";
 
 export interface NavItem {
@@ -56,7 +57,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     label: "Me",
     items: [
-      { to: "/", label: "Dashboard", icon: LayoutDashboard, anyOf: [], end: true },
+      { to: HOME, label: "Dashboard", icon: LayoutDashboard, anyOf: [], end: true },
       { to: "/attendance", label: "My attendance", icon: Clock, anyOf: ["attendance.clock.self"] },
       { to: "/leave", label: "My leave", icon: CalendarHeart, anyOf: ["leave.request.self"], end: true },
       { to: "/holidays", label: "Holidays", icon: CalendarDays, anyOf: ["holiday.read"] },

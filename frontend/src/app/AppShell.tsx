@@ -46,6 +46,7 @@ import { SearchField } from "../design-system/Fields";
 import { NotificationBell } from "../features/notifications/NotificationBell";
 import { client, unwrap } from "../lib/api";
 import { formatDateTime } from "../lib/format";
+import { HOME } from "../lib/navigation";
 import { canSee, titleFor, visibleNavGroups, type NavGroup } from "./navigation";
 import { ELEVATION_KEY, hasPermission, useMe, type Me } from "./session";
 import { useTheme, type ThemePreference } from "./theme";
@@ -223,7 +224,7 @@ function Shell() {
 function Brand({ collapsed }: { collapsed: boolean }) {
   return (
     <Link
-      to="/"
+      to={HOME}
       className="flex h-14 shrink-0 items-center gap-2 px-4 font-semibold text-neutral-900"
       aria-label="Sigvitas HRMS, dashboard"
     >
@@ -427,7 +428,7 @@ const COLUMNS: Record<number, string> = { 2: "grid-cols-2", 3: "grid-cols-3", 4:
 /** Phones: the most used destinations within thumb reach, the rest under "More". */
 function BottomBar({ me, onMore }: { me: Me | null | undefined; onMore: () => void }) {
   const items = [
-    { to: "/", label: "Home", icon: LayoutDashboard, anyOf: [] as string[], end: true },
+    { to: HOME, label: "Home", icon: LayoutDashboard, anyOf: [] as string[], end: true },
     ...visibleNavGroups(me)
       .flatMap((group) => group.items)
       .filter((item) => ["/attendance", "/directory", "/employees"].includes(item.to))

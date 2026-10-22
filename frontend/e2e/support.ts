@@ -129,3 +129,17 @@ export async function fakeApi(route: Route) {
       return reply(200, { items: [], next_cursor: null });
   }
 }
+
+/** The same fake API for a browser that holds no session: `/api/v1/me` is unauthenticated and the
+ * refresh is refused, as after sign-out, expiry or revocation. */
+export async function signedOutApi(route: Route) {
+  const path = new URL(route.request().url()).pathname;
+  if (path === "/api/v1/me" || path === "/api/v1/auth/refresh") {
+    return route.fulfill({
+      status: 401,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ type: "/problems/unauthenticated", title: "Sign in to continue.", status: 401 }),
+    });
+  }
+  return fakeApi(route);
+}

@@ -30,6 +30,7 @@ import { formatDate, formatDateTime, humanize, localIsoDate } from "../../lib/fo
 import { fieldMessages, ifMatch, problemText } from "../../lib/problem";
 import { ACCOUNT_STATUS } from "../admin/users";
 import { JobFields } from "./JobFields";
+import { OffboardDialog } from "./OffboardDialog";
 import {
   PEOPLE_KEY,
   STATUS_LABELS,
@@ -415,28 +416,22 @@ function JobChangeDialog({ employee, onClose }: { employee: Employee; onClose: (
 
 // --- status -------------------------------------------------------------------------------------
 
-const NEXT_STATUSES: Record<Employee["status"], { id: "active" | "on_notice" | "exited"; label: string }[]> =
-  {
-    pre_joining: [
-      { id: "active", label: "Active (has joined)" },
-      { id: "exited", label: "Left (did not join)" },
-    ],
-    active: [
-      { id: "on_notice", label: "On notice" },
-      { id: "exited", label: "Left" },
-    ],
-    on_notice: [
-      { id: "active", label: "Active (notice withdrawn)" },
-      { id: "exited", label: "Left" },
-    ],
-    exited: [],
-  };
+// Leaving is not a status change here: it goes through offboarding (OffboardDialog), which
+// also disables the account in the same step.
+const NEXT_STATUSES: Record<Employee["status"], { id: "active" | "on_notice"; label: string }[]> = {
+  pre_joining: [{ id: "active", label: "Active (has joined)" }],
+  active: [{ id: "on_notice", label: "On notice" }],
+  on_notice: [{ id: "active", label: "Active (notice withdrawn)" }],
+  exited: [],
+};
 
 export function StatusSection({ employee }: { employee: Employee }) {
   const me = useMe();
   const [changing, setChanging] = useState(false);
-  const canChange =
-    hasPermission(me.data, "employee.lifecycle.manage") && NEXT_STATUSES[employee.status].length > 0;
+  const [offboarding, setOffboarding] = useState(false);
+  const canManage = hasPermission(me.data, "employee.lifecycle.manage");
+  const canChange = canManage && NEXT_STATUSES[employee.status].length > 0;
+  const canOffboard = canManage && employee.status !== "exited" && me.data?.employee_id !== employee.id;
   const history = useQuery({
     queryKey: [...PEOPLE_KEY, "status-changes", employee.id],
     queryFn: () =>
@@ -467,16 +462,30 @@ export function StatusSection({ employee }: { employee: Employee }) {
         <p className="text-sm text-neutral-600">
           Current status: <strong>{STATUS_LABELS[employee.status]}</strong>
         </p>
-        {canChange ? (
-          <Button
-            size="sm"
-            onPress={() => {
-              setChanging(true);
-            }}
-          >
-            Change status
-          </Button>
-        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {canChange ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                setChanging(true);
+              }}
+            >
+              Change status
+            </Button>
+          ) : null}
+          {canOffboard ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                setOffboarding(true);
+              }}
+            >
+              Offboard employee
+            </Button>
+          ) : null}
+        </div>
       </div>
       {history.isPending ? <Skeleton label="Loading status history" lines={2} /> : null}
       {history.isError ? (
@@ -505,6 +514,14 @@ export function StatusSection({ employee }: { employee: Employee }) {
           }}
         />
       ) : null}
+      {offboarding ? (
+        <OffboardDialog
+          employee={employee}
+          onClose={() => {
+            setOffboarding(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -512,37 +529,16 @@ export function StatusSection({ employee }: { employee: Employee }) {
 function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   const refresh = useRefreshPeople();
   const toast = useToast();
-  const withStepUp = useStepUp();
   const choices = NEXT_STATUSES[employee.status];
   const [status, setStatus] = useState<string>(choices[0]?.id ?? "");
   const [date, setDate] = useState(localIsoDate());
   const [reason, setReason] = useState("");
   const save = useMutation({
     mutationFn: async () => {
-      if (status === "exited") {
-        // One step: the record leaves and the linked account is disabled with every session
-        // revoked, in the same transaction (product-requirements MVP item 11).
-        const result = await withStepUp(() =>
-          unwrap(
-            client.POST("/api/v1/employees/{employee_id}/exit", {
-              params: { path: { employee_id: employee.id } },
-              body: { last_working_day: date, reason: reason.trim() },
-            }),
-          ),
-        );
-        const accountText = {
-          none: "No HRMS account was linked.",
-          disabled: `Their HRMS account is disabled and ${result.sessions_revoked} sessions were ended.`,
-          already_disabled: "Their HRMS account was already disabled.",
-          administrator_left_active:
-            "Their account holds an administrator role, so a system admin must disable it.",
-        }[result.account];
-        return `Exit recorded. ${accountText}`;
-      }
       await unwrap(
         client.POST("/api/v1/employees/{employee_id}/status-changes", {
           params: { path: { employee_id: employee.id } },
-          body: { to_status: status as "on_notice", effective_date: date, reason: reason.trim() },
+          body: { to_status: status as "active" | "on_notice", effective_date: date, reason: reason.trim() },
         }),
       );
       return "Status changed";
@@ -568,7 +564,7 @@ function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () =
         ) : null}
         <Select label="New status" name="to_status" options={choices} value={status} onChange={setStatus} />
         <TextField
-          label={status === "exited" ? "Last working day" : "Effective date"}
+          label="Effective date"
           name="effective_date"
           type="date"
           value={date}
@@ -584,18 +580,12 @@ function StatusDialog({ employee, onClose }: { employee: Employee; onClose: () =
           description="Recorded in the status history and the audit log."
           error={errors.reason}
         />
-        {status === "exited" ? (
-          <Banner tone="info">
-            Recording the exit also disables their HRMS account and signs them out everywhere, in the same
-            step. You will be asked to confirm it&apos;s you.
-          </Banner>
-        ) : null}
         <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
           <Button type="submit" isPending={save.isPending} isDisabled={reason.trim() === ""}>
-            {status === "exited" ? "Record exit" : "Change status"}
+            Change status
           </Button>
         </DialogActions>
       </Form>

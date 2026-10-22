@@ -43,6 +43,7 @@ test.beforeEach(async ({ page }) => {
 test("pages, a dialog and a theme change cause no policy violation", async ({ page }) => {
   for (const path of [
     "/",
+    "/dashboard",
     "/setup/holiday-calendars/c-1",
     "/setup/leave-types",
     "/organization?tab=departments",
@@ -66,7 +67,7 @@ test("pages, a dialog and a theme change cause no policy violation", async ({ pa
 });
 
 test("the iOS scroll-lock style is allowed by its hash", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   // The exact element usePreventScroll adds on iOS while a dialog is open; desktop Chromium
   // never takes that path, so the test adds it the same way.

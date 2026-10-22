@@ -44,7 +44,7 @@ describe("dashboard", () => {
     api.on("GET /api/v1/me/attendance/today", json(clockedIn));
     api.on("POST /api/v1/me/attendance/events", json(clockedIn));
     const user = userEvent.setup();
-    renderSignedIn(api, EMPLOYEE_ME, "/");
+    renderSignedIn(api, EMPLOYEE_ME, "/dashboard");
     expect(await screen.findByRole("heading", { name: /, Testy$/ })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Clock in" }));
     expect(await screen.findByRole("button", { name: "Start break" })).toBeInTheDocument();
@@ -65,7 +65,7 @@ describe("dashboard", () => {
       }),
     );
     const user = userEvent.setup();
-    renderSignedIn(api, EMPLOYEE_ME, "/");
+    renderSignedIn(api, EMPLOYEE_ME, "/dashboard");
     await user.click(await screen.findByRole("button", { name: "Clock in" }));
     expect(await screen.findByText("You are already clocked in.")).toBeInTheDocument();
   });
@@ -86,7 +86,7 @@ describe("dashboard", () => {
       .on("GET /api/v1/locations", json({ items: [] }))
       .on("GET /api/v1/role-grant-requests", json({ items: [], next_cursor: null }))
       .on("GET /api/v1/me/login-history", json({ items: [], next_cursor: null }));
-    renderSignedIn(api, HR_ADMIN_ME, "/");
+    renderSignedIn(api, HR_ADMIN_ME, "/dashboard");
     const people = await screen.findByRole("group", { name: "People figures" });
     expect(within(people).getByText("42")).toBeInTheDocument();
     expect(within(people).getByText("On notice")).toBeInTheDocument();
@@ -125,7 +125,7 @@ describe("dashboard", () => {
       .on("GET /api/v1/role-grant-requests", json({ items: [], next_cursor: null }))
       .on("GET /api/v1/me/login-history", json({ items: [], next_cursor: null }));
     const user = userEvent.setup();
-    renderSignedIn(api, HR_ADMIN_ME, "/");
+    renderSignedIn(api, HR_ADMIN_ME, "/dashboard");
     expect(await screen.findByRole("group", { name: "Attendance today" })).toBeInTheDocument();
     const retry = (await screen.findAllByRole("button", { name: "Try again" }))[0];
     expect(retry).toBeDefined();
@@ -137,7 +137,7 @@ describe("dashboard", () => {
     api
       .on("GET /api/v1/role-grant-requests", json({ items: [], next_cursor: null }))
       .on("GET /api/v1/me/login-history", json({ items: [], next_cursor: null }));
-    renderSignedIn(api, SUPER_ADMIN_ME, "/");
+    renderSignedIn(api, SUPER_ADMIN_ME, "/dashboard");
     expect(await screen.findByText("Nothing waiting for a decision")).toBeInTheDocument();
     expect(api.called("GET /api/v1/employees/statistics")).toHaveLength(0);
     expect(api.called("GET /api/v1/me/attendance/today")).toHaveLength(0);
@@ -145,7 +145,7 @@ describe("dashboard", () => {
 
   it("has no accessibility violations", async () => {
     employeeData();
-    const { container } = renderSignedIn(api, EMPLOYEE_ME, "/");
+    const { container } = renderSignedIn(api, EMPLOYEE_ME, "/dashboard");
     await screen.findByRole("button", { name: "Clock in" });
     expect(await axe(container)).toHaveNoViolations();
   });
@@ -181,7 +181,7 @@ describe("navigation", () => {
     employeeData();
     api.on("GET /api/v1/me/attendance/days", json({ time_zone: "Asia/Kolkata", items: [] }));
     const user = userEvent.setup();
-    const { router } = renderSignedIn(api, EMPLOYEE_ME, "/");
+    const { router } = renderSignedIn(api, EMPLOYEE_ME, "/dashboard");
     await user.click(await screen.findByRole("button", { name: "Open navigation" }));
     const drawer = await screen.findByRole("navigation", { name: "Main (menu)" });
     await user.click(within(drawer).getByRole("link", { name: "My attendance" }));
@@ -232,7 +232,7 @@ describe("dashboard by role", () => {
     api
       .on("GET /api/v1/role-grant-requests", json({ items: [], next_cursor: null }))
       .on("GET /api/v1/me/login-history", json({ items: [], next_cursor: null }));
-    renderSignedIn(api, SUPER_ADMIN_ME, "/");
+    renderSignedIn(api, SUPER_ADMIN_ME, "/dashboard");
     const panel = await screen.findByRole("region", { name: "HR data needs temporary access" });
     expect(within(panel).getByRole("link", { name: "Access requests" })).toHaveAttribute(
       "href",
@@ -247,7 +247,7 @@ describe("dashboard by role", () => {
 
   it("shows an HR admin every HR widget with links, and no self-service without a record", async () => {
     hrData();
-    renderSignedIn(api, HR_ADMIN_ME, "/");
+    renderSignedIn(api, HR_ADMIN_ME, "/dashboard");
     const people = await screen.findByRole("group", { name: "People figures" });
     for (const [label, href] of [
       ["Employed today", "/employees"],
@@ -279,7 +279,7 @@ describe("dashboard by role", () => {
 
   it("shows HR the figures without organization or leave-type set-up", async () => {
     hrData();
-    renderSignedIn(api, HR_ME, "/");
+    renderSignedIn(api, HR_ME, "/dashboard");
     expect(await screen.findByRole("group", { name: "People figures" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Set up your organization" })).not.toBeInTheDocument();
     expect(shortcuts()).not.toContain("Leave types");
@@ -290,7 +290,7 @@ describe("dashboard by role", () => {
     employeeData();
     hrData();
     api.on("GET /api/v1/me/leave/balances", json({ items: [] }));
-    renderSignedIn(api, MANAGER_ME, "/");
+    renderSignedIn(api, MANAGER_ME, "/dashboard");
     expect(await screen.findByRole("group", { name: "People figures" })).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "My leave" })).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "Leave waiting for you" })).toBeInTheDocument();
@@ -301,7 +301,7 @@ describe("dashboard by role", () => {
   it("shows an employee only their own widgets", async () => {
     employeeData();
     api.on("GET /api/v1/me/leave/balances", json({ items: [] }));
-    renderSignedIn(api, EMPLOYEE_ME, "/");
+    renderSignedIn(api, EMPLOYEE_ME, "/dashboard");
     expect(await screen.findByRole("region", { name: "My leave" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "People figures" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Leave waiting for you" })).not.toBeInTheDocument();
@@ -316,7 +316,7 @@ describe("dashboard by role", () => {
       .on("GET /api/v1/departments", problem("internal-error", 500));
     hrData();
     const user = userEvent.setup();
-    renderSignedIn(api, HR_ADMIN_ME, "/");
+    renderSignedIn(api, HR_ADMIN_ME, "/dashboard");
     const people = await screen.findByRole("region", { name: "People" });
     expect(await within(people).findByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "People figures" })).not.toBeInTheDocument();

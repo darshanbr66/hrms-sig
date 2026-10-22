@@ -10,7 +10,7 @@ from app.modules.notify.models import EmailOutbox
 from app.modules.people.models import EmployeeJob
 from app.platform.audit.tables import AuditLogRecord
 from app.platform.authz.roles import RoleKey
-from tests.api_support import Api
+from tests.api_support import PASSWORD, Api
 from tests.people_data import add_job, create_employee, create_org_units, fake_code
 
 
@@ -154,6 +154,55 @@ async def test_exit_disables_the_account_and_revokes_every_session_in_one_step(a
     assert user.status == "disabled"
     actions = {row.action for row in await api.records(AuditLogRecord, {"subject_employee_id": employee_id})}
     assert {"employee.status.changed", "identity.user.disabled"} <= actions
+
+
+async def test_a_leaver_stays_signed_out_and_their_history_is_kept(api: Api) -> None:
+    _, employee_id = await employee_with_manager(api)
+    employee = await api.create_account(employee_id=employee_id)
+    hr = await api.create_account(roles=(RoleKey.HR.value,))
+    async with api.client() as leaver:
+        await api.sign_in(leaver, employee)
+        clocked = await leaver.post(
+            "/api/v1/me/attendance/events",
+            json={"event_type": "CLOCK_IN"},
+            headers={"Idempotency-Key": f"test-{uuid.uuid4()}"},
+        )
+        assert clocked.status_code == 200, clocked.text
+    assert await api.count("trusted_devices", {"user_id": employee.user_id, "revoked_at": None}) == 1
+    kept = {
+        name: await api.count(name, {"employee_id": employee_id})
+        for name in ("attendance_events", "employee_jobs", "employee_status_history")
+    }
+    async with api.client() as client:
+        await api.sign_in(client, hr)
+        await api.step_up(client, hr)
+        # Yesterday: on their last working day itself a leaver still counts as employed (EMP-7).
+        last_day = api.clock.now().date() - timedelta(days=1)
+        body = {"last_working_day": last_day.isoformat(), "reason": "Test: contract ended"}
+        done = await client.post(f"/api/v1/employees/{employee_id}/exit", json=body)
+        assert done.status_code == 201, done.text
+        # Exited is final: a second exit and re-enabling the account are both refused.
+        again = await client.post(f"/api/v1/employees/{employee_id}/exit", json=body)
+        assert again.status_code == 409
+        enabled = await client.post(f"/api/v1/users/{employee.user_id}/enable")
+        assert enabled.status_code == 409, enabled.text
+        assert enabled.json()["code"] == "user.employee_exited"
+        # The record is kept and shows who left, outside the people employed today.
+        record = (await client.get(f"/api/v1/employees/{employee_id}")).json()
+        assert record["status"] == "exited"
+        employed = (await client.get("/api/v1/employees", params={"employment": "current"})).json()
+        assert employee_id not in {uuid.UUID(row["id"]) for row in employed["items"]}
+    async with api.client() as client:
+        refused = await client.post(
+            "/api/v1/auth/login", json={"email": employee.email, "password": PASSWORD}
+        )
+        assert refused.status_code == 401
+    assert await api.count("trusted_devices", {"user_id": employee.user_id, "revoked_at": None}) == 0
+    assert kept["attendance_events"] == 1
+    for name, before in kept.items():
+        assert await api.count(name, {"employee_id": employee_id}) == before + (
+            1 if name == "employee_status_history" else 0
+        )
 
 
 async def test_an_administrators_account_is_left_for_a_system_admin(api: Api) -> None:

@@ -5,7 +5,7 @@
  * changes, and the linked HRMS account.
  */
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, UserMinus } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 
@@ -13,12 +13,14 @@ import { canSee } from "../../app/navigation";
 import { hasPermission, useMe } from "../../app/session";
 import { Avatar } from "../../design-system/Avatar";
 import { Badge } from "../../design-system/Badge";
+import { Banner } from "../../design-system/Banner";
+import { Button } from "../../design-system/Button";
 import { PageHeader } from "../../design-system/PageHeader";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
 import { Skeleton } from "../../design-system/Skeleton";
 import { Tabs, type TabItem } from "../../design-system/Tabs";
 import { client, unwrap } from "../../lib/api";
-import { addDays, localIsoDate } from "../../lib/format";
+import { addDays, formatDate, localIsoDate } from "../../lib/format";
 import { ApiError } from "../../lib/problem";
 import { CorrectionDialog } from "../attendance/CorrectionDialog";
 import { DaysTable, type Day } from "../attendance/DaysTable";
@@ -26,6 +28,7 @@ import { DocumentList } from "../documents/DocumentList";
 import { LeaveBalances } from "../leave/LeaveBalances";
 import { AccountSection, JobHistorySection, OverviewSection, StatusSection } from "./EmployeeSections";
 import { EmergencyContacts } from "./EmergencyContacts";
+import { OffboardDialog } from "./OffboardDialog";
 import { PersonalDetails } from "./PersonalDetails";
 import { PEOPLE_KEY, STATUS_LABELS, STATUS_TONES, useEmployee } from "./queries";
 
@@ -33,6 +36,7 @@ export function EmployeePage() {
   const { employeeId = "" } = useParams();
   const me = useMe();
   const employee = useEmployee(employeeId);
+  const [offboarding, setOffboarding] = useState(false);
 
   if (employee.isPending) return <Skeleton label="Loading the employee record" lines={6} />;
   if (employee.isError) {
@@ -59,6 +63,9 @@ export function EmployeePage() {
   const record = employee.data;
   const permissions = me.data;
   const isSelf = permissions?.employee_id === record.id;
+  // The API decides; this only hides an action the viewer cannot take.
+  const canOffboard =
+    hasPermission(permissions, "employee.lifecycle.manage") && record.status !== "exited" && !isSelf;
   const tabs: TabItem[] = [
     { id: "overview", label: "Overview", content: <OverviewSection employee={record} /> },
     { id: "jobs", label: "Job history", content: <JobHistorySection employee={record} /> },
@@ -139,8 +146,37 @@ export function EmployeePage() {
             </p>
           ) : null}
         </div>
+        {canOffboard ? (
+          <Button
+            variant="secondary"
+            onPress={() => {
+              setOffboarding(true);
+            }}
+          >
+            <UserMinus aria-hidden className="size-4" />
+            Offboard employee
+          </Button>
+        ) : null}
       </header>
+      {record.status === "exited" ? (
+        <div className="mb-6">
+          <Banner tone="info">
+            {record.date_of_exit
+              ? `Left on ${formatDate(record.date_of_exit, { weekday: false })}. `
+              : "Has left. "}
+            The record and its history are kept and can no longer change.
+          </Banner>
+        </div>
+      ) : null}
       <Tabs label="Employee record" items={tabs} />
+      {offboarding ? (
+        <OffboardDialog
+          employee={record}
+          onClose={() => {
+            setOffboarding(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

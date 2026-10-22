@@ -129,7 +129,7 @@ test.beforeEach(async ({ page }) => {
 for (const theme of ["light", "dark"] as const) {
   test(`the field border token reaches 3:1 against every surface in the ${theme} theme`, async ({ page }) => {
     await setTheme(page, theme);
-    await page.goto("/");
+    await page.goto("/dashboard");
     await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
     const ratios = await page.evaluate(() => {
       const probe = document.createElement("div");

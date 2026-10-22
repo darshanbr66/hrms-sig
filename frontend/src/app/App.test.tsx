@@ -45,6 +45,91 @@ async function signInWith(user: ReturnType<typeof userEvent.setup>, email = "per
   await user.click(screen.getByRole("button", { name: "Continue" }));
 }
 
+describe("public home page", () => {
+  it("renders at / without any API request, whatever state the API is in", async () => {
+    const { container } = renderAt("/");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "People first. Work, in order." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("An illustration of the signed-in home, not live data.")).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't reach the HRMS/)).not.toBeInTheDocument();
+    expect(api.calls).toHaveLength(0);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it("takes an employee to sign-in, where the readiness check starts", async () => {
+    const user = userEvent.setup();
+    const { router } = renderAt("/");
+    const [header] = await screen.findAllByRole("link", { name: "Employee sign in" });
+    if (!header) throw new Error("no sign-in link");
+    await user.click(header);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/sign-in");
+    await waitFor(() => {
+      expect(api.called("GET /api/health/ready")).toHaveLength(1);
+    });
+  });
+
+  it("restores a session the browser still holds and goes to the dashboard without a password", async () => {
+    signedIn();
+    const user = userEvent.setup();
+    const { router } = renderAt("/");
+    expect(api.calls).toHaveLength(0);
+    const [header] = await screen.findAllByRole("link", { name: "Employee sign in" });
+    if (!header) throw new Error("no sign-in link");
+    await user.click(header);
+    expect(
+      await screen.findByRole("heading", { name: /^Good (morning|afternoon|evening)$/ }),
+    ).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/dashboard");
+    expect(api.called("POST /api/v1/auth/login")).toHaveLength(0);
+    // The API was asked only after it answered the readiness check.
+    const paths = api.calls.map((call) => call.path);
+    expect(paths.indexOf("/api/health/ready")).toBeLessThan(paths.indexOf("/api/v1/me"));
+  });
+
+  it("goes back to where the person was going when the session is still valid", async () => {
+    signedIn();
+    const { router } = renderAt("/sign-in?next=%2Faccount%2Fsecurity");
+    expect(await screen.findByRole("heading", { name: "Account security" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/account/security");
+  });
+
+  it("sends an enrolment-only session to enrolment, not the dashboard", async () => {
+    signedIn({ ...ME, session_scope: "mfa_enrolment", permissions: [] });
+    const { router } = renderAt("/sign-in");
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe("/account/mfa-enrolment");
+    });
+  });
+
+  it("asks for the password when the session has expired or was revoked", async () => {
+    api
+      .on("GET /api/v1/me", problem("unauthenticated", 401))
+      .on("POST /api/v1/auth/refresh", problem("unauthenticated", 401));
+    const { router } = renderAt("/sign-in");
+    await waitFor(() => {
+      expect(api.called("POST /api/v1/auth/refresh")).toHaveLength(1);
+    });
+    expect(await screen.findByLabelText("Work email")).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/sign-in");
+  });
+
+  it.each([
+    ["/sign-in", "Sign in"],
+    ["/password-reset", "Reset your password"],
+    ["/password-reset/tok", "Choose a new password"],
+    ["/invite/tok", null],
+    ["/mfa-reenrolment/tok", null],
+  ])("still resolves %s", async (path, heading) => {
+    const { router } = renderAt(path);
+    const title = await screen.findByRole("heading", { level: 1 });
+    if (heading) expect(title).toHaveTextContent(heading);
+    expect(screen.queryByRole("heading", { name: "Page not found" })).not.toBeInTheDocument();
+    expect(router.state.location.pathname).toBe(path);
+  });
+});
+
 describe("protected routes", () => {
   it("sends a visitor without a session to sign-in, remembering where they were going", async () => {
     api
@@ -102,7 +187,7 @@ describe("sign-in", () => {
     expect(
       await screen.findByRole("heading", { name: /^Good (morning|afternoon|evening)$/ }),
     ).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/dashboard");
     const [login] = api.called("POST /api/v1/auth/login");
     expect(login?.headers.get("X-Requested-With")).toBe("sv-web");
     expect(api.called("POST /api/v1/auth/login/mfa")[0]?.body).toEqual({
@@ -262,13 +347,19 @@ describe("session lifecycle", () => {
   });
 
   it("returns to sign-in when the session has ended", async () => {
+    // Like the API: once the refresh is refused, the session is gone for every request.
+    let ended = false;
     signedIn();
+    api.on("GET /api/v1/me", () => (ended ? problem("unauthenticated", 401) : json(ME)));
     const user = userEvent.setup();
     const { router } = renderAt("/account/security");
     await screen.findByRole("heading", { name: "Account security" });
     api
       .on("POST /api/v1/me/mfa/recovery-codes", problem("unauthenticated", 401))
-      .on("POST /api/v1/auth/refresh", problem("unauthenticated", 401));
+      .on("POST /api/v1/auth/refresh", () => {
+        ended = true;
+        return problem("unauthenticated", 401);
+      });
     await user.click(screen.getByRole("button", { name: "Make new recovery codes" }));
     expect(await screen.findByText("Your session ended. Sign in again to continue.")).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/sign-in");
@@ -287,9 +378,17 @@ describe("session lifecycle", () => {
     expect(api.called("POST /api/v1/auth/refresh")).toHaveLength(1);
   });
 
-  it("signs out and clears the session", async () => {
+  it("signs out and clears the session, so sign-in asks for the password again", async () => {
+    // Like the API: once signed out, the session is gone and cannot be refreshed.
+    let signedOut = false;
     signedIn();
-    api.on("POST /api/v1/auth/logout", json(null, 204));
+    api
+      .on("GET /api/v1/me", () => (signedOut ? problem("unauthenticated", 401) : json(ME)))
+      .on("POST /api/v1/auth/refresh", problem("unauthenticated", 401))
+      .on("POST /api/v1/auth/logout", () => {
+        signedOut = true;
+        return json(null, 204);
+      });
     const user = userEvent.setup();
     const { router } = renderAt("/account/security");
     await screen.findByRole("heading", { name: "Account security" });
@@ -299,6 +398,12 @@ describe("session lifecycle", () => {
       expect(router.state.location.pathname).toBe("/sign-in");
     });
     expect(api.called("POST /api/v1/auth/logout")).toHaveLength(1);
+    // The sign-in page asks the API, finds no session and shows the form.
+    await waitFor(() => {
+      expect(api.called("GET /api/v1/me").length).toBeGreaterThan(1);
+    });
+    expect(await screen.findByLabelText("Work email")).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/sign-in");
   });
 });
 
@@ -418,15 +523,17 @@ describe("step-up", () => {
 describe("redirect safety", () => {
   it.each([
     ["/account/security", "/account/security"],
-    ["/", "/"],
+    // The public home page is never a destination after signing in.
+    ["/", "/dashboard"],
+    ["/dashboard", "/dashboard"],
     ["/employees/abc", "/employees/abc"],
-    ["https://evil.example/", "/"],
-    ["//evil.example/account/", "/"],
-    ["/\\evil.example", "/"],
+    ["https://evil.example/", "/dashboard"],
+    ["//evil.example/account/", "/dashboard"],
+    ["/\\evil.example", "/dashboard"],
     ["/admin/access-requests", "/admin/access-requests"],
-    ["/elsewhere/admin/", "/"],
-    ["/administrator", "/"],
-    [null, "/"],
+    ["/elsewhere/admin/", "/dashboard"],
+    ["/administrator", "/dashboard"],
+    [null, "/dashboard"],
   ])("safeNext(%s) is %s", (next, expected) => {
     expect(safeNext(next)).toBe(expected);
   });

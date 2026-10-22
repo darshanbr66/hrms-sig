@@ -46,7 +46,7 @@ test("the stored theme is applied before the app starts", async ({ page }) => {
     await held;
     await route.continue();
   });
-  await page.goto("/", { waitUntil: "commit" });
+  await page.goto("/dashboard", { waitUntil: "commit" });
   await page.waitForFunction(() => document.documentElement.dataset.theme !== undefined);
   expect(await theme(page)).toBe("dark");
   expect(await page.locator("#root").innerHTML()).toBe("");
@@ -58,7 +58,7 @@ test("the stored theme is applied before the app starts", async ({ page }) => {
 test("the system setting applies until a theme is chosen, and the choice is remembered", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await storeTheme(page, null);
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
   expect(await theme(page)).toBe("dark");
   expect(await bodyBackground(page)).toBe("rgb(22, 21, 20)");
@@ -95,7 +95,7 @@ test("the system setting applies until a theme is chosen, and the choice is reme
 test("a theme change does not animate when reduced motion is asked for", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await storeTheme(page, "light");
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitemradio", { name: "Dark" }).click();
   expect(await page.evaluate(() => document.documentElement.classList.contains("theme-changing"))).toBe(
@@ -106,7 +106,7 @@ test("a theme change does not animate when reduced motion is asked for", async (
 });
 
 const SCREENS: { name: string; path: string; open?: string }[] = [
-  { name: "dashboard", path: "/" },
+  { name: "dashboard", path: "/dashboard" },
   { name: "holiday calendars", path: "/setup/holiday-calendars" },
   { name: "a holiday calendar", path: "/setup/holiday-calendars/c-1" },
   { name: "leave types", path: "/setup/leave-types" },
@@ -137,7 +137,7 @@ for (const scheme of ["light", "dark"] as const) {
 
 test("the account menu passes axe with the theme choices open, in the dark theme", async ({ page }) => {
   await storeTheme(page, "dark");
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.getByRole("button", { name: "Account menu" }).click();
   await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
   const results = await new AxeBuilder({ page }).include('[role="menu"]').analyze();
