@@ -176,6 +176,13 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 - Attack: admin reads private messages; removed member keeps reading a group.
 - Controls: no admin read path in product; membership checked on every read and every WebSocket subscription; investigation access requires two approvals and is time-bound and audited.
 
+### T27. Misuse of permanent erasure (2026-10-23)
+
+- Threat: a super admin destroys a person's records to hide something, erases the wrong person, or erases another organization's person; a failure leaves the data half erased while the system reports it gone.
+- Controls: two super admins (a different one approves, validator-enforced); both step up and type the employee code; only after the exit, and never while the account holds `super_admin` or `system_admin` (the two-active-super-admin rule applies first); the permissions read nothing beyond name and code; the records change in one transaction, files are removed by the worker and the request is complete only when none is left; history that must not change (attendance events, ledger, job and status history, audit) stays under the ID, and the audit records who, when and the counts; tenant-scoped like every query (`database-design.md` §9.1).
+- Residual: two colluding super admins can erase an offboarded person's personal data (not the protected history). Visible to every super admin and the auditor in the audit log, not prevented.
+- Test: `tests/integration/test_employee_erasure.py` (separation of duties, typed code, preconditions, roll back on failure, file retry, cross-tenant, every category).
+
 ## 5. STRIDE summary by boundary
 
 | Boundary | S | T | R | I | D | E |
@@ -194,4 +201,4 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 3. Compensation amounts are not column-encrypted; a full database compromise exposes them. Mitigated by schema-level grants, network isolation and backup encryption.
 4. Buddy punching with shared credentials cannot be fully prevented without biometrics. Mandatory per-person MFA makes sharing harder.
 5. Audit rows can be altered by a database superuser during the short window (about 1 minute) before they are sealed.
-6. Two colluding super admins can approve each other's elevations. This is visible to every other super admin and the auditor, but not prevented.
+6. Two colluding super admins can approve each other's elevations, and together erase an offboarded person's personal data (T27). This is visible to every other super admin and the auditor, but not prevented.

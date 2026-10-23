@@ -166,6 +166,29 @@ async def test_another_organizations_records_do_not_exist_for_an_administrator(
                 unknown = await client.patch(unknown_ids(path, a), **change)  # type: ignore[arg-type]
                 assert (changed.status_code, empty(changed)) == (unknown.status_code, empty(unknown)), path
                 assert changed.status_code in (403, 404, 422), (path, changed.text)
+            # An HR-recorded attendance correction (a forgotten clock-out) and a role batch.
+            correction: dict[str, object] = {
+                "work_date": "2026-01-05",
+                "reason": "Test",
+                "items": [
+                    {"action": "add", "event_type": "CLOCK_OUT", "proposed_at": "2026-01-05T12:00:00Z"}
+                ],
+            }
+            for path, payload in (
+                (f"{employee}/attendance/corrections", correction),
+                (
+                    f"/api/v1/users/{a.employee_account.user_id}/roles/batch",
+                    {"roles": [{"role_key": "auditor"}], "reason": "Test"},
+                ),
+            ):
+                sent = await client.post(
+                    path, json=payload, headers={"Idempotency-Key": f"test-{uuid.uuid4()}"}
+                )
+                unknown = await client.post(
+                    unknown_ids(path, a), json=payload, headers={"Idempotency-Key": f"test-{uuid.uuid4()}"}
+                )
+                assert (sent.status_code, empty(sent)) == (unknown.status_code, empty(unknown)), path
+                assert sent.status_code in (403, 404), (path, sent.text)
             # Lists and searches hold only B's own records.
             if administrator is b.admin:
                 listed = (await client.get("/api/v1/employees")).json()["items"]

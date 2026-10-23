@@ -291,6 +291,7 @@ class AttendanceCorrection(Record):
     __deletable__ = False
     __mutable__ = frozenset({"status", "decided_by", "decided_at", "decision_note", "version"})
     __set_once__ = frozenset({"decided_by", "decided_at", "decision_note"})
+    __erasable__ = frozenset({"reason", "decision_note"})
     __transitions__: ClassVar[dict[str, dict[str, frozenset[str]]]] = {
         "status": {"pending": frozenset({"approved", "rejected", "cancelled"})}
     }

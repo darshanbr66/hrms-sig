@@ -120,6 +120,9 @@
   ],
   "super_admin": [
     "audit.read",
+    "employee.erasure.approve",
+    "employee.erasure.read",
+    "employee.erasure.request",
     "role.assign",
     "role.elevation.approve",
     "role.elevation.break_glass",

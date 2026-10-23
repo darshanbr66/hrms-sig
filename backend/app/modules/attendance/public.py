@@ -4,6 +4,7 @@
   applies to an employee on each date, for leave day counting (LV-3). Without a shift no date
   is a weekly off, and a working day declared in the holiday calendar of the employee's
   location on that date is not one either.
+- `erase_employee` is the attendance part of the permanent erasure of one person's data.
 - `AttendanceEmails` renders the attendance correction email at send time.
 - `summary_rows`, `day_rows` and their headers give the export job the attendance rows.
 """
@@ -13,6 +14,7 @@ from datetime import date
 
 from app.modules.attendance.days import dates
 from app.modules.attendance.emails import AttendanceEmails
+from app.modules.attendance.erasure import erase_employee
 from app.modules.attendance.exports import DAYS_HEADER, SUMMARY_HEADER, day_rows, summary_rows
 from app.modules.attendance.schedule import Schedule, shift_times
 from app.modules.leave import public as leave
@@ -40,6 +42,7 @@ __all__ = [
     "SUMMARY_HEADER",
     "AttendanceEmails",
     "day_rows",
+    "erase_employee",
     "summary_rows",
     "weekly_off_dates",
 ]

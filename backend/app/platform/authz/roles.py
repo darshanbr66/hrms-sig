@@ -2,14 +2,16 @@
 
 The matrix is the proposed default Sigvitas HR confirms before M2 (roadmap §6); changing it
 is a data migration. Least-privilege boundaries that are fixed architecture, and tested:
-`system_admin` and `super_admin` hold no employee data, document or compensation access;
+`system_admin` and `super_admin` hold no employee data, document or compensation access
+(linked to their own employee record, they reach that record only, through `employee`);
 `manager` holds no personal or sensitive access to team members.
 
 `employee` and `manager` are derived, never assigned: `employee` while the account is linked
 to an employee record who is employed on the day, `manager` while that employee has at least
-one direct report on the day. Every active account also holds the account baseline (its own
-sessions, login history and notifications), whether or not it is linked to an employee record, because
-accounts such as the bootstrapped super admins have no employee record.
+one direct report on the day and the account holds no `TEAM_ACCESS_WITHHELD_ROLES` role.
+Every active account also holds the account baseline (its own sessions, login history and
+notifications), whether or not it is linked to an employee record, because accounts such as
+the bootstrapped super admins have no employee record.
 """
 
 from dataclasses import dataclass
@@ -177,6 +179,10 @@ _SUPER_ADMIN: Final = frozenset(
         "role.elevation.break_glass",
         "audit.read",
         "settings.read",
+        # Destructive only: they read no employee data (owner decision 2026-10-23, rule 16).
+        "employee.erasure.read",
+        "employee.erasure.request",
+        "employee.erasure.approve",
     }
 )
 
@@ -225,3 +231,9 @@ MIN_SUPER_ADMINS: Final = 2
 # disabling a super admin must leave at least MIN_SUPER_ADMINS active ones (decided by the
 # project owner for Checkpoint E, docs/authorization-model.md §6).
 ADMIN_ACCOUNT_ROLES: Final = frozenset({RoleKey.SYSTEM_ADMIN, RoleKey.SUPER_ADMIN})
+
+# An administrator account may be linked to its holder's own employee record and then gets
+# employee self-service, but never the derived `manager` role or a manager's notifications
+# while it holds one of these roles, standing or temporary (decided by the project owner on
+# 2026-10-23; rule 16, docs/authorization-model.md §4.2).
+TEAM_ACCESS_WITHHELD_ROLES: Final = ADMIN_ACCOUNT_ROLES

@@ -32,6 +32,20 @@ class AssignmentCreate(_Model):
     valid_until: AwareDatetime | None = None
 
 
+class RoleChoice(_Model):
+    role_key: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    valid_until: AwareDatetime | None = None
+
+
+class AssignmentBatchCreate(_Model):
+    """Several roles for one account, with one reason; all are assigned or none."""
+
+    roles: Annotated[list[RoleChoice], Field(min_length=1, max_length=16)]
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
 class AssignmentView(_Model):
     id: uuid.UUID
     role_key: str

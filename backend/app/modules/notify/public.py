@@ -13,6 +13,8 @@ dispatcher sends it (`dispatcher.py`).
 
 `notify` creates an in-app notification in the caller's transaction, and `email_wanted` says
 whether the recipient wants a notification type by email (`inbox.py`).
+
+`erase_for` is the notify part of the permanent erasure of one person's data (`erasure.py`).
 """
 
 import json
@@ -23,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
+from app.modules.notify.erasure import erase_for
 from app.modules.notify.inbox import NotificationType, email_wanted, notify
 from app.modules.notify.models import EmailOutbox, EmailTemplate, OutboxStatus
 from app.platform.db import Session
@@ -46,6 +49,7 @@ __all__ = [
     "cancel_pending",
     "email_wanted",
     "enqueue",
+    "erase_for",
     "notify",
 ]
 

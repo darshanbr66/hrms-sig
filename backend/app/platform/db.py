@@ -73,6 +73,8 @@ logging.getLogger("pymongo").setLevel(logging.WARNING)
 T = TypeVar("T", bound="Document")
 
 ID: Final = "_id"
+# What an erasable field holds once a person's data was erased (`Document.__erasable__`).
+ERASED: Final = "[erased]"
 LOCK_FIELD: Final = "_lk"
 TENANT_FIELD: Final = "organization_id"
 # Case-insensitive comparison for codes, names and email addresses (formerly `citext`).
@@ -213,11 +215,15 @@ class Document:
     __mutable__: ClassVar[frozenset[str] | None] = None
     __set_once__: ClassVar[frozenset[str]] = frozenset()
     __transitions__: ClassVar[Mapping[str, Mapping[str, frozenset[str]]]] = {}
+    # Free-text fields that the permanent erasure of a person's data may overwrite, and only
+    # with `ERASED` (docs/database-design.md §9.1); every other rule above still applies.
+    __erasable__: ClassVar[frozenset[str]] = frozenset()
 
     @classmethod
     def check_update(cls, before: Mapping[str, Any], changed: Mapping[str, Any]) -> None:
         """Refuse a change the model's update rules forbid (stored names and values)."""
         names = {("id" if key == ID else key) for key in changed} - {LOCK_FIELD}
+        names -= {name for name in names & cls.__erasable__ if changed[name] == ERASED}
         if cls.__mutable__ is not None and not names <= cls.__mutable__:
             raise GuardedUpdateError(f"{cls.__collection__}: {sorted(names - cls.__mutable__)} never change")
         for name in names & cls.__set_once__:

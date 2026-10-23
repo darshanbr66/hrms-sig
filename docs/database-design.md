@@ -409,6 +409,39 @@ Business rules that depend on time zones, policies or permissions live in the se
 | Idempotency keys | 24 hours |
 | Chat messages (Future) | Configurable; default to be decided |
 
+### 9.1 Permanent erasure of one person's data (2026-10-23)
+
+Decided by the project owner on 2026-10-23. Offboarding (the one-step exit) and disabling an account keep everything and are unchanged; erasure is a separate, later operation, and the only one that removes a person's data. Two super admins run it (`employee.erasure.request`, `employee.erasure.approve`; `authorization-model.md` §4.2): both type the person's employee code and step up, the person must have left (exited, last working day passed), and their account must hold neither `super_admin` nor `system_admin`. Collection **employee_erasures** (module `erasure`): `employee_id`, `reason`, `requested_by`, `status` (`pending`, `rejected`, `cancelled`, `files_pending`, `completed`), `open` (unique per employee while true: one open request per person), `decided_by` (never the requester, validator), `decision_note`, `result` (per category: key, outcome, count, fixed explanation; never a value from the records), `pending_storage_keys`, `files_total`, `files_removed`, `file_attempts`, `last_file_error`, `completed_at`. Never deleted; statuses only move forward; `completed` only with no key left (validator).
+
+Approval runs in **one transaction**; any failure changes nothing and leaves the request waiting, so it can be approved again (tested). Stored files can be removed only by the worker's database user, so the transaction marks them erased and lists their keys; the worker task `erasure.remove_files` (every minute, per organization) removes them, removing a file already gone succeeds (safe to retry), and the request becomes `completed` only when none is left; until then the API and the page say the files are still being removed, with the last storage error.
+
+What happens to each kind of record, with the reason. Retention periods are still unconfirmed (roadmap §6), so "kept" means kept until the retention period Sigvitas confirms ends, not forever:
+
+| Record | Outcome | Why |
+|---|---|---|
+| Personal tier (`employee_personal`), emergency contacts | Deleted | Personal data with no history role |
+| Employee record | Anonymized: names "Erased employee", code `ERASED-…`, work email and phone removed, `erased_at` set; joining and exit dates and status kept | Job, attendance, leave, document and audit history refer to it by ID |
+| Job history notes | Overwritten with `[erased]` | Free text; the rows are history (rule 5) |
+| Job history rows, status history (with reasons typed then) | Kept | Append-only or never-deleted history (rule 5) |
+| Account | Anonymized: disabled for good, email `erased-<id>@erased.invalid`, `erased_at` set (enabling it is refused, `409 user.erased`) | Role history and the audit log refer to it |
+| Password, authenticators, recovery codes, sessions and tokens, single-use links, trusted browsers | Deleted | Nothing to sign in with remains |
+| Standing roles | Ended (revoked now); the assignments stay as access history | Accountability |
+| Notifications and preferences, queued and sent email records of the account, other people's notifications about the person's requests and documents | Deleted | Emails already delivered are in recipients' mailboxes, outside the system |
+| Leave request reasons; correction reasons and decision notes | Overwritten with `[erased]` (`__erasable__`) | Free text that may hold personal details |
+| Leave requests, decisions (with notes), ledger (with adjustment reasons) | Kept | Balances and payroll depend on them; decisions and ledger are append-only (rule 5) |
+| Attendance events (with the IP and browser they were recorded from), voids, correction items, shift assignments | Kept | Append-only attendance history (rule 5) |
+| Document files | Deleted by the worker | Stored files; never downloadable or scanned after approval (`409 document.erased`) |
+| Document titles and file names | Overwritten with `[erased]` | |
+| Document and version records (category, dates, size, checksum, scan result) | Kept | The record of what was held, with no content |
+| Department head | Cleared | |
+| Audit log, security events | Kept | Never changed (rule 19); removed only by the audit retention job. They hold IDs, field names and any reasons typed with a change |
+| Export files that still exist | Kept until they expire (24 hours) | They may hold rows about the person; nobody can download one after expiry |
+| Payroll, compensation, government IDs and bank details | Not built | Nothing to erase yet; Phase 2 must add its part |
+
+**Erasable fields.** `Document.__erasable__` (`app/platform/db.py`) names free-text fields that the erasure may overwrite, and only with the marker `[erased]`; every other update rule still applies, and append-only collections cannot be changed at all. Used for `employee_jobs.notes`, `attendance_corrections.reason` and `decision_note`, `document_versions.original_filename` (leave request reasons and document titles have no update restriction). An erased employee record refuses every further write (`409 employee.erased`): profile, personal details, emergency contacts, status and job changes, and document uploads.
+
+Migrations: **version 2** (`erased_at on accounts, employee records and document versions`). The validators require every declared field, so each stored account, employee record and document version needs `erased_at`; version 2 sets it to null where it is missing. It runs before the declarations (`before_declarations`), since they refuse a collection with a non-matching document, and bypasses the old validator for that one `$set` only; the new strict validator is applied and checked against every document right after. It is idempotent. `python -m app.cli migrate` also creates `employee_erasures` with its validator and indexes. Regression test: `tests/integration/test_migration_upgrade.py` (a database from the previous release upgrades and keeps its data).
+
 ## 10. Seed data policy
 
 - Migrations seed only: permission catalog, system roles and their permissions, and required **technical** setting keys (session timeouts, lockout thresholds and similar security settings documented in `security-architecture.md`). No HR policy values are seeded: no shifts, attendance policies, leave types, leave policies, holidays, identifier types, document categories, departments, designations or locations.
@@ -425,6 +458,8 @@ Business rules that depend on time zones, policies or permissions live in the se
 | Procrastinate objects (job tables, functions, types) | Procrastinate upstream, per pinned release | Alembic | The SQL shipped with the pinned Procrastinate version is applied by Alembic revisions that execute those files unchanged. We never hand-edit Procrastinate objects, and we never run `procrastinate schema --apply` against staging or production. |
 | Grants, default privileges, database role settings (`statement_timeout`, `transaction_timeout`) | HRMS backend team | Alembic | Re-asserted after every revision that creates objects; a CI test checks the resulting grants (e.g. audit append-only). |
 | Permission catalog and system roles | HRMS backend team (code catalog is the source of truth) | Alembic data revisions | CI test: database catalog equals code catalog after `upgrade head`. |
+
+**Adding a field to a stored model (MongoDB, 2026-10-23).** The validators require every declared field, nullable ones included, and `migrate` refuses a collection holding a document that does not match. A new field therefore always comes with a numbered migration marked `before_declarations=True` that gives existing documents the field (usually null), bypassing the old validator for exactly that change; the declarations then apply and check the new validator. Version 2 is the first; `tests/integration/test_migration_upgrade.py` shows the pattern.
 
 This keeps one migration runner, one ordering and one audit trail of schema changes. It is not a custom mechanism: Alembic runs SQL, and Procrastinate distributes its schema changes as SQL files for exactly this purpose.
 

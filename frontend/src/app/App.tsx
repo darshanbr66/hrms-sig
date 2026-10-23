@@ -41,6 +41,9 @@ const SettingsPage = lazy(() =>
 const MfaReenrolmentPage = lazy(() =>
   import("../features/auth/MfaReenrolmentPage").then((m) => ({ default: m.MfaReenrolmentPage })),
 );
+const ErasuresPage = lazy(() =>
+  import("../features/admin/ErasuresPage").then((m) => ({ default: m.ErasuresPage })),
+);
 const AccessRequestsPage = lazy(() =>
   import("../features/admin/AccessRequestsPage").then((m) => ({ default: m.AccessRequestsPage })),
 );
@@ -69,6 +72,9 @@ const MyProfilePage = lazy(() =>
 );
 const DirectoryPage = lazy(() =>
   import("../features/employees/DirectoryPage").then((m) => ({ default: m.DirectoryPage })),
+);
+const FormerEmployeesPage = lazy(() =>
+  import("../features/employees/FormerEmployeesPage").then((m) => ({ default: m.FormerEmployeesPage })),
 );
 const EmployeesPage = lazy(() =>
   import("../features/employees/EmployeesPage").then((m) => ({ default: m.EmployeesPage })),
@@ -369,6 +375,14 @@ export const routes: RouteObject[] = [
             ),
           },
           {
+            path: "/former-employees",
+            element: (
+              <Protected anyOf={["employee.profile.read.all"]}>
+                <FormerEmployeesPage />
+              </Protected>
+            ),
+          },
+          {
             path: "/employees/new",
             element: (
               <Protected anyOf={["employee.create"]}>
@@ -501,6 +515,14 @@ export const routes: RouteObject[] = [
             element: (
               <Protected anyOf={["role.read"]}>
                 <AccessRequestsPage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/admin/erasures",
+            element: (
+              <Protected anyOf={["employee.erasure.read"]}>
+                <ErasuresPage />
               </Protected>
             ),
           },

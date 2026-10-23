@@ -2,7 +2,8 @@
 written in the caller's transaction.
 
 - A correction waiting for a decision reaches the employee's reporting manager on the day it
-  is sent, if they have an active account; HR sees every waiting correction in the inbox.
+  is sent, if they have an active account that is not an administrator account (whose team
+  access is withheld); HR sees every waiting correction in the inbox.
 - A decision reaches the employee.
 - A correction HR records on someone's behalf reaches the employee and their manager.
 
@@ -13,6 +14,7 @@ email and the notification carry the work date and a link: never the reason or a
 import uuid
 from datetime import date, datetime
 
+from app.modules.access import public as access
 from app.modules.attendance.emails import message
 from app.modules.attendance.models import AttendanceCorrection
 from app.modules.identity import public as identity
@@ -81,7 +83,9 @@ async def to_manager(
         return
     await _send(
         session,
-        user_id=await identity.account_for_employee(session, facts.manager_employee_id),
+        user_id=await access.manager_account(
+            session, await identity.account_for_employee(session, facts.manager_employee_id), now
+        ),
         correction=correction,
         event=event,
         now=now,

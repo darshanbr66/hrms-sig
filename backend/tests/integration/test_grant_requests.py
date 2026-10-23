@@ -445,3 +445,42 @@ async def test_removing_a_super_admin_ends_their_temporary_access(api: Api) -> N
 async def request_status(api: Api, request_id: str) -> str:
     [stored] = await api.records(RoleGrantRequest, {"id": uuid.UUID(request_id)})
     return stored.status
+
+
+async def test_a_super_admin_hands_over_and_then_gets_a_standing_role(api: Api) -> None:
+    """The handover (docs/roles-and-permissions.md, super admin handover): a super admin who
+    needs a standing data role is replaced first, so two active super admins always remain,
+    and never removes their own role."""
+    async with api.client() as leaving_client, api.client() as other_client:
+        leaving = await super_admin(api, leaving_client)
+        await super_admin(api, other_client)
+        [leaving_role] = await api.records(UserRole, {"user_id": leaving.user_id})
+        path = f"/api/v1/users/{leaving.user_id}/roles"
+        own = await leaving_client.delete(f"{path}/{leaving_role.id}")
+        assert own.json()["code"] == "sod.own_roles"
+        # With only two super admins, removing one is refused.
+        early = await other_client.delete(f"{path}/{leaving_role.id}")
+        assert (early.status_code, early.json()["code"]) == (409, "role.min_super_admins")
+        # A standing data role is refused while they are still a super admin (SOD-10).
+        sod = await other_client.post(path, json={"role_key": "hr", "reason": "Moves to HR"})
+        assert sod.json()["code"] == "sod.super_admin_data_role"
+
+        # 1. A successor is assigned super admin and the second super admin approves.
+        successor = await api.create_account()
+        created = await leaving_client.post(
+            f"/api/v1/users/{successor.user_id}/roles", json={"role_key": "super_admin", "reason": "Handover"}
+        )
+        assert created.status_code == 202, created.text
+        approved = await other_client.post(f"{REQUESTS}/{created.json()['id']}/approve", json={})
+        assert approved.json()["status"] == "approved"
+        # 2. The other super admin removes the leaving one's role; two remain.
+        removed = await other_client.delete(f"{path}/{leaving_role.id}")
+        assert removed.status_code == 204, removed.text
+        # 3. The reduced access applies at once: the session is refreshed without super admin.
+        assert (await leaving_client.get("/api/v1/roles")).status_code == 401
+        assert (await leaving_client.post("/api/v1/auth/refresh")).status_code == 200
+        assert (await leaving_client.get("/api/v1/roles")).status_code == 403
+        # 4. The same account now gets the standing role it needs.
+        hr = await other_client.post(path, json={"role_key": "hr", "reason": "Moves to HR"})
+        assert hr.status_code == 201, hr.text
+    assert await api.count("user_roles", {"role_key": "super_admin", "revoked_at": None}) == 2

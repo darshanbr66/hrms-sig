@@ -1,7 +1,9 @@
 /**
  * Attendance of everyone in the viewer's scope (managers: themselves and their team; HR:
  * everyone their role covers): where people stand today, the register of one day as judged,
- * and a period report. Counts cover the whole scope; lists are searchable and paged.
+ * and a period report. Counts cover the whole scope; lists are searchable and paged. A session
+ * left open from an earlier day (a forgotten clock-out) is flagged and counts nothing past its
+ * last event; HR closes it with the verified departure time (`ClockOutDialog`).
  */
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { UsersRound } from "lucide-react";
@@ -26,7 +28,8 @@ import { Tabs } from "../../design-system/Tabs";
 import { TextField } from "../../design-system/TextField";
 import { client, unwrap } from "../../lib/api";
 import type { components } from "../../lib/api-schema";
-import { addDays, formatDuration, formatTime, localIsoDate } from "../../lib/format";
+import { addDays, formatDate, formatDuration, formatTime, localIsoDate } from "../../lib/format";
+import { ClockOutDialog, type OpenSession } from "./ClockOutDialog";
 import { CorrectionDialog } from "./CorrectionDialog";
 import { DayStatusBadge } from "./DaysTable";
 import { ATTENDANCE_KEY, DAY_STATUS_LABELS, STATE_LABELS, formatMinutes } from "./queries";
@@ -98,6 +101,9 @@ export function TeamAttendancePage() {
 }
 
 function TodayTab({ linked }: { linked: boolean }) {
+  const me = useMe();
+  const canCorrect = hasPermission(me.data, "attendance.correction.create.all");
+  const [correcting, setCorrecting] = useState<OpenSession | null>(null);
   const [q, setQ] = useState("");
   const team = useInfiniteQuery({
     queryKey: [...ATTENDANCE_KEY, "team", q],
@@ -123,23 +129,58 @@ function TodayTab({ linked }: { linked: boolean }) {
     {
       key: "state",
       header: "Now",
-      cell: (row) => (
-        <Badge
-          tone={row.state === "clocked_in" ? "success" : row.state === "on_break" ? "warning" : "neutral"}
-        >
-          {STATE_LABELS[row.state]}
-        </Badge>
-      ),
+      cell: (row) =>
+        row.open_since ? (
+          <Badge tone="danger">No clock-out since {formatDate(row.open_since)}</Badge>
+        ) : (
+          <Badge
+            tone={row.state === "clocked_in" ? "success" : row.state === "on_break" ? "warning" : "neutral"}
+          >
+            {STATE_LABELS[row.state]}
+          </Badge>
+        ),
     },
-    { key: "first", header: "First in", cell: (row) => (row.first_in ? formatTime(row.first_in) : "None") },
+    {
+      key: "first",
+      header: "First in",
+      cell: (row) => (row.first_in ? formatTime(row.first_in, row.time_zone) : "None"),
+    },
     {
       key: "session",
       header: "Clocked in",
       align: "end",
-      cell: (row) => formatDuration(row.session_seconds),
+      // A forgotten clock-out counts only up to the last recorded event.
+      cell: (row) => (row.open_since ? "Unknown" : formatDuration(row.session_seconds)),
     },
     { key: "break", header: "Breaks", align: "end", cell: (row) => formatDuration(row.break_seconds) },
     { key: "location", header: "Location", cell: (row) => row.employee.location ?? "Not placed" },
+    ...(canCorrect
+      ? [
+          {
+            key: "correct",
+            header: "Correction",
+            cell: (row: Member) =>
+              row.open_since ? (
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onPress={() => {
+                    setCorrecting({
+                      employeeId: row.employee.id,
+                      employeeName: row.employee.name,
+                      workDate: row.work_date,
+                      timeZone: row.time_zone,
+                      clockedInAt: row.first_in,
+                      onBreak: row.state === "on_break",
+                    });
+                  }}
+                >
+                  Correct clock-out<span className="sr-only"> for {row.employee.name}</span>
+                </Button>
+              ) : null,
+          },
+        ]
+      : []),
   ];
   return (
     <div className="flex flex-col gap-6">
@@ -181,6 +222,14 @@ function TodayTab({ linked }: { linked: boolean }) {
           />
         </div>
       ) : null}
+      {correcting ? (
+        <ClockOutDialog
+          session={correcting}
+          onClose={() => {
+            setCorrecting(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -197,6 +246,7 @@ function RegisterTab({ linked }: { linked: boolean }) {
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
   const [recording, setRecording] = useState<Entry | null>(null);
+  const [correcting, setCorrecting] = useState<OpenSession | null>(null);
   const register = useInfiniteQuery({
     queryKey: [...ATTENDANCE_KEY, "register", date, status, q],
     queryFn: ({ pageParam }) =>
@@ -256,15 +306,35 @@ function RegisterTab({ linked }: { linked: boolean }) {
             key: "record",
             header: "Correction",
             cell: (row: Entry) => (
-              <Button
-                size="sm"
-                variant="quiet"
-                onPress={() => {
-                  setRecording(row);
-                }}
-              >
-                Record<span className="sr-only"> a correction for {row.employee.name}</span>
-              </Button>
+              <span className="flex flex-wrap gap-1">
+                {row.day.open_session && row.day.status === "incomplete" ? (
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    onPress={() => {
+                      setCorrecting({
+                        employeeId: row.employee.id,
+                        employeeName: row.employee.name,
+                        workDate: row.day.work_date,
+                        timeZone: row.time_zone,
+                        clockedInAt: row.day.first_in,
+                        onBreak: row.day.on_break,
+                      });
+                    }}
+                  >
+                    Correct clock-out<span className="sr-only"> for {row.employee.name}</span>
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onPress={() => {
+                    setRecording(row);
+                  }}
+                >
+                  Record<span className="sr-only"> a correction for {row.employee.name}</span>
+                </Button>
+              </span>
             ),
           },
         ]
@@ -323,6 +393,14 @@ function RegisterTab({ linked }: { linked: boolean }) {
             onLoad={() => void register.fetchNextPage()}
           />
         </div>
+      ) : null}
+      {correcting ? (
+        <ClockOutDialog
+          session={correcting}
+          onClose={() => {
+            setCorrecting(null);
+          }}
+        />
       ) : null}
       {recording ? (
         <CorrectionDialog

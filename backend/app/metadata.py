@@ -21,6 +21,7 @@ from app.modules.attendance.models import (
     ShiftVersion,
 )
 from app.modules.documents.models import Document, DocumentCategory, DocumentVersion
+from app.modules.erasure.models import ErasureRequest
 from app.modules.identity.models import (
     AuthSession,
     Credential,
@@ -125,4 +126,5 @@ MODELS: Final[tuple[type[BaseDocument], ...]] = (
     Document,
     DocumentVersion,
     ExportJob,
+    ErasureRequest,
 )

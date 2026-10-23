@@ -446,7 +446,7 @@ describe("administration", () => {
       .on(`GET /api/v1/users/${SUPER_ADMIN_ME.user_id}/roles`, json({ items: [] }));
     renderSignedIn(api, SUPER_ADMIN_ME, `/admin/users/${SUPER_ADMIN_ME.user_id}`);
     expect(await screen.findByText(/This is your own account/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Assign role" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add roles" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Disable account" })).not.toBeInTheDocument();
   });
 

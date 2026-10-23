@@ -51,7 +51,8 @@ async def scan_pending(
         async with database.unit_of_work() as session:
             version = await session.find_one(
                 DocumentVersion,
-                {"scan_status": ScanStatus.PENDING.value, "id": {"$nin": tried}},
+                # A version erased with its owner's data is never scanned: its file is going.
+                {"scan_status": ScanStatus.PENDING.value, "erased_at": None, "id": {"$nin": tried}},
                 sort=[("uploaded_at", 1), ("id", 1)],
                 for_update=True,
             )

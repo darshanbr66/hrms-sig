@@ -214,6 +214,12 @@ class Migration:
     version: int
     name: str
     apply: MigrationStep
+    # Run before the declarations are applied: only to bring existing documents to a new
+    # declaration (for example a field added to a model, which every stored document must then
+    # hold), because the declarations refuse a collection holding a document that does not
+    # match. Such a step may bypass the old validator for exactly the change it makes; the
+    # declarations then apply the new validator and check every document against it.
+    before_declarations: bool = False
 
 
 async def applied_versions(database: Database) -> list[int]:
@@ -252,25 +258,31 @@ async def migrate(
     report = Report()
     await _acquire(database, owner)
     try:
-        await ensure_declarations(database, models, report, extra_indexes)
         done = set(await applied_versions(database))
         for item in migrations:
-            if item.version in done:
-                continue
-            await item.apply(database)
-            await database.collection(MIGRATIONS_COLLECTION).insert_one(
-                {
-                    ID: f"v{item.version:04d}",
-                    "version": item.version,
-                    "name": item.name,
-                    "applied_at": utcnow(),
-                }
-            )
-            report.applied_versions.append(item.version)
-            logger.info("schema.migration_applied", extra={"version": item.version, "migration": item.name})
+            if item.before_declarations and item.version not in done:
+                await _apply(database, item, report)
+        await ensure_declarations(database, models, report, extra_indexes)
+        for item in migrations:
+            if item.version not in done and item.version not in report.applied_versions:
+                await _apply(database, item, report)
     finally:
         await _release(database, owner)
     return report
+
+
+async def _apply(database: Database, item: Migration, report: Report) -> None:
+    await item.apply(database)
+    await database.collection(MIGRATIONS_COLLECTION).insert_one(
+        {
+            ID: f"v{item.version:04d}",
+            "version": item.version,
+            "name": item.name,
+            "applied_at": utcnow(),
+        }
+    )
+    report.applied_versions.append(item.version)
+    logger.info("schema.migration_applied", extra={"version": item.version, "migration": item.name})
 
 
 async def status(database: Database, migrations: Sequence[Migration]) -> tuple[list[int], list[int]]:

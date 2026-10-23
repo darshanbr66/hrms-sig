@@ -7,7 +7,8 @@ same short transaction, inside the account's organization:
 - assigned roles that apply now, each permission carrying the assignment's department and
   location constraint;
 - derived roles: `employee` while the linked employee is employed today, `manager` while they
-  have a direct report today;
+  have a direct report today and the account holds neither `super_admin` nor `system_admin`
+  (an administrator linked to their own record gets self-service only);
 - the account baseline every active account holds (own sessions and login history).
 
 An elevation or break-glass whose assignment applies now is named on the actor
@@ -18,6 +19,9 @@ request. The transaction closes before the route runs, so a route never holds tw
 connections at once.
 
 `AccountRoles` tells identity which roles an account holds (identity cannot import access).
+`manager_account` names the account a manager's notifications go to: none for an
+administrator account, which holds no team access. `end_roles_for_erasure` ends the roles an
+account still holds when its person's data is permanently erased (history is kept).
 
 `bootstrap_super_admins` is the step that creates an organization's first two super admins
 (docs/authorization-model.md §4.3, bootstrap). The worker registers `register_grant_expiry`
@@ -40,9 +44,15 @@ from app.modules.access.repository import holder_ids
 from app.modules.identity import public as identity
 from app.modules.people import public as people
 from app.platform.authz.context import UNRESTRICTED, Actor, Constraint, SessionScope
-from app.platform.authz.roles import ACCOUNT_BASELINE, MIN_SUPER_ADMINS, RoleKey
+from app.platform.authz.roles import (
+    ACCOUNT_BASELINE,
+    MIN_SUPER_ADMINS,
+    TEAM_ACCESS_WITHHELD_ROLES,
+    RoleKey,
+)
 from app.platform.clock import Clock
 from app.platform.db import Database, Session
+from app.platform.erasure import Erased, Outcome
 from app.platform.errors import ProblemError, ProblemType
 from app.platform.tenancy import Organization
 
@@ -67,12 +77,15 @@ async def effective_access(
     session: Session, user_id: uuid.UUID, employee_id: uuid.UUID | None, now: datetime
 ) -> EffectiveAccess:
     today = now.date()
+    assigned = await repo.assigned_grants(session, user_id, now)
     derived: list[str] = []
     if employee_id is not None and await people.is_employed(session, employee_id, today):
         derived.append(RoleKey.EMPLOYEE.value)
-        if await people.has_direct_reports(session, employee_id, today):
+        # An administrator account gets self-service only: never team access to others' data.
+        withheld = any(row.role_key in TEAM_ACCESS_WITHHELD_ROLES for row in assigned)
+        if not withheld and await people.has_direct_reports(session, employee_id, today):
             derived.append(RoleKey.MANAGER.value)
-    rows = await repo.assigned_grants(session, user_id, now) + await repo.derived_grants(session, derived)
+    rows = assigned + await repo.derived_grants(session, derived)
 
     constraints: defaultdict[str, set[Constraint]] = defaultdict(set)
     for key in ACCOUNT_BASELINE:
@@ -134,9 +147,20 @@ __all__ = [
     "bootstrap_super_admins",
     "effective_access",
     "effective_grants",
+    "end_roles_for_erasure",
     "holder_ids",
+    "manager_account",
     "register_grant_expiry",
 ]
+
+
+async def manager_account(session: Session, user_id: uuid.UUID | None, now: datetime) -> uuid.UUID | None:
+    """`user_id` when a manager's notification may go to it; None for an administrator account,
+    whose derived manager role is withheld, so it never learns of team members' requests."""
+    if user_id is None:
+        return None
+    held = {key for _, key in await repo.active_assignments(session, user_id, now)}
+    return None if held & TEAM_ACCESS_WITHHELD_ROLES else user_id
 
 
 class AccountRoles:
@@ -192,3 +216,30 @@ async def bootstrap_super_admins(session: Session, emails: list[str], now: datet
         )
         invites[email] = await identity.issue_invite(session, user_id, now)
     return invites
+
+
+async def end_roles_for_erasure(
+    session: Session, user_id: uuid.UUID | None, *, by: uuid.UUID, now: datetime
+) -> Erased:
+    """End every role assignment the account still holds. The erasure refuses an account that
+    holds `super_admin` or `system_admin`, so none of these came from an access request."""
+    result = Erased()
+    held = [record for record, _ in await repo.active_assignments(session, user_id, now)] if user_id else []
+    for record in held:
+        record.revoked_at = now
+        record.revoked_by = by
+    await session.flush()
+    result.add(
+        "access.roles_ended",
+        Outcome.DELETED,
+        len(held),
+        "Access from roles the account still held, ended now; the assignments stay as history.",
+    )
+    total = await session.count(UserRole, {"user_id": user_id}) if user_id else 0
+    result.add(
+        "access.role_history",
+        Outcome.RETAINED,
+        total,
+        "Which roles the account held, when and who granted them: access history kept for accountability.",
+    )
+    return result

@@ -22,9 +22,9 @@
 
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -101,6 +101,10 @@ class TeamMember:
     work_date: date
     totals: timeline.Totals
     last_event_at: datetime | None
+    time_zone: str
+    # Set when the open session started on an earlier work date (a forgotten clock-out): its
+    # totals then stop at the last recorded event, because the departure time is unknown.
+    open_since: date | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,10 +230,32 @@ class AttendanceService:
         """Whether `now` is before the end of yesterday's shift, when that shift crosses midnight."""
         yesterday = timeline.local_date(now, zone) - timedelta(days=1)
         schedule = await Schedule.load(session, [employee_id], yesterday, yesterday)
-        found = schedule.shift_on(employee_id, yesterday)
-        if found is None or not found[1].crosses_midnight:
-            return False
-        return now < datetime.combine(yesterday + timedelta(days=1), found[1].end_time, zone)
+        return _overnight_in_progress(schedule, employee_id, yesterday, now, zone)
+
+    @staticmethod
+    async def _forgotten_clock_outs(
+        session: Session,
+        open_from: dict[uuid.UUID, date],
+        local_today: dict[uuid.UUID, date],
+        zones: Mapping[uuid.UUID, tzinfo],
+        now: datetime,
+    ) -> dict[uuid.UUID, date]:
+        """Of sessions still open from an earlier work date, those that are forgotten
+        clock-outs: every one except last night's shift crossing midnight that has not ended
+        yet (the same rule as one's own day)."""
+        if not open_from:
+            return {}
+        schedule = await Schedule.load(
+            session, list(open_from), min(open_from.values()), max(open_from.values())
+        )
+        return {
+            employee_id: work_date
+            for employee_id, work_date in open_from.items()
+            if not (
+                work_date == local_today[employee_id] - timedelta(days=1)
+                and _overnight_in_progress(schedule, employee_id, work_date, now, zones[employee_id])
+            )
+        }
 
     async def _new_work_date(
         self, session: Session, employee_id: uuid.UUID, now: datetime, zone: ZoneInfo
@@ -403,6 +429,19 @@ class AttendanceService:
                 else local_today[c.id]
                 for c in page
             }
+            # Over the whole scope, so the counts leave forgotten clock-outs out too.
+            forgotten = await self._forgotten_clock_outs(
+                session,
+                {
+                    employee_id: event.work_date
+                    for employee_id, event in latest.items()
+                    if states[employee_id] is not State.CLOCKED_OUT
+                    and event.work_date < local_today[employee_id]
+                },
+                local_today,
+                {c.id: ZoneInfo(zones[c.location_id]) if c.location_id in zones else UTC for c in everyone},
+                now,
+            )
             page_rows = await _events_on(session, work_dates)
         summary = TeamSummary(
             in_scope=len(everyone),
@@ -413,16 +452,30 @@ class AttendanceService:
                     if work_date == local_today.get(employee_id)
                 }
             ),
-            working_now=sum(state is not State.CLOCKED_OUT for state in states.values()),
-            on_break=sum(state is State.ON_BREAK for state in states.values()),
+            # A session left open from an earlier day is a forgotten clock-out, not work now.
+            working_now=sum(
+                state is not State.CLOCKED_OUT and employee_id not in forgotten
+                for employee_id, state in states.items()
+            ),
+            on_break=sum(
+                state is State.ON_BREAK and employee_id not in forgotten
+                for employee_id, state in states.items()
+            ),
         )
         members = [
             TeamMember(
                 colleague=c,
                 state=states.get(c.id, State.CLOCKED_OUT),
                 work_date=work_dates[c.id],
-                totals=timeline.totals(_events(page_rows.get(c.id, [])), now),
+                # A forgotten clock-out counts nothing past the last event: the session is not
+                # stretched to now, so it never reads as hours worked or overtime.
+                totals=timeline.totals(
+                    _events(page_rows.get(c.id, [])),
+                    latest[c.id].occurred_at if c.id in forgotten else now,
+                ),
                 last_event_at=latest[c.id].occurred_at if c.id in latest else None,
+                time_zone=zones.get(c.location_id, "UTC") if c.location_id else "UTC",
+                open_since=forgotten.get(c.id),
             )
             for c in page
         ]
@@ -603,3 +656,13 @@ async def _events_on(
         if event.work_date == work_dates[event.employee_id]:
             found[event.employee_id].append(event)
     return found
+
+
+def _overnight_in_progress(
+    schedule: Schedule, employee_id: uuid.UUID, work_date: date, now: datetime, zone: tzinfo
+) -> bool:
+    """Whether `now` is before the end of the work date's shift, when that shift crosses midnight."""
+    found = schedule.shift_on(employee_id, work_date)
+    if found is None or not found[1].crosses_midnight:
+        return False
+    return now < datetime.combine(work_date + timedelta(days=1), found[1].end_time, zone)

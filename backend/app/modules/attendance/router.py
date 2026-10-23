@@ -154,6 +154,8 @@ def _member(member: TeamMember) -> s.TeamMemberToday:
         last_event_at=member.last_event_at,
         session_seconds=member.totals.session_seconds,
         break_seconds=member.totals.break_seconds,
+        time_zone=member.time_zone,
+        open_since=member.open_since,
     )
 
 

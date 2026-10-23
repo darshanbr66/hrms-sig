@@ -89,6 +89,38 @@ class EmployeePage(_Response):
     next_cursor: str | None
 
 
+type FormerSort = Literal["left_newest", "name"]
+type AccountState = Literal["none", "active", "invited", "disabled"]
+
+
+class FormerAccount(_Response):
+    id: uuid.UUID
+    email: str
+    # `active` after the exit means an administrator account left for a system admin to
+    # disable (the exit never disables `system_admin` or `super_admin` accounts).
+    status: Literal["active", "invited", "disabled"]
+
+
+class FormerEmployee(_Response):
+    id: uuid.UUID
+    employee_code: str
+    name: str
+    date_of_joining: date
+    # Last working day.
+    date_of_exit: date
+    # The last job held.
+    job: CurrentJob | None
+    # Null when the person has no account, or the reader may not see accounts.
+    account: FormerAccount | None
+
+
+class FormerEmployeePage(_Response):
+    items: list[FormerEmployee]
+    next_cursor: str | None
+    # Whether the reader may see accounts (`user.read.all`); without it `account` is always null.
+    accounts_visible: bool
+
+
 class EmployeeView(_Response):
     id: uuid.UUID
     employee_code: str

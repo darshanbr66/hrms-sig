@@ -30,7 +30,8 @@ Legend: **Yes** = evidence exists (automated tests, recorded in `m1-implementati
 |---|---|---|---|---|---|---|---|---|
 | Sign-in, MFA, step-up, sessions, devices | Yes | Yes | Yes | Yes | Yes | Yes | No | Passkeys are Phase 2. |
 | Invites, password reset, MFA reset | Yes | Yes | Yes | Yes | Yes | Yes | No | Email through the outbox to Mailpit locally. Staff provisioning journey tested end to end; script §3.3. |
-| Roles, elevation, break-glass | Yes | Yes | Yes | Yes | Yes | Yes | No | |
+| Roles, elevation, break-glass | Yes | Yes | Yes | Yes | Yes | Yes | No | Several roles at once and the super admin handover (2026-10-23), script §14.1. |
+| Permanent data erasure | Yes | Yes | Yes | Yes | Yes | Yes | No | Owner decision 2026-10-23; script §14.3; what is kept is listed in `database-design.md` §9.1. |
 | Audit log, sealer, checkpoints, retention | Yes | Yes | Yes | Yes | n/a | Yes | No | |
 | Settings | Yes | Yes | Yes | Yes | Yes | Yes | No | |
 | Organization (locations, departments, designations) | Yes | Yes (fixed 2026-10-16) | Yes | Yes | Yes | Yes | No | Script §3.1. Field errors from request validation use the validator's generic text ("String should have at least 1 character"), not product wording; applies to every module. |
@@ -313,3 +314,35 @@ Intermittent failures, resolved during deployment preparation (same day). Neithe
 - Playwright `survives a reload`: it proved "filled before the API answers" by a 250 ms deadline, which a busy machine can miss. The fake API now holds its answer until the test has seen the box checked and filled and has confirmed the save is still unanswered, then releases it: the same claim, checked exactly instead of by time (a box that waited for the answer would now fail outright). 35 of 35 checkbox runs passed.
 
 Not covered: browsers other than Chromium; screen reader runs by a person.
+
+## 14. Owner requirements of 2026-10-23
+
+Decided by the project owner on 2026-10-23: administrator accounts linked to their holder's own employee record (self-service only), several roles at once, the super admin handover, HR correction of a forgotten clock-out, and the permanent erasure of a person's data. Rules: `authorization-model.md` §4.2, §5; `database-design.md` §9.1; `product-requirements.md` ATT-6. Tests: backend `test_admin_employee_link.py`, `test_role_assignment.py`, `test_grant_requests.py` (handover), `test_missed_clock_out.py`, `test_employee_erasure.py`, `test_tenant_isolation.py`, the authorization matrix; frontend `RoleAssignment.test.tsx`, `ClockOutCorrection.test.tsx`, `Erasure.test.tsx`. No browser acceptance has been recorded (signing in needs the owner's authenticators).
+
+Local setup for the scripts: `.
+un-backend.cmd` (it runs the migration, which creates `employee_erasures` and updates validators), `pnpm dev` in `frontend/`, Mailpit at `http://127.0.0.1:8025`. Use the local test organization, never the live database. Scripts below need two super admins (A and B), an HR admin and test employees, all obviously fake.
+
+### 14.1 Several roles, an administrator's own record, the handover
+
+1. As super admin A: Users → an HR test account → Add roles. Roles held are ticked and locked. Tick HR admin and Payroll admin, add a reason, confirm with a code: one step-up, "2 roles assigned". Audit log: two `access.role.assigned` rows with the reason.
+2. Open super admin B's account → Add roles: HR, HR admin, Payroll admin, System admin and Auditor are disabled with the reason "Not with super admin…". The info banner explains the handover.
+3. As the HR admin: Employees → super admin A's employee record (work email = A's sign-in email) → HRMS account → Link an existing account, with a reason: it links. As A, sign in again: My attendance, My leave and the profile work on the same account; Team attendance shows nothing about A's direct reports, and A gets no manager notifications.
+4. As A: Access requests → ask for HR for 1 hour. As B: approve. A refreshes: HR pages work on the same account until the end time.
+5. Handover: first, B tries to remove A's super admin role: refused, because fewer than two active super admins would remain; A cannot remove their own role at all. A adds super admin to a third account C (a request); B approves. Now B removes A's super admin role. A's session refreshes without super admin, and B can assign A a standing HR role on the same account.
+
+### 14.2 A forgotten clock-out (HR)
+
+1. As a test employee with a shift and policy: clock in, do not clock out. The next day, as HR: Team attendance → Today shows "No clock-out since …" with Clocked in "Unknown", not 20 hours.
+2. Correct clock-out → Left on the work date, Left at the verified time, a reason → step-up if asked. "Clock-out corrected".
+3. Daily register for that date: status judged from the shift and policy (present or half day), Worked from clock-in to the entered time, no overtime unless the time is past the shift end by the policy's minimum. Period report: no "No clock-out" day for it.
+4. Repeat with a time well past the shift end: overtime shows, flagged for approval if the policy says so.
+5. Correction detail (Attendance → Corrections): the original clock-in, the added clock-out, the reason, who recorded it. Audit log: `attendance.correction.recorded`.
+
+### 14.3 Permanent erasure (two super admins)
+
+1. As the HR admin: offboard a test employee with a last working day before today.
+2. As super admin A: Administration → Data erasure → Permanently delete employee data → type the employee code, a reason, tick the confirmation, step up. The request waits for a second super admin; A cannot approve it.
+3. As super admin B: open the request → type the code again, tick, Approve and delete data, step up. The status says records are erased and files are being removed; within a minute (jobs inside the API) it becomes complete. The result lists each kind of record as deleted, anonymized or kept, with counts.
+4. Check: the employee record shows "Erased employee"; the old account cannot sign in or be enabled; document downloads are refused; Mailpit receives nothing more for the old address. Audit log: `people.erasure.requested`, `people.employee.erased`, `people.erasure.completed`, with no name or email in them.
+5. Refusals: an employee who has not left, or whose account still holds super admin or system admin, cannot be requested; HR admin and system admin cannot open the page.
+

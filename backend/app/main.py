@@ -28,6 +28,8 @@ from app.modules.attendance.service import AttendanceService
 from app.modules.audit import router as audit_router
 from app.modules.documents import router as documents_router
 from app.modules.documents.service import DocumentService
+from app.modules.erasure import router as erasure_router
+from app.modules.erasure.service import ErasureService
 from app.modules.identity import router as identity_router
 from app.modules.identity.invitations import InvitationService
 from app.modules.identity.password_reset import PasswordResetService
@@ -95,6 +97,7 @@ def _build(*, docs_enabled: bool, lifespan: Any = None) -> FastAPI:
     app.include_router(notify_router.router)
     app.include_router(documents_router.router)
     app.include_router(reports_router.router)
+    app.include_router(erasure_router.router)
     return app
 
 
@@ -213,6 +216,9 @@ def create_app(
             authorizer=authorizer,
             rate_limiter=limiter,
             store=file_store,
+        )
+        app.state.erasure_service = ErasureService(
+            database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
         app.state.leave_year_service = LeaveYearService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer

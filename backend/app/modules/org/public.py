@@ -7,6 +7,8 @@
 - `location_time_zones` gives the IANA time zone of each location, for work dates.
 - `missing_units` names the department or location references that point at nothing, for
   records that refer to them (there are no foreign keys in MongoDB).
+- `clear_department_head` removes a person as head of any department, for the permanent erasure
+  of their data.
 """
 
 import uuid
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 
 from app.modules.org.models import Department, Designation, Location, OrgUnitStatus
 from app.platform.db import Session
+from app.platform.erasure import Erased, Outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,3 +86,16 @@ async def missing_units(
     if location_id is not None and await session.get(Location, location_id) is None:
         missing.append("location_id")
     return missing
+
+
+async def clear_department_head(session: Session, employee_id: uuid.UUID) -> Erased:
+    result = Erased()
+    headed = await session.find(Department, {"head_employee_id": employee_id})
+    for department in headed:
+        department.head_employee_id = None
+        department.version += 1
+    await session.flush()
+    result.add(
+        "org.department_head", Outcome.DELETED, len(headed), "The person named as a department's head."
+    )
+    return result

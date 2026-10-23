@@ -143,44 +143,134 @@ class AccessService:
                     granted=granted,
                 )
             held = {key for _, key in await repo.active_assignments(session, user_id, now)}
-            if RoleKey.SUPER_ADMIN in held and role.key in DATA_ROLES:
-                raise _conflict(
-                    SodRule.SUPER_ADMIN_DATA_ROLE.value,
-                    "A super admin cannot hold this role permanently. Use a time-bound elevation instead.",
-                )
-            record = UserRole(
-                user_id=user_id,
-                role_id=role.id,
-                role_key=role.key,
-                department_id=request.department_id,
-                location_id=request.location_id,
-                valid_from=now,
-                valid_until=request.valid_until,
-                granted_by=actor.user_id,
-                grant_reason=request.reason,
-            )
-            await self._insert(session, record)
-            await identity.rotate_user_sessions(session, user_id, now)
-            await self._audit.record(
+            record = await self._add(
                 session,
-                AuditEvent(
-                    action="access.role.assigned",
-                    actor=actor.audit_actor(),
-                    context=context,
-                    permission_used=granted.key,
-                    target_type="user",
-                    target_id=user_id,
-                    changes={
-                        "role": ValueChange(None, role.key),
-                        "assignment_id": ValueChange(None, record.id),
-                        "department_id": ValueChange(None, request.department_id),
-                        "location_id": ValueChange(None, request.location_id),
-                        "valid_until": ValueChange(None, request.valid_until),
-                    },
-                    reason=request.reason,
-                ),
+                actor=actor,
+                context=context,
+                permission=granted.key,
+                user_id=user_id,
+                role=role,
+                request=request,
+                held=held,
+                now=now,
             )
+            await identity.rotate_user_sessions(session, user_id, now)
         return Assignment(record, role.key)
+
+    async def assign_many(
+        self,
+        actor: Actor,
+        context: RequestContext,
+        user_id: uuid.UUID,
+        requests: Sequence[AssignmentRequest],
+    ) -> list[Assignment]:
+        """Several roles at once (docs/authorization-model.md §5): one transaction, one step-up,
+        all or nothing. It only adds: roles already held stay as they are, and a role held
+        already, or one not compatible with the others, refuses the whole batch with the
+        position of the role at fault. `super_admin` is never part of a batch: it is assigned
+        alone, as a request a second super admin approves (SOD-8)."""
+        now = self._clock.now()
+        if not requests:
+            raise _field("roles", "role.batch_empty", "Choose at least one role.")
+        for index, request in enumerate(requests):
+            if request.valid_until is not None and request.valid_until <= now:
+                raise _field(
+                    f"roles.{index}.valid_until", "role.valid_until_past", "Choose an end time in the future."
+                )
+        async with self._db.unit_of_work() as session:
+            granted = await self._authz.require(session, actor, "role.assign")
+            refuse_self(actor, user_id, SodRule.OWN_ROLES)
+            await self._require_user(session, user_id)
+            roles: list[Role] = []
+            seen: set[tuple[str, uuid.UUID | None, uuid.UUID | None]] = set()
+            for index, request in enumerate(requests):
+                role = await repo.role_by_key(session, request.role_key)
+                if role is None:
+                    raise _field(f"roles.{index}.role_key", "role.unknown", "Choose one of the listed roles.")
+                if role.is_derived:
+                    raise _conflict(
+                        "role.derived",
+                        "This role is given automatically from employment and reporting lines.",
+                    )
+                if role.key == RoleKey.SUPER_ADMIN:
+                    raise _conflict(
+                        "role.super_admin_alone",
+                        "Assign the super admin role on its own: it needs another super admin's approval.",
+                    )
+                slot = (role.key, request.department_id, request.location_id)
+                if slot in seen:
+                    raise _field(f"roles.{index}.role_key", "role.batch_duplicate", "Choose each role once.")
+                seen.add(slot)
+                roles.append(role)
+            held = {key for _, key in await repo.active_assignments(session, user_id, now)}
+            records = [
+                await self._add(
+                    session,
+                    actor=actor,
+                    context=context,
+                    permission=granted.key,
+                    user_id=user_id,
+                    role=role,
+                    request=request,
+                    held=held,
+                    now=now,
+                )
+                for role, request in zip(roles, requests, strict=True)
+            ]
+            await identity.rotate_user_sessions(session, user_id, now)
+        return [Assignment(record, role.key) for record, role in zip(records, roles, strict=True)]
+
+    async def _add(
+        self,
+        session: Session,
+        *,
+        actor: Actor,
+        context: RequestContext,
+        permission: str,
+        user_id: uuid.UUID,
+        role: Role,
+        request: AssignmentRequest,
+        held: set[str],
+        now: datetime,
+    ) -> UserRole:
+        """One standing assignment, its checks and its audit row, in the caller's transaction."""
+        if RoleKey.SUPER_ADMIN in held and role.key in DATA_ROLES:
+            raise _conflict(
+                SodRule.SUPER_ADMIN_DATA_ROLE.value,
+                "A super admin cannot hold this role permanently. Use a time-bound elevation instead.",
+            )
+        record = UserRole(
+            user_id=user_id,
+            role_id=role.id,
+            role_key=role.key,
+            department_id=request.department_id,
+            location_id=request.location_id,
+            valid_from=now,
+            valid_until=request.valid_until,
+            granted_by=actor.user_id,
+            grant_reason=request.reason,
+        )
+        await self._insert(session, record)
+        await self._audit.record(
+            session,
+            AuditEvent(
+                action="access.role.assigned",
+                actor=actor.audit_actor(),
+                context=context,
+                permission_used=permission,
+                target_type="user",
+                target_id=user_id,
+                changes={
+                    "role": ValueChange(None, role.key),
+                    "assignment_id": ValueChange(None, record.id),
+                    "department_id": ValueChange(None, request.department_id),
+                    "location_id": ValueChange(None, request.location_id),
+                    "valid_until": ValueChange(None, request.valid_until),
+                },
+                reason=request.reason,
+            ),
+        )
+        return record
 
     async def _insert(self, session: Session, record: UserRole) -> None:
         # A lapsed assignment of the same role still holds the unique slot until it is closed.

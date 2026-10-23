@@ -95,6 +95,11 @@ CATALOG: Final[tuple[Permission, ...]] = (
     _p("employee.create", "Create employee records", r=True),
     _p("employee.lifecycle.manage", "Job changes, status changes and exits", r=True),
     _p("employee.export", "Export employee data", su=True, r=True),
+    # Permanent erasure (owner decision 2026-10-23): no read access to any data; one super admin
+    # requests, a different one approves and runs it.
+    _p("employee.erasure.read", "See erasure requests: the person's name and code, and the result"),
+    _p("employee.erasure.request", "Request the permanent erasure of a person's data", su=True, r=True),
+    _p("employee.erasure.approve", "Approve and run another super admin's erasure request", su=True, r=True),
     # 3.3 Attendance and shifts
     _p("attendance.clock.self", "Clock in and out, start and end breaks"),
     _p("attendance.read.self", "Own attendance events and daily summaries"),

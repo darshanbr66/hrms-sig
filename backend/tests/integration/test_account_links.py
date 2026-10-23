@@ -152,7 +152,9 @@ async def test_conflicting_links_are_refused(api: Api) -> None:
         assert await attempt(linked_elsewhere.user_id, employee) == (409, "user.already_linked")
         # The account's email is not the employee's work email.
         assert await attempt(wrong_email.user_id, free_employee) == (409, "user.email_not_work_email")
-        assert await attempt(admin.user_id, admin_employee) == (409, "user.admin_account")
+        # An administrator account may be linked to its holder's own record (owner decision,
+        # 2026-10-23); test_admin_employee_link.py covers what it may then do.
+        assert await attempt(admin.user_id, admin_employee) == (200, None)
         assert await attempt(disabled.user_id, disabled_employee) == (409, "user.not_active")
         assert (await attempt(uuid.uuid4(), employee))[0] == 404
         assert (await attempt(wrong_email.user_id, uuid.uuid4()))[0] == 404

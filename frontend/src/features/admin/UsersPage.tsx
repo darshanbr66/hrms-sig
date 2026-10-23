@@ -24,7 +24,7 @@ import { useToast } from "../../design-system/Toast";
 import { client, unwrap } from "../../lib/api";
 import { formatDateTime } from "../../lib/format";
 import { fieldMessages } from "../../lib/problem";
-import { ACCOUNT_STATUS, USERS_KEY, type User } from "./users";
+import { ACCOUNT_STATUS, ENABLE_BLOCKED, USERS_KEY, type User } from "./users";
 
 export function UsersPage() {
   const me = useMe();
@@ -60,6 +60,9 @@ export function UsersPage() {
       cell: (row) => (
         <span className="flex flex-wrap gap-1">
           <Badge tone={ACCOUNT_STATUS[row.status].tone}>{ACCOUNT_STATUS[row.status].label}</Badge>
+          {row.enable_blocked ? (
+            <Badge tone="neutral">{ENABLE_BLOCKED[row.enable_blocked].badge}</Badge>
+          ) : null}
           {row.locked ? <Badge tone="danger">Locked</Badge> : null}
           {row.mfa_reenrolment_required ? <Badge tone="warning">Re-enrolling MFA</Badge> : null}
         </span>
@@ -81,7 +84,7 @@ export function UsersPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Users"
-        description="Every sign-in account. Accounts are never deleted: they are disabled, which signs them out everywhere."
+        description="Sign-in accounts, including disabled accounts and invites. Accounts are never deleted: they are disabled, which signs them out everywhere. Accounts of people who have been offboarded are listed under Former employees."
         action={
           hasPermission(me.data, "user.invite") ? (
             <Button

@@ -732,8 +732,9 @@ export function AccountSection({ employee }: { employee: Employee }) {
 /**
  * Link an account that already exists (for example, invited before this record existed) to
  * this employee. The API requires the account's email to be the work email, so the dialog
- * looks that email up and says plainly when no account uses it, when it belongs to another
- * record, or when it is an administrator account. Step-up and a reason are required.
+ * looks that email up and says plainly when no account uses it or when it belongs to another
+ * record. Administrator accounts may be linked to their holder's own record (self-service only).
+ * Step-up and a reason are required.
  */
 function LinkAccountDialog({
   employee,
@@ -751,7 +752,14 @@ function LinkAccountDialog({
   const [reasonError, setReasonError] = useState<string | undefined>();
   const candidates = useQuery({
     queryKey: [...PEOPLE_KEY, "account-candidates", workEmail],
-    queryFn: () => unwrap(client.GET("/api/v1/users", { params: { query: { q: workEmail, limit: 20 } } })),
+    // Offboarded people's accounts too, so an email already used by a leaver's account is
+    // reported as linked elsewhere rather than as free.
+    queryFn: () =>
+      unwrap(
+        client.GET("/api/v1/users", {
+          params: { query: { q: workEmail, limit: 20, include_offboarded: true } },
+        }),
+      ),
   });
   const match = candidates.data?.items.find((item) => item.email.toLowerCase() === workEmail.toLowerCase());
   const link = useMutation({

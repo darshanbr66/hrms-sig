@@ -17,7 +17,7 @@ Eight roles exist in code (`app/platform/authz/roles.py`) and in the database (`
 | Super Admin | `super_admin` | The first two are created by the one-time bootstrap command. Every later assignment needs a second super admin's approval (SOD-8). At least two must stay active. |
 | HR Admin | `hr_admin` | Assigned by a super admin, optionally limited to a department or location and to an end date. |
 | HR | `hr` | Assigned by a super admin, optionally limited to a department or location and to an end date. |
-| Manager | `manager` | Derived, never assigned: held while the account's employee has at least one direct report on the day. |
+| Manager | `manager` | Derived, never assigned: held while the account's employee has at least one direct report on the day, unless the account holds `super_admin` or `system_admin`. |
 | Employee | `employee` | Derived, never assigned: held while the account is linked to an employee record who is employed on the day. |
 | (not in the six) | `payroll_admin` | Exists for Phase 2 payroll; today it holds read and export of profiles, attendance and leave only. |
 | (not in the six) | `auditor` | Read-only audit log and security events, audit export. |
@@ -69,8 +69,8 @@ Scopes: **self** is the account's own employee record; **team** is the reporting
 ### 3.3 HR (`hr`)
 
 - **Purpose:** day-to-day HR operations across the organization (or a department or location when the assignment says so).
-- **May:** read and edit employee records and personal details (personal reads audited); create employees; job changes, status changes and the one-step exit; emergency contacts; invite accounts, link accounts to employees and disable non-administrator accounts (`user.disable` with step-up); read all attendance, decide any correction and record corrections for others (SOD-7: never for themselves); assign shifts; read all leave, decide any request, adjust balances, allocate, import opening balances and run the year end (SOD-6: never on their own balance); read and manage documents in `internal` and `personal` categories; publish company documents; attendance and leave exports (step-up).
-- **Pages:** Employees, Organization (read), Leave overview, Leave balances, Reports, Attendance set-up (assignments), Users, plus the team pages at organization scope.
+- **May:** read and edit employee records and personal details (personal reads audited); create employees; job changes, status changes and the one-step exit; emergency contacts; invite accounts, link accounts to employees and disable non-administrator accounts (`user.disable` with step-up); read all attendance, decide any correction and record corrections for others (SOD-7: never for themselves), including **Correct clock-out** for a session someone forgot to close, at the verified departure time with a reason; assign shifts; read all leave, decide any request, adjust balances, allocate, import opening balances and run the year end (SOD-6: never on their own balance); read and manage documents in `internal` and `personal` categories; publish company documents; attendance and leave exports (step-up).
+- **Pages:** Employees, Former employees (offboarded people with their account state; their accounts are not on Users), Organization (read), Leave overview, Leave balances, Reports, Attendance set-up (assignments), Users, plus the team pages at organization scope.
 - **Forbidden:** organization, shift, policy, leave-type, holiday and document-category configuration; `sensitive` document categories; employee export; role assignment; administrator accounts; security settings; compensation and payroll.
 
 ### 3.4 HR Admin (`hr_admin`)
@@ -93,7 +93,10 @@ Scopes: **self** is the account's own employee record; **team** is the reporting
 - **May:** list accounts; read roles and who holds them; assign and remove roles for others (step-up, never their own, SOD-3); request a time-bound elevation for themselves (step-up, reason); approve, reject, acknowledge and revoke other super admins' requests (step-up, SOD-9); break-glass `system_admin` for up to one hour when no approver is available (step-up, reason, every super admin and auditor notified, a review item another super admin must acknowledge); read the audit log, security events and settings.
 - **Pages:** Users, Roles, Access requests, Security events, Audit log, Settings (read).
 - **Dashboard:** access requests waiting, a panel explaining how to get time-bound HR access, recent sign-ins.
-- **Forbidden:** any data permission held directly; standing assignments of `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor` (SOD-10); assigning `super_admin` without a second super admin's approval (SOD-8); elevating to `super_admin`.
+- **Forbidden:** any data permission held directly; standing assignments of `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor` (SOD-10); assigning `super_admin` without a second super admin's approval (SOD-8); elevating to `super_admin`; removing their own `super_admin` role (SOD-3).
+- **Permanent erasure:** ask for (step-up, employee code, reason) or approve and run (a different super admin, step-up, employee code typed again) the erasure of an offboarded person's data, on the Data erasure page. Nothing is read beyond the person's name and code; the result lists what was deleted, anonymized and kept.
+- **Own employee record:** the account may be linked to the super admin's own employee record and then has employee self-service on the same account (own attendance, leave, documents, profile), never manager access to direct reports (`authorization-model.md` §4.2). The same applies to `system_admin`.
+- **Handover:** add `super_admin` for the successor, a second super admin approves, then another super admin removes the leaving holder's role (at least two active super admins remain); a standing data role can then be assigned to the same account.
 
 ### 3.7 Payroll admin and auditor
 
@@ -125,14 +128,15 @@ A user account (sign-in identity) and an employee record (HR data) are separate.
 | 4 | HR admins and HR users | An account holding `user.invite` (`system_admin`, `hr`, `hr_admin`; a super admin through elevation to `system_admin`) invites the email. After activation, a super admin assigns `hr` or `hr_admin` (step-up, audited). An invite grants no role. |
 | 5 | Employees | HR creates the employee record with a work email, then invites an account linked to that record (`user.invite` plus `employee.lifecycle.manage` over the employee). The invite email must equal the work email. |
 | 6 | Employee record without access | Supported: create the record and do not invite. Attendance, leave and documents can still be kept for that person by HR. |
-| 7 | Link an existing account | `POST /users/{id}/employee-link` (Employee record → HRMS account → Link an existing account): `user.invite` plus `employee.lifecycle.manage` over the employee, step-up, a reason. Refused for one's own account, administrator accounts and disabled accounts; one account per employee. |
+| 7 | Link an existing account | `POST /users/{id}/employee-link` (Employee record → HRMS account → Link an existing account): `user.invite` plus `employee.lifecycle.manage` over the employee, step-up, a reason. Refused for one's own account and disabled accounts; one account per employee. An administrator account may be linked to its holder's own record and gets self-service only (no manager access). |
 | 8 | Email match | The account email must equal the employee's work email, at invite and at linking. |
 | 9 | Activation and MFA | Invite link (72 hours, single use) → password (checked against common and breached passwords) → TOTP enrolment within 30 minutes → recovery codes. There is no password-only path. |
-| 10 | Role changes | Super admin only (`role.assign`, step-up, reason recorded in audit), never for themselves. `employee` and `manager` cannot be assigned. `super_admin` needs a second super admin's approval. |
+| 10 | Role changes | Super admin only (`role.assign`, step-up, reason recorded in audit), never for themselves. Users → account → Add roles assigns one or several roles in one step (one transaction, one step-up, all or nothing); roles already held stay and incompatible ones are shown with the reason. `employee` and `manager` cannot be assigned. `super_admin` is assigned on its own and needs a second super admin's approval. |
 | 11 | Temporary elevation | §5. |
-| 12 | Disabling and sessions | `user.disable` (step-up) disables the account and at once revokes every session, trusted device and outstanding invite. Administrator accounts only by a system admin. Each person can revoke their own sessions; a system admin can revoke anyone's. |
+| 12 | Disabling and sessions | `user.disable` (step-up) disables the account and at once revokes every session, trusted device and outstanding invite. Administrator accounts only by a system admin. Enable account (same permission, step-up) restores an ordinarily disabled account; it is not offered, and the API refuses it, when the person has left or their data was erased, and the account page says why. Each person can revoke their own sessions; a system admin can revoke anyone's. |
 | 13 | MFA and account recovery | Lost authenticator: sign in with a recovery code, then enrol a new factor. No recovery codes left: a system admin resets MFA (step-up, never their own); the person gets a re-enrolment link by email. Forgotten password: the public reset link by email; signing in afterwards still needs MFA. The last MFA factor can never be removed. |
 | 14 | Exit | Employee record → status → Exit (`employee.lifecycle.manage`, reason): the record becomes exited, and in the same transaction the linked account is disabled and its sessions revoked (needs `user.disable` and step-up). An administrator account is left for a system admin to disable, and the result says so. History is kept. |
+| 15 | Permanent erasure | Administration → Data erasure → Permanently delete employee data: a super admin types the employee code and a reason; a different super admin approves with the code typed again (both step up). Only after the exit, and only once the person's account holds neither super admin nor system admin. The page lists what was deleted, anonymized and kept, and says when stored files are still being removed. |
 
 Self-approval, self-granting of roles, linking to someone else's work email and unaudited administrative changes are refused by the service layer and covered by tests (`tests/integration/test_authorization_matrix.py`, `test_grant_requests.py`, `test_admin_account_disable.py`, `test_account_links.py`).
 
@@ -195,6 +199,9 @@ What a super admin can do toward these workflows: invite nobody directly (no `us
 | `employee.create` |  | R |  |  |  | ● | ● |  |  |  |  |
 | `employee.lifecycle.manage` |  | R |  |  |  | ● | ● |  |  |  |  |
 | `employee.export` | SU | R |  |  |  |  | ● |  |  |  |  |
+| `employee.erasure.read` |  |  |  |  |  |  |  |  |  | ● |  |
+| `employee.erasure.request` | SU | R |  |  |  |  |  |  |  | ● |  |
+| `employee.erasure.approve` | SU | R |  |  |  |  |  |  |  | ● |  |
 | `attendance.clock.self` |  |  |  | ● |  |  |  |  |  |  |  |
 | `attendance.read.self` |  |  |  | ● |  |  |  |  |  |  |  |
 | `attendance.read.team` |  |  |  |  | ● |  |  |  |  |  |  |

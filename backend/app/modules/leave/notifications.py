@@ -2,8 +2,9 @@
 transaction through the notify outbox.
 
 - A request waiting for a decision (submitted, or a cancellation asked for) reaches the
-  employee's reporting manager on the day it is sent, if they have an active account. HR sees
-  every waiting request in the approvals inbox; nobody else is emailed.
+  employee's reporting manager on the day it is sent, if they have an active account that is
+  not an administrator account (whose team access is withheld). HR sees every waiting request
+  in the approvals inbox; nobody else is emailed.
 - A decision, and leave recorded at once for a type that needs no approval, reaches the
   employee.
 
@@ -17,6 +18,7 @@ muted the type in the app or by email gets neither on that channel (NTF-3).
 import uuid
 from datetime import date, datetime
 
+from app.modules.access import public as access
 from app.modules.identity import public as identity
 from app.modules.leave.emails import message
 from app.modules.leave.models import LeaveRequest
@@ -91,7 +93,9 @@ async def to_manager(
         return
     await _send(
         session,
-        user_id=await identity.account_for_employee(session, facts.manager_employee_id),
+        user_id=await access.manager_account(
+            session, await identity.account_for_employee(session, facts.manager_employee_id), now
+        ),
         request=request,
         leave_type=leave_type,
         event=event,

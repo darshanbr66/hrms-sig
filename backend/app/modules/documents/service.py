@@ -461,6 +461,11 @@ class DocumentService:
             version = await session.get(DocumentVersion, version_id)
             if version is None or version.document_id != document.id:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            if version.erased_at is not None:
+                raise conflict(
+                    "document.erased",
+                    "This file was removed when the person's data was permanently erased.",
+                )
             if version.scan_status == ScanStatus.PENDING:
                 raise conflict(
                     "document.scan_pending",
@@ -519,6 +524,12 @@ class DocumentService:
             if owner is not None and not await people.employee_exists(session, owner):
                 raise ProblemError(ProblemType.NOT_FOUND)
             permission = await self._upload_permission(session, actor, owner, category, own=own)
+            subject = await people.erasure_subject(session, owner) if owner is not None else None
+            if subject is not None and subject.erased:
+                raise conflict(
+                    "employee.erased",
+                    "This person's data was permanently erased, so no documents can be added for them.",
+                )
             if owner is None and category.sensitivity != Sensitivity.INTERNAL:
                 raise field_error(
                     "category_id",

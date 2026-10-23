@@ -53,6 +53,12 @@ ROUTES = (
         "role.assign",
         {"role_key": "hr", "reason": "Matrix test"},
     ),
+    Route(
+        "POST",
+        "/api/v1/users/{target}/roles/batch",
+        "role.assign",
+        {"roles": [{"role_key": "payroll_admin"}], "reason": "Matrix test"},
+    ),
     Route("DELETE", "/api/v1/users/{target}/roles/{assignment}", "role.assign"),
     Route(
         "POST",
@@ -112,6 +118,41 @@ ROUTES = (
         "role.elevation.approve",
         allowed_statuses=frozenset({404}),
     ),
+    # Permanent erasure: super admins only; {erasure} does not exist, and the code is unknown.
+    Route("GET", "/api/v1/employee-erasures", "employee.erasure.read"),
+    Route(
+        "GET",
+        "/api/v1/employee-erasures/{erasure}",
+        "employee.erasure.read",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employee-erasures",
+        "employee.erasure.request",
+        {"employee_code": "MATRIX-NONE", "reason": "Matrix test"},
+        allowed_statuses=frozenset({422}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employee-erasures/{erasure}/approve",
+        "employee.erasure.approve",
+        {"employee_code": "MATRIX-NONE"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employee-erasures/{erasure}/reject",
+        "employee.erasure.approve",
+        {"note": "Matrix test"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/employee-erasures/{erasure}/cancel",
+        "employee.erasure.request",
+        allowed_statuses=frozenset({404}),
+    ),
     Route(
         "POST",
         "/api/v1/role-grant-requests/{grant_request}/acknowledge",
@@ -163,6 +204,7 @@ ROUTES = (
     # `all` holder finds nothing (404), or an empty history (200).
     Route("GET", "/api/v1/directory", "employee.directory.read"),
     Route("GET", "/api/v1/employees", "employee.profile.read"),
+    Route("GET", "/api/v1/former-employees", "employee.profile.read"),
     Route("GET", "/api/v1/employees/statistics", "employee.profile.read"),
     Route(
         "POST",
@@ -838,6 +880,7 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
         category=uuid.uuid4(),
         document=uuid.uuid4(),
         version=uuid.uuid4(),
+        erasure=uuid.uuid4(),
     )
     if route.path.endswith("documents") and route.method == "POST":
         # Uploads send the file itself as the body.

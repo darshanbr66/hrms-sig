@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.modules.people import schemas as s
 from app.modules.people.models import EmergencyContact, EmployeeJob, EmployeePersonal, EmployeeStatusChange
-from app.modules.people.repository import EmployeeFilters, name_of
+from app.modules.people.repository import EmployeeFilters, FormerFilters, name_of
 from app.modules.people.service import (
     EmployeeListing,
     EmployeeRecord,
@@ -234,6 +234,54 @@ async def list_employees(
     )
     listing = await people.employees(actor, filters, _page_after(cursor), limit)
     return s.EmployeePage(items=[_summary(r) for r in listing.records], next_cursor=_next(listing))
+
+
+@router.get("/former-employees", response_model=s.FormerEmployeePage)
+async def list_former_employees(
+    *,
+    people: Service,
+    actor: Annotated[Actor, requires("employee.profile.read")],
+    q: SearchText = None,
+    department_id: uuid.UUID | None = None,
+    designation_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    account: s.AccountState | None = None,
+    sort: s.FormerSort = "left_newest",
+    limit: Limit = 50,
+    cursor: Cursor = None,
+) -> s.FormerEmployeePage:
+    """People who have been offboarded, at the reader's scope, with their last job and their
+    account's state (for readers holding `user.read.all`; the `account` filter needs it too).
+    Erased records are not listed. Read-only."""
+    filters = FormerFilters(
+        text=q, department_id=department_id, designation_id=designation_id, location_id=location_id, sort=sort
+    )
+    former = await people.former_employees(
+        actor, filters, account=account, after=_page_after(cursor), limit=limit
+    )
+    accounts = former.accounts or {}
+    items = []
+    for record in former.listing.records:
+        employee = record.employee
+        linked = accounts.get(employee.id)
+        if employee.date_of_exit is None:
+            raise RuntimeError("an exited employee record has no last working day")
+        items.append(
+            s.FormerEmployee(
+                id=employee.id,
+                employee_code=employee.employee_code,
+                name=name_of(employee),
+                date_of_joining=employee.date_of_joining,
+                date_of_exit=employee.date_of_exit,
+                job=_current_job(record.job, record.names),
+                account=s.FormerAccount(id=linked.user_id, email=linked.email, status=linked.status.value)
+                if linked is not None
+                else None,
+            )
+        )
+    return s.FormerEmployeePage(
+        items=items, next_cursor=_next(former.listing), accounts_visible=former.accounts is not None
+    )
 
 
 @router.get("/employees/statistics", response_model=s.EmployeeStatistics)

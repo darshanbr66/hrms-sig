@@ -27,6 +27,7 @@ from app.modules.access.public import AccessEmails, register_grant_expiry
 from app.modules.attendance.public import AttendanceEmails
 from app.modules.audit.public import AuditEmails, chain_mismatch_alert
 from app.modules.documents.public import register_document_scan
+from app.modules.erasure.public import register_erasure_files
 from app.modules.identity.emails import IdentityEmails
 from app.modules.leave.public import LeaveEmails, register_leave_jobs
 from app.modules.notify.dispatcher import OutboxDispatcher, register_email_dispatch
@@ -134,6 +135,7 @@ def build_scheduler(
     register_email_dispatch(scheduler, dispatcher)
     store = GridFsFileStore(database)
     register_exports(scheduler, database, store, clock)
+    register_erasure_files(scheduler, database, store, clock, AuditWriter(clock))
     if settings.document_uploads_enabled and settings.clamav_host is not None:
         register_document_scan(
             scheduler,

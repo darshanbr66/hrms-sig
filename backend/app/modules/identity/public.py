@@ -11,9 +11,12 @@
   (work email is `public_internal`) without reading anything else.
 - `create_invited_account` and `issue_invite` start the account lifecycle: an `invited`
   account and its 72-hour, single-use invite token (docs/security-architecture.md §3.1).
+- `accounts_of_employees` names the account of each of a set of employee records, for lists.
 - `linked_account` and `disable_linked_account` end it when the employee leaves: the account
   linked to the record is disabled and every session revoked in the caller's transaction
   (product-requirements MVP item 11). The caller decides whether it may, and audits it.
+- `erase_account` is the identity part of the permanent erasure of one person's data (the
+  erasure module, docs/database-design.md §9.1).
 """
 
 import uuid
@@ -22,13 +25,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-from app.modules.identity import accounts
+from app.modules.identity import accounts, erasure
 from app.modules.identity import repository as repo
 from app.modules.identity.defaults import ACTIVITY_WRITE_INTERVAL
 from app.modules.identity.models import AuthSession, OneTimePurpose, OneTimeToken, User, UserStatus
 from app.platform import settings
 from app.platform.authz.context import SessionScope
 from app.platform.db import ID, TENANT_FIELD, Database, Session, truncate
+from app.platform.erasure import Erased
 from app.platform.security import tokens
 from app.platform.security.emails import canonical_email
 
@@ -180,6 +184,29 @@ class LinkedAccount:
     status: UserStatus
 
 
+@dataclass(frozen=True, slots=True)
+class EmployeeAccount:
+    user_id: uuid.UUID
+    # Work email (`public_internal`).
+    email: str
+    status: UserStatus
+
+
+async def accounts_of_employees(
+    session: Session, employee_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, EmployeeAccount]:
+    """The account linked to each employee record that has one (at most one each), for lists
+    of people that show their account (the former employees list)."""
+    if not employee_ids:
+        return {}
+    users = await session.find(User, {"employee_id": {"$in": sorted(employee_ids)}})
+    return {
+        user.employee_id: EmployeeAccount(user.id, user.email, UserStatus(user.status))
+        for user in users
+        if user.employee_id is not None
+    }
+
+
 async def linked_account(session: Session, employee_id: uuid.UUID) -> LinkedAccount | None:
     """The account linked to an employee record, whatever its status."""
     user = await repo.user_for_employee(session, employee_id)
@@ -193,3 +220,10 @@ async def disable_linked_account(session: Session, user_id: uuid.UUID, now: date
     if user is None or user.status == UserStatus.DISABLED:
         return None
     return len(await accounts.disable(session, user, now))
+
+
+async def erase_account(
+    session: Session, employee_id: uuid.UUID, now: datetime
+) -> tuple[uuid.UUID | None, Erased]:
+    """Erase the account linked to an employee record, in the caller's transaction."""
+    return await erasure.erase_account(session, employee_id, now)

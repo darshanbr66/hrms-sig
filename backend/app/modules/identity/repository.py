@@ -158,10 +158,14 @@ async def list_users(
     limit: int,
     email_contains: str | None = None,
     employee_id: uuid.UUID | None = None,
+    excluded_employee_ids: Collection[uuid.UUID] = (),
 ) -> UserPage:
     """Accounts in creation order (UUIDv7 IDs are time-ordered), keyset-paginated, optionally
-    narrowed to an email fragment or the account linked to an employee record."""
+    narrowed to an email fragment or the account linked to an employee record, and without the
+    accounts linked to `excluded_employee_ids` (accounts with no employee record stay)."""
     query: dict[str, Any] = {}
+    if excluded_employee_ids:
+        query["employee_id"] = {"$nin": sorted(excluded_employee_ids)}
     if after is not None:
         query["id"] = {"$gt": after}
     if email_contains:

@@ -467,7 +467,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Users */
+        /**
+         * List Users
+         * @description Accounts, oldest first. Accounts of people who have been offboarded are listed on the
+         *     former employees page instead, unless `include_offboarded` is set or `employee_id` asks
+         *     for the account of one record.
+         */
         get: operations["list_users_api_v1_users_get"];
         put?: never;
         /**
@@ -662,6 +667,28 @@ export interface paths {
         put?: never;
         /** Assign Role */
         post: operations["assign_role_api_v1_users__user_id__roles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{user_id}/roles/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assign Roles
+         * @description Assign several roles in one transaction with one step-up; all or none. Roles already
+         *     held are kept. `super_admin` is refused here (`409 role.super_admin_alone`): it is
+         *     assigned on its own, as a request a second super admin approves.
+         */
+        post: operations["assign_roles_api_v1_users__user_id__roles_batch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1025,6 +1052,28 @@ export interface paths {
         put?: never;
         /** Create Employee */
         post: operations["create_employee_api_v1_employees_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/former-employees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Former Employees
+         * @description People who have been offboarded, at the reader's scope, with their last job and their
+         *     account's state (for readers holding `user.read.all`; the `account` filter needs it too).
+         *     Erased records are not listed. Read-only.
+         */
+        get: operations["list_former_employees_api_v1_former_employees_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2634,10 +2683,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/employee-erasures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Erasures
+         * @description Erasure requests, newest first.
+         */
+        get: operations["list_erasures_api_v1_employee_erasures_get"];
+        put?: never;
+        /**
+         * Request Erasure
+         * @description Ask for the permanent erasure of an offboarded person's data. Step-up. A different super
+         *     admin must approve it; nothing is erased until then.
+         */
+        post: operations["request_erasure_api_v1_employee_erasures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employee-erasures/{erasure_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Erasure */
+        get: operations["get_erasure_api_v1_employee_erasures__erasure_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employee-erasures/{erasure_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Erasure
+         * @description Approve and run another super admin's request: the records are erased in one transaction
+         *     and the stored files are removed by the worker. Step-up; the employee code typed again.
+         */
+        post: operations["approve_erasure_api_v1_employee_erasures__erasure_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employee-erasures/{erasure_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Erasure */
+        post: operations["reject_erasure_api_v1_employee_erasures__erasure_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/employee-erasures/{erasure_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Erasure
+         * @description The requester withdraws a request still waiting.
+         */
+        post: operations["cancel_erasure_api_v1_employee_erasures__erasure_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        AccountState: "none" | "active" | "invited" | "disabled";
         /** @enum {string} */
         AccrualMethodValue: "none" | "upfront_per_leave_year" | "periodic";
         /** Address */
@@ -2745,6 +2896,16 @@ export interface components {
             date: string;
             /** Years */
             years: number;
+        };
+        /**
+         * AssignmentBatchCreate
+         * @description Several roles for one account, with one reason; all are assigned or none.
+         */
+        AssignmentBatchCreate: {
+            /** Roles */
+            roles: components["schemas"]["RoleChoice"][];
+            /** Reason */
+            reason: string;
         };
         /** AssignmentCreate */
         AssignmentCreate: {
@@ -3010,7 +3171,7 @@ export interface components {
         CarryModeValue: "none" | "capped" | "unlimited";
         /** CategoryCreate */
         CategoryCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__documents__router__Code"];
             name: components["schemas"]["app__modules__documents__router__Name"];
             description?: components["schemas"]["Description"] | null;
             sensitivity: components["schemas"]["SensitivityValue"];
@@ -3070,7 +3231,6 @@ export interface components {
         };
         /** @enum {string} */
         ChannelValue: "in_app" | "email";
-        Code: string;
         CodeInput: string;
         /** CorrectionCreate */
         CorrectionCreate: {
@@ -3337,7 +3497,7 @@ export interface components {
         };
         /** DepartmentCreate */
         DepartmentCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__org__schemas__Code"];
             name: components["schemas"]["app__modules__org__schemas__Name"];
             description?: components["schemas"]["Description"] | null;
             /** Parent Id */
@@ -3396,7 +3556,7 @@ export interface components {
         Description: string;
         /** DesignationCreate */
         DesignationCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__org__schemas__Code"];
             name: components["schemas"]["app__modules__org__schemas__Name"];
             /** Level */
             level?: number | null;
@@ -3786,6 +3946,100 @@ export interface components {
         EmploymentTypeValue: "full_time" | "part_time" | "contract" | "intern";
         /** @enum {string} */
         EntryTypeValue: "opening_balance" | "accrual" | "usage" | "usage_reversal" | "adjustment" | "carry_forward_out" | "carry_forward" | "carry_forward_expiry" | "lapse";
+        /** ErasureApprove */
+        ErasureApprove: {
+            employee_code: components["schemas"]["app__modules__erasure__router__Code"];
+            note?: components["schemas"]["app__modules__erasure__router__Reason"] | null;
+        };
+        /** ErasureCategoryView */
+        ErasureCategoryView: {
+            /** Key */
+            key: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "deleted" | "anonymized" | "retained" | "pending";
+            /** Count */
+            count: number;
+            /** Note */
+            note: string;
+        };
+        /** ErasureCreate */
+        ErasureCreate: {
+            employee_code: components["schemas"]["app__modules__erasure__router__Code"];
+            reason: components["schemas"]["app__modules__erasure__router__Reason"];
+        };
+        /** ErasureList */
+        ErasureList: {
+            /** Items */
+            items: components["schemas"]["ErasureView"][];
+        };
+        /** ErasureReject */
+        ErasureReject: {
+            note: components["schemas"]["app__modules__erasure__router__Reason"];
+        };
+        /** ErasureSubjectView */
+        ErasureSubjectView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Employee Code */
+            employee_code: string;
+        };
+        /** ErasureUserRef */
+        ErasureUserRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string | null;
+        };
+        /** ErasureView */
+        ErasureView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "rejected" | "cancelled" | "files_pending" | "completed";
+            employee: components["schemas"]["ErasureSubjectView"] | null;
+            /** Reason */
+            reason: string;
+            requested_by: components["schemas"]["ErasureUserRef"];
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            decided_by: components["schemas"]["ErasureUserRef"] | null;
+            /** Decided At */
+            decided_at: string | null;
+            /** Decision Note */
+            decision_note: string | null;
+            /** Result */
+            result: components["schemas"]["ErasureCategoryView"][] | null;
+            /** Files Total */
+            files_total: number;
+            /** Files Removed */
+            files_removed: number;
+            /** Files Remaining */
+            files_remaining: number;
+            /** Last File Error */
+            last_file_error: string | null;
+            /** Completed At */
+            completed_at: string | null;
+        };
         /** EventCreate */
         EventCreate: {
             event_type: components["schemas"]["EventTypeValue"];
@@ -3915,6 +4169,54 @@ export interface components {
         FactorList: {
             /** Items */
             items: components["schemas"]["Factor"][];
+        };
+        /** FormerAccount */
+        FormerAccount: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "invited" | "disabled";
+        };
+        /** FormerEmployee */
+        FormerEmployee: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /**
+             * Date Of Joining
+             * Format: date
+             */
+            date_of_joining: string;
+            /**
+             * Date Of Exit
+             * Format: date
+             */
+            date_of_exit: string;
+            job: components["schemas"]["CurrentJob"] | null;
+            account: components["schemas"]["FormerAccount"] | null;
+        };
+        /** FormerEmployeePage */
+        FormerEmployeePage: {
+            /** Items */
+            items: components["schemas"]["FormerEmployee"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Accounts Visible */
+            accounts_visible: boolean;
         };
         /** @enum {string} */
         FrequencyValue: "monthly" | "quarterly";
@@ -4396,7 +4698,7 @@ export interface components {
          * @description Every rule is stated explicitly: nothing is assumed for Sigvitas.
          */
         LeaveTypeCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__leave__schemas__Code"];
             name: components["schemas"]["app__modules__leave__schemas__Name"];
             description?: components["schemas"]["Text1000"] | null;
             /** Is Paid */
@@ -4513,7 +4815,7 @@ export interface components {
         };
         /** LocationCreate */
         LocationCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__org__schemas__Code"];
             name: components["schemas"]["app__modules__org__schemas__Name"];
             /** Time Zone */
             time_zone: string;
@@ -4765,7 +5067,7 @@ export interface components {
         OpeningBalanceRow: {
             /** Employee Code */
             employee_code: string;
-            leave_type_code: components["schemas"]["Code"];
+            leave_type_code: components["schemas"]["app__modules__leave__schemas__Code"];
             days: components["schemas"]["app__modules__leave__schemas__Amount__3"];
             /**
              * Effective Date
@@ -5181,6 +5483,17 @@ export interface components {
             /** Revoked */
             revoked: number;
         };
+        /** RoleChoice */
+        RoleChoice: {
+            /** Role Key */
+            role_key: string;
+            /** Department Id */
+            department_id?: string | null;
+            /** Location Id */
+            location_id?: string | null;
+            /** Valid Until */
+            valid_until?: string | null;
+        };
         /** RoleList */
         RoleList: {
             /** Items */
@@ -5407,7 +5720,7 @@ export interface components {
         };
         /** ShiftCreate */
         ShiftCreate: {
-            code: components["schemas"]["Code"];
+            code: components["schemas"]["app__modules__attendance__schemas__Code"];
             name: components["schemas"]["app__modules__attendance__schemas__Name"];
             /** Description */
             description?: string | null;
@@ -5613,6 +5926,10 @@ export interface components {
             session_seconds: number;
             /** Break Seconds */
             break_seconds: number;
+            /** Time Zone */
+            time_zone: string;
+            /** Open Since */
+            open_since: string | null;
         };
         /** TeamSummaryView */
         TeamSummaryView: {
@@ -5775,6 +6092,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Enable Blocked */
+            enable_blocked: ("erased" | "employee_exited") | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -5871,17 +6190,23 @@ export interface components {
             apply: boolean;
         };
         app__modules__access__schemas__Reason: string;
+        app__modules__attendance__schemas__Code: string;
         app__modules__attendance__schemas__Name: string;
         app__modules__attendance__schemas__Reason: string;
+        app__modules__documents__router__Code: string;
         app__modules__documents__router__Name: string;
+        app__modules__erasure__router__Code: string;
+        app__modules__erasure__router__Reason: string;
         app__modules__leave__router__Name: string;
         app__modules__leave__schemas__Amount__1: number | string;
         app__modules__leave__schemas__Amount__2: number | string;
         app__modules__leave__schemas__Amount__3: number | string;
+        app__modules__leave__schemas__Code: string;
         app__modules__leave__schemas__Name: string;
         app__modules__leave__schemas__Reason: string;
         /** @enum {string} */
         app__modules__leave__schemas__StatusValue: "pending" | "approved" | "rejected" | "cancelled" | "cancellation_requested";
+        app__modules__org__schemas__Code: string;
         app__modules__org__schemas__Name: string;
         /** @enum {string} */
         app__modules__org__schemas__StatusValue: "active" | "archived";
@@ -6654,6 +6979,7 @@ export interface operations {
                 cursor?: string | null;
                 q?: string | null;
                 employee_id?: string | null;
+                include_offboarded?: boolean;
             };
             header?: never;
             path?: never;
@@ -7112,6 +7438,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GrantRequestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_roles_api_v1_users__user_id__roles_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignmentBatchCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignmentList"];
                 };
             };
             /** @description Validation Error */
@@ -8025,6 +8386,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EmployeeView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_former_employees_api_v1_former_employees_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                department_id?: string | null;
+                designation_id?: string | null;
+                location_id?: string | null;
+                account?: components["schemas"]["AccountState"] | null;
+                sort?: "left_newest" | "name";
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormerEmployeePage"];
                 };
             };
             /** @description Validation Error */
@@ -11477,6 +11876,202 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportDownloadLink"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_erasures_api_v1_employee_erasures_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_erasure_api_v1_employee_erasures_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ErasureCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_erasure_api_v1_employee_erasures__erasure_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                erasure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_erasure_api_v1_employee_erasures__erasure_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                erasure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ErasureApprove"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_erasure_api_v1_employee_erasures__erasure_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                erasure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ErasureReject"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_erasure_api_v1_employee_erasures__erasure_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                erasure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureView"];
                 };
             };
             /** @description Validation Error */

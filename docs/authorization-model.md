@@ -77,6 +77,9 @@ A higher scope does not imply a lower one automatically in the catalog; the engi
 | `employee.create` | Create employee records | R |
 | `employee.lifecycle.manage` | Job changes (transfer, promotion, manager change), status changes, exit | R |
 | `employee.export` | Export employee data | SU, R |
+| `employee.erasure.read` | See erasure requests: the person's name and code, and the result (super admins) | |
+| `employee.erasure.request` | Request the permanent erasure of an offboarded person's data (super admins) | SU, R |
+| `employee.erasure.approve` | Approve and run another super admin's erasure request (super admins; SoD: never one's own) | SU, R |
 
 ### 3.3 Attendance and shifts
 
@@ -175,7 +178,7 @@ System roles are defined in code (seeded by migration) and cannot be edited thro
 | Role key | Assigned how | Purpose |
 |---|---|---|
 | `employee` | Automatically to every active user linked to an employee record | Self-service |
-| `manager` | **Derived**: held automatically while the user has at least one active direct report. Never assigned manually. | Team scope |
+| `manager` | **Derived**: held automatically while the user has at least one active direct report, unless the account holds `super_admin` or `system_admin` (§4.2). Never assigned manually. | Team scope |
 | `hr` | Manual | Day-to-day HR operations |
 | `hr_admin` | Manual | HR configuration and policies |
 | `payroll_admin` | Manual (Phase 2) | Compensation and payroll |
@@ -209,9 +212,11 @@ The least-privilege boundaries above are fixed architecture. The exact grants in
 | `role.read`, `role.manage`, `role.assign` | `compensation.*`, `payroll.*`, `payslip.read.all` |
 | `role.elevation.request`, `role.elevation.approve`, `role.elevation.break_glass` | `employee.personal.*.all`, `employee.sensitive.*`, `employee.export` |
 | `user.read.all`, `security.event.read`, `audit.read`, `settings.read` | `document.*` beyond the self-service defaults every employee has |
-| | Any message content access. No such permission exists in the catalog. |
+| `employee.erasure.read`, `.request`, `.approve` (owner decision 2026-10-23) | Any message content access. No such permission exists in the catalog. |
 
-A super admin is usually also an employee and holds the `employee` role for their own data, like everyone else.
+**Permanent erasure** (owner decision 2026-10-23, `database-design.md` §9.1): the three `employee.erasure.*` permissions are the one exception to "no data permission": they are destructive, not reads. They show nothing about the person except the name and code both super admins need to confirm who it is. One super admin requests, a different one approves and runs it (separation of duties, also a validator rule on the request), both with step-up and the employee code typed; the acting account must hold `super_admin` whatever else grants the permission; neither may be the person. The person must have left, and their account must hold neither `super_admin` nor `system_admin`, so erasing another super admin's data needs the handover below first.
+
+**Administrator accounts and their own employee record** (decided by the project owner on 2026-10-23, replacing the earlier rule that administrators keep a separate employee account): a `super_admin` or `system_admin` account may be linked to its holder's own employee record (`POST /users/{id}/employee-link`, the same rules as any link: HR authority over the employee, the work email, step-up, a reason, never one's own account). The account then holds the derived `employee` role, so the person's own attendance, leave, documents and profile are recorded against their record through the same account. It never holds the derived `manager` role while it holds `super_admin` or `system_admin`, standing or temporary (`TEAM_ACCESS_WITHHELD_ROLES`), and a manager's notifications about team members are not sent to it: an administrator reaches no other person's data through reporting lines. Their direct reports' requests are decided by HR (`.approve.all`). Linking assigns no role. How this fits rule 16: the permissions a linked administrator gains are self-scope permissions over their own record, which every employee holds; no permission over another person's data is added.
 
 ### 4.3 Privilege elevation
 
@@ -233,11 +238,15 @@ Elevation to `super_admin` itself is not possible; assigning `super_admin` goes 
 
 **No standing data roles for super admins** (SOD-10): a user who holds `super_admin` cannot also hold a permanent assignment of `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor`. They get those only through time-bound elevation. If a person needs one of those roles for daily work, they should not be a super admin. Sigvitas should pick super admins with this in mind (roadmap §6).
 
+**Super admin handover** (owner decision, 2026-10-23): one super admin administers another's access, never their own. To move a super admin to a standing data role: (1) a super admin assigns `super_admin` to the successor and a second super admin approves (SOD-8); (2) another super admin removes the leaving holder's `super_admin` role, which is refused while fewer than two active super admins would remain (`409 role.min_super_admins`) and never allowed on one's own role (SOD-3); removal ends their temporary access, withdraws their pending requests and rotates their sessions, so the reduced access applies on the next request; (3) the needed role is then assigned to the same account like any other. Tested in `tests/integration/test_grant_requests.py`.
+
 ## 5. Role assignment constraints
 
 `access.user_roles` rows carry optional `department_id` and `location_id`. When set, `all` scope for that role means "employees currently in that department/location": employed on the date and placed there by the job row that applies on it. Example: an HR person for one office. An employee with no applying job row is outside every restricted scope. Several assignments of a role combine (the union of their constraints).
 
 Assignments also carry `valid_from` / `valid_until` for temporary access (e.g. covering HR during leave). Expired assignments stop applying without a manual step.
+
+**Several roles at once** (2026-10-23): `POST /users/{id}/roles/batch` assigns a list of roles with one reason, in one transaction and with one step-up: all are assigned or none. It only adds; roles already held stay, and a role already held refuses the batch (`409 role.already_assigned`). Every rule of a single assignment applies to each role (SOD-3, derived roles refused, SOD-10 against the roles held), each role gets its own audit row, and the target's sessions rotate once. `super_admin` is never part of a batch (`409 role.super_admin_alone`): it is assigned on its own, as a request (SOD-8). The only incompatible combination of assignable roles is `super_admin` with a standing `hr`, `hr_admin`, `payroll_admin`, `system_admin` or `auditor` (SOD-10, rule 16); every other combination is compatible.
 
 ## 6. Separation-of-duties rules
 

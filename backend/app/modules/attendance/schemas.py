@@ -55,7 +55,8 @@ class DayView(_Response):
     work_date: date
     first_in: datetime | None
     last_out: datetime | None
-    # Time between clocking in and out, including breaks; an open session counts up to now.
+    # Time between clocking in and out, including breaks; an open session counts up to now, or
+    # only up to its last event once the day closed with it open (`incomplete`).
     session_seconds: int
     break_seconds: int
     open_session: bool
@@ -111,8 +112,15 @@ class TeamMemberToday(_Response):
     work_date: date
     first_in: datetime | None
     last_event_at: datetime | None
+    # Measured until now for a session in progress; until the last event for a forgotten
+    # clock-out (`open_since` set), whose departure time is unknown.
     session_seconds: int
     break_seconds: int
+    # The location's time zone, for showing and correcting times on its clock.
+    time_zone: str
+    # The work date of a session left open from an earlier day (a forgotten clock-out); null
+    # otherwise, including during last night's shift crossing midnight.
+    open_since: date | None
 
 
 class TeamSummaryView(_Response):

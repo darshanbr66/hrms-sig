@@ -959,6 +959,7 @@
           "identity"
         ],
         "summary": "List Users",
+        "description": "Accounts, oldest first. Accounts of people who have been offboarded are listed on the\nformer employees page instead, unless `include_offboarded` is set or `employee_id` asks\nfor the account of one record.",
         "operationId": "list_users_api_v1_users_get",
         "parameters": [
           {
@@ -1023,6 +1024,16 @@
                 }
               ],
               "title": "Employee Id"
+            }
+          },
+          {
+            "name": "include_offboarded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Offboarded"
             }
           }
         ],
@@ -1645,6 +1656,60 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GrantRequestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/roles/batch": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Assign Roles",
+        "description": "Assign several roles in one transaction with one step-up; all or none. Roles already\nheld are kept. `super_admin` is refused here (`409 role.super_admin_alone`): it is\nassigned on its own, as a request a second super admin approves.",
+        "operationId": "assign_roles_api_v1_users__user_id__roles_batch_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentBatchCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentList"
                 }
               }
             }
@@ -3359,6 +3424,168 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EmployeeView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/former-employees": {
+      "get": {
+        "tags": [
+          "people"
+        ],
+        "summary": "List Former Employees",
+        "description": "People who have been offboarded, at the reader's scope, with their last job and their\naccount's state (for readers holding `user.read.all`; the `account` filter needs it too).\nErased records are not listed. Read-only.",
+        "operationId": "list_former_employees_api_v1_former_employees_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "department_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department Id"
+            }
+          },
+          {
+            "name": "designation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Designation Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AccountState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "left_newest",
+                "name"
+              ],
+              "type": "string",
+              "default": "left_newest",
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormerEmployeePage"
                 }
               }
             }
@@ -9192,10 +9419,299 @@
           }
         }
       }
+    },
+    "/api/v1/employee-erasures": {
+      "get": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "List Erasures",
+        "description": "Erasure requests, newest first.",
+        "operationId": "list_erasures_api_v1_employee_erasures_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "Request Erasure",
+        "description": "Ask for the permanent erasure of an offboarded person's data. Step-up. A different super\nadmin must approve it; nothing is erased until then.",
+        "operationId": "request_erasure_api_v1_employee_erasures_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErasureCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employee-erasures/{erasure_id}": {
+      "get": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "Get Erasure",
+        "operationId": "get_erasure_api_v1_employee_erasures__erasure_id__get",
+        "parameters": [
+          {
+            "name": "erasure_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Erasure Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employee-erasures/{erasure_id}/approve": {
+      "post": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "Approve Erasure",
+        "description": "Approve and run another super admin's request: the records are erased in one transaction\nand the stored files are removed by the worker. Step-up; the employee code typed again.",
+        "operationId": "approve_erasure_api_v1_employee_erasures__erasure_id__approve_post",
+        "parameters": [
+          {
+            "name": "erasure_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Erasure Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErasureApprove"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employee-erasures/{erasure_id}/reject": {
+      "post": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "Reject Erasure",
+        "operationId": "reject_erasure_api_v1_employee_erasures__erasure_id__reject_post",
+        "parameters": [
+          {
+            "name": "erasure_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Erasure Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErasureReject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/employee-erasures/{erasure_id}/cancel": {
+      "post": {
+        "tags": [
+          "erasure"
+        ],
+        "summary": "Cancel Erasure",
+        "description": "The requester withdraws a request still waiting.",
+        "operationId": "cancel_erasure_api_v1_employee_erasures__erasure_id__cancel_post",
+        "parameters": [
+          {
+            "name": "erasure_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Erasure Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccountState": {
+        "type": "string",
+        "enum": [
+          "none",
+          "active",
+          "invited",
+          "disabled"
+        ]
+      },
       "AccrualMethodValue": {
         "type": "string",
         "enum": [
@@ -9467,6 +9983,33 @@
           "years"
         ],
         "title": "Anniversary"
+      },
+      "AssignmentBatchCreate": {
+        "properties": {
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/RoleChoice"
+            },
+            "type": "array",
+            "maxItems": 16,
+            "minItems": 1,
+            "title": "Roles"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "roles",
+          "reason"
+        ],
+        "title": "AssignmentBatchCreate",
+        "description": "Several roles for one account, with one reason; all are assigned or none."
       },
       "AssignmentCreate": {
         "properties": {
@@ -10273,7 +10816,7 @@
       "CategoryCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__documents__router__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__documents__router__Name"
@@ -10494,12 +11037,6 @@
           "in_app",
           "email"
         ]
-      },
-      "Code": {
-        "type": "string",
-        "maxLength": 32,
-        "minLength": 1,
-        "pattern": "^\\S+$"
       },
       "CodeInput": {
         "type": "string",
@@ -11309,7 +11846,7 @@
       "DepartmentCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__org__schemas__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__org__schemas__Name"
@@ -11539,7 +12076,7 @@
       "DesignationCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__org__schemas__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__org__schemas__Name"
@@ -12768,6 +13305,307 @@
           "lapse"
         ]
       },
+      "ErasureApprove": {
+        "properties": {
+          "employee_code": {
+            "$ref": "#/components/schemas/app__modules__erasure__router__Code"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/app__modules__erasure__router__Reason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_code"
+        ],
+        "title": "ErasureApprove"
+      },
+      "ErasureCategoryView": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "deleted",
+              "anonymized",
+              "retained",
+              "pending"
+            ],
+            "title": "Outcome"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "outcome",
+          "count",
+          "note"
+        ],
+        "title": "ErasureCategoryView"
+      },
+      "ErasureCreate": {
+        "properties": {
+          "employee_code": {
+            "$ref": "#/components/schemas/app__modules__erasure__router__Code"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/app__modules__erasure__router__Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_code",
+          "reason"
+        ],
+        "title": "ErasureCreate"
+      },
+      "ErasureList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ErasureView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ErasureList"
+      },
+      "ErasureReject": {
+        "properties": {
+          "note": {
+            "$ref": "#/components/schemas/app__modules__erasure__router__Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "title": "ErasureReject"
+      },
+      "ErasureSubjectView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "employee_code": {
+            "type": "string",
+            "title": "Employee Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "employee_code"
+        ],
+        "title": "ErasureSubjectView"
+      },
+      "ErasureUserRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "email"
+        ],
+        "title": "ErasureUserRef"
+      },
+      "ErasureView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "rejected",
+              "cancelled",
+              "files_pending",
+              "completed"
+            ],
+            "title": "Status"
+          },
+          "employee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErasureSubjectView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "requested_by": {
+            "$ref": "#/components/schemas/ErasureUserRef"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErasureUserRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ErasureCategoryView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "files_total": {
+            "type": "integer",
+            "title": "Files Total"
+          },
+          "files_removed": {
+            "type": "integer",
+            "title": "Files Removed"
+          },
+          "files_remaining": {
+            "type": "integer",
+            "title": "Files Remaining"
+          },
+          "last_file_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last File Error"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "employee",
+          "reason",
+          "requested_by",
+          "requested_at",
+          "decided_by",
+          "decided_at",
+          "decision_note",
+          "result",
+          "files_total",
+          "files_removed",
+          "files_remaining",
+          "last_file_error",
+          "completed_at"
+        ],
+        "title": "ErasureView"
+      },
       "EventCreate": {
         "properties": {
           "event_type": {
@@ -13153,6 +13991,129 @@
           "items"
         ],
         "title": "FactorList"
+      },
+      "FormerAccount": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited",
+              "disabled"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "status"
+        ],
+        "title": "FormerAccount"
+      },
+      "FormerEmployee": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee_code": {
+            "type": "string",
+            "title": "Employee Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "date_of_joining": {
+            "type": "string",
+            "format": "date",
+            "title": "Date Of Joining"
+          },
+          "date_of_exit": {
+            "type": "string",
+            "format": "date",
+            "title": "Date Of Exit"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurrentJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormerAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee_code",
+          "name",
+          "date_of_joining",
+          "date_of_exit",
+          "job",
+          "account"
+        ],
+        "title": "FormerEmployee"
+      },
+      "FormerEmployeePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FormerEmployee"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "accounts_visible": {
+            "type": "boolean",
+            "title": "Accounts Visible"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor",
+          "accounts_visible"
+        ],
+        "title": "FormerEmployeePage"
       },
       "FrequencyValue": {
         "type": "string",
@@ -14670,7 +15631,7 @@
       "LeaveTypeCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__leave__schemas__Name"
@@ -15027,7 +15988,7 @@
       "LocationCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__org__schemas__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__org__schemas__Name"
@@ -15749,7 +16710,7 @@
             "title": "Employee Code"
           },
           "leave_type_code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__leave__schemas__Code"
           },
           "days": {
             "$ref": "#/components/schemas/app__modules__leave__schemas__Amount__3"
@@ -16974,6 +17935,58 @@
         ],
         "title": "RevokedCount"
       },
+      "RoleChoice": {
+        "properties": {
+          "role_key": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Role Key"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role_key"
+        ],
+        "title": "RoleChoice"
+      },
       "RoleList": {
         "properties": {
           "items": {
@@ -17593,7 +18606,7 @@
       "ShiftCreate": {
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/Code"
+            "$ref": "#/components/schemas/app__modules__attendance__schemas__Code"
           },
           "name": {
             "$ref": "#/components/schemas/app__modules__attendance__schemas__Name"
@@ -18127,6 +19140,22 @@
           "break_seconds": {
             "type": "integer",
             "title": "Break Seconds"
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone"
+          },
+          "open_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Since"
           }
         },
         "additionalProperties": false,
@@ -18138,7 +19167,9 @@
           "first_in",
           "last_event_at",
           "session_seconds",
-          "break_seconds"
+          "break_seconds",
+          "time_zone",
+          "open_since"
         ],
         "title": "TeamMemberToday"
       },
@@ -18550,6 +19581,21 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "enable_blocked": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "erased",
+                  "employee_exited"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Blocked"
           }
         },
         "additionalProperties": false,
@@ -18562,7 +19608,8 @@
           "locked",
           "mfa_reenrolment_required",
           "last_login_at",
-          "created_at"
+          "created_at",
+          "enable_blocked"
         ],
         "title": "UserView"
       },
@@ -18857,6 +19904,12 @@
         "maxLength": 500,
         "minLength": 1
       },
+      "app__modules__attendance__schemas__Code": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^\\S+$"
+      },
       "app__modules__attendance__schemas__Name": {
         "type": "string",
         "maxLength": 200,
@@ -18867,9 +19920,25 @@
         "maxLength": 1000,
         "minLength": 1
       },
+      "app__modules__documents__router__Code": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^\\S+$"
+      },
       "app__modules__documents__router__Name": {
         "type": "string",
         "maxLength": 200,
+        "minLength": 1
+      },
+      "app__modules__erasure__router__Code": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 1
+      },
+      "app__modules__erasure__router__Reason": {
+        "type": "string",
+        "maxLength": 500,
         "minLength": 1
       },
       "app__modules__leave__router__Name": {
@@ -18913,6 +19982,12 @@
           }
         ]
       },
+      "app__modules__leave__schemas__Code": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^\\S+$"
+      },
       "app__modules__leave__schemas__Name": {
         "type": "string",
         "maxLength": 200,
@@ -18932,6 +20007,12 @@
           "cancelled",
           "cancellation_requested"
         ]
+      },
+      "app__modules__org__schemas__Code": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^\\S+$"
       },
       "app__modules__org__schemas__Name": {
         "type": "string",

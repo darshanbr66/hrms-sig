@@ -210,6 +210,10 @@ class UserView(_Response):
     mfa_reenrolment_required: bool
     last_login_at: datetime | None
     created_at: datetime
+    # Why a disabled account can never be enabled again through `Enable account`: its data was
+    # permanently erased, or the linked employee has left. Null when nothing in the account's
+    # lifecycle stops it (permissions and the administrator-account rule still apply).
+    enable_blocked: Literal["erased", "employee_exited"] | None
 
 
 class UserPage(_Response):

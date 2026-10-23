@@ -193,3 +193,88 @@ async def test_removing_the_same_assignment_twice_at_once_is_clean(api: Api) -> 
         path = f"/api/v1/users/{target.user_id}/roles/{assignment_id}"
         results = await asyncio.gather(client.delete(path), client.delete(path), client.delete(path))
     assert sorted(r.status_code for r in results) == [204, 404, 404]
+
+
+async def assign_batch(
+    client: httpx.AsyncClient, user_id: uuid.UUID, *roles: str, reason: str = "Covering HR and payroll"
+) -> httpx.Response:
+    return await client.post(
+        f"/api/v1/users/{user_id}/roles/batch",
+        json={"roles": [{"role_key": role} for role in roles], "reason": reason},
+    )
+
+
+async def test_several_roles_are_assigned_at_once_with_one_step_up(api: Api) -> None:
+    target = await api.create_account(roles=(RoleKey.AUDITOR.value,))
+    async with api.client() as admin_client, api.client() as target_client:
+        account = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
+        await api.sign_in(admin_client, account)
+        no_step_up = await assign_batch(admin_client, target.user_id, "hr", "payroll_admin")
+        assert no_step_up.json()["type"] == "/problems/step-up-required"
+        await api.step_up(admin_client, account)
+        await api.sign_in(target_client, target)
+
+        created = await assign_batch(admin_client, target.user_id, "hr", "payroll_admin")
+        assert created.status_code == 201, created.text
+        assert [item["role_key"] for item in created.json()["items"]] == ["hr", "payroll_admin"]
+        # The role held before is untouched, and the target's session picks up all three.
+        held = (await admin_client.get(f"/api/v1/users/{target.user_id}/roles")).json()["items"]
+        assert sorted(item["role_key"] for item in held) == ["auditor", "hr", "payroll_admin"]
+        assert (await target_client.get("/api/v1/me")).status_code == 401
+        assert (await target_client.post("/api/v1/auth/refresh")).status_code == 200
+        roles = set((await target_client.get("/api/v1/me")).json()["roles"])
+        assert {"auditor", "hr", "payroll_admin"} <= roles
+
+    rows = await api.records(
+        AuditLogRecord, {"target_id": str(target.user_id), "action": "access.role.assigned"}
+    )
+    assert sorted((row.changes or {})["role"]["new"] for row in rows) == ["hr", "payroll_admin"]
+    assert {row.reason for row in rows} == {"Covering HR and payroll"}
+
+
+async def test_a_batch_is_all_or_nothing(api: Api) -> None:
+    target = await api.create_account(roles=(RoleKey.AUDITOR.value,))
+    other_super_admin = await api.create_account(roles=(RoleKey.SUPER_ADMIN.value,))
+    async with api.client() as client:
+        admin = await super_admin(api, client)
+        # A role already held fails the whole batch: the other role is not assigned either.
+        held = await assign_batch(client, target.user_id, "hr", "auditor")
+        assert (held.status_code, held.json()["code"]) == (409, "role.already_assigned")
+        # SOD-10 against roles held: a super admin gets no standing data role, in a batch either.
+        sod = await assign_batch(client, other_super_admin.user_id, "hr")
+        assert (sod.status_code, sod.json()["code"]) == (409, "sod.super_admin_data_role")
+        # Super admin is never part of a batch (SOD-8 request instead).
+        alone = await assign_batch(client, target.user_id, "hr", "super_admin")
+        assert (alone.status_code, alone.json()["code"]) == (409, "role.super_admin_alone")
+        derived = await assign_batch(client, target.user_id, "hr", "manager")
+        assert (derived.status_code, derived.json()["code"]) == (409, "role.derived")
+        twice = await assign_batch(client, target.user_id, "hr", "hr")
+        assert twice.status_code == 422
+        assert (await assign_batch(client, target.user_id, "hr", "owner")).status_code == 422
+        empty = await client.post(
+            f"/api/v1/users/{target.user_id}/roles/batch", json={"roles": [], "reason": "Nothing"}
+        )
+        assert empty.status_code == 422
+        # Never one's own roles, and an unknown account is not found.
+        own = await assign_batch(client, admin.user_id, "auditor")
+        assert (own.status_code, own.json()["code"]) == (403, "sod.own_roles")
+        assert (await assign_batch(client, uuid.uuid4(), "hr")).status_code == 404
+    assert [row.role_key for row in await api.records(UserRole, {"user_id": target.user_id})] == ["auditor"]
+    assert [row.role_key for row in await api.records(UserRole, {"user_id": other_super_admin.user_id})] == [
+        "super_admin"
+    ]
+    query = {"target_id": str(target.user_id), "action": "access.role.assigned"}
+    assert await api.count("audit_log", query) == 0
+
+
+async def test_only_role_assign_holders_assign_roles_in_a_batch(api: Api) -> None:
+    target = await api.create_account()
+    for roles in ((), (RoleKey.HR_ADMIN.value,), (RoleKey.SYSTEM_ADMIN.value,)):
+        actor = await api.create_account(roles=roles)
+        async with api.client() as client:
+            await api.sign_in(client, actor)
+            await api.step_up(client, actor)
+            assert (await assign_batch(client, target.user_id, "hr")).status_code == 403, roles
+            # Nobody assigns themselves a role either.
+            assert (await assign_batch(client, actor.user_id, "hr_admin")).status_code == 403, roles
+    assert await api.records(UserRole, {"user_id": target.user_id}) == []

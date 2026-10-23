@@ -98,8 +98,9 @@ class Document(Record):
 class DocumentVersion(Record):
     __collection__ = "document_versions"
     __deletable__ = False
-    __mutable__ = frozenset({"scan_status", "scanned_at", "scan_attempts"})
-    __set_once__ = frozenset({"scanned_at"})
+    __mutable__ = frozenset({"scan_status", "scanned_at", "scan_attempts", "erased_at"})
+    __set_once__ = frozenset({"scanned_at", "erased_at"})
+    __erasable__ = frozenset({"original_filename"})
     __transitions__: ClassVar[dict[str, dict[str, frozenset[str]]]] = {
         "scan_status": {"pending": frozenset({"clean", "infected", "failed"})},
     }
@@ -137,3 +138,6 @@ class DocumentVersion(Record):
     scanned_at: datetime | None = None
     uploaded_by: uuid.UUID
     uploaded_at: datetime = dataclasses.field(default_factory=utcnow)
+    # Set when the owner's data was permanently erased: the file is removed from storage by the
+    # worker and the version can never be downloaded again.
+    erased_at: datetime | None = None

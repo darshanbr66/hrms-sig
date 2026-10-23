@@ -86,6 +86,15 @@ def conflict(code: str, detail: str) -> ProblemError:
     return ProblemError(ProblemType.CONFLICT, detail=detail, extensions={"code": code})
 
 
+def refuse_erased(employee: Employee) -> None:
+    """Nothing is recorded about a person whose data was permanently erased."""
+    if employee.erased_at is not None:
+        raise conflict(
+            "employee.erased",
+            "This person's data was permanently erased, so nothing more can be recorded about them.",
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Names:
     """Display names of the units and people a set of job rows refers to."""
@@ -105,6 +114,14 @@ class EmployeeRecord:
 class EmployeeListing:
     records: list[EmployeeRecord]
     next_after: tuple[str, uuid.UUID] | None
+
+
+@dataclass(frozen=True, slots=True)
+class FormerListing:
+    listing: EmployeeListing
+    # The linked account of each listed person, or None when the reader may not see accounts
+    # (`user.read.all`); a person without an account is absent from the mapping.
+    accounts: dict[uuid.UUID, identity.EmployeeAccount] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +218,44 @@ class PeopleService:
             scope = await self._authz.scope_filter(session, actor, "employee.profile.read", "id")
             rows = await repo.list_employees(session, scope, filters, on=today, after=after, limit=limit)
             return await self._listing(session, rows, limit, today)
+
+    async def former_employees(
+        self,
+        actor: Actor,
+        filters: repo.FormerFilters,
+        *,
+        account: str | None,
+        after: tuple[str, uuid.UUID] | None,
+        limit: int,
+    ) -> FormerListing:
+        """People who have been offboarded, with their last job and, for readers allowed to see
+        accounts (`user.read.all`), their account's state, which also filters the list
+        (`none`, `active`, `invited`, `disabled`). Read through `employee.profile.read` at the
+        reader's scope, like the employee list; nothing is changed here. Erased records are
+        not listed (they are placeholders, docs/database-design.md §9.1)."""
+        today = self._authz.today()
+        accounts_visible = actor.holds("user.read.all")
+        if account is not None and not accounts_visible:
+            raise AccessDenied
+        async with self._db.unit_of_work() as session:
+            scope = await self._authz.scope_filter(session, actor, "employee.profile.read", "id")
+            only: set[uuid.UUID] | None = None
+            if account is not None:
+                candidates = await repo.offboarded_ids(session, scope)
+                linked = await identity.accounts_of_employees(session, candidates)
+                only = {
+                    employee_id
+                    for employee_id in candidates
+                    if (linked[employee_id].status.value if employee_id in linked else "none") == account
+                }
+            rows = await repo.list_former(session, scope, filters, only=only, after=after, limit=limit)
+            listing = await self._listing(session, rows, limit, today)
+            accounts = (
+                await identity.accounts_of_employees(session, [r.employee.id for r in listing.records])
+                if accounts_visible
+                else None
+            )
+            return FormerListing(listing, accounts)
 
     async def _listing(
         self, session: Session, rows: list[tuple[Employee, str]], limit: int, today: date
@@ -447,6 +502,7 @@ class PeopleService:
         employee = await session.get(Employee, employee_id, for_update=True)
         if employee is None:
             raise ProblemError(ProblemType.NOT_FOUND)
+        refuse_erased(employee)
         check_version(employee.version, expected_version)
         changes: dict[str, FieldChange] = {
             name: change_of(name, getattr(employee, name), value)
@@ -490,6 +546,7 @@ class PeopleService:
             employee = await session.get(Employee, employee_id, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            refuse_erased(employee)
             if employee.status == EmployeeStatus.EXITED:
                 raise conflict(
                     "employee.exited", "This person has left. Their job history can no longer change."
@@ -596,6 +653,7 @@ class PeopleService:
         employee = await session.get(Employee, employee_id, for_update=True)
         if employee is None:
             raise ProblemError(ProblemType.NOT_FOUND)
+        refuse_erased(employee)
         from_status = employee.status
         if to_status not in TRANSITIONS[EmployeeStatus(from_status)]:
             raise conflict(
@@ -789,6 +847,7 @@ class PeopleService:
             employee = await session.get(Employee, subject, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            refuse_erased(employee)
             await session.delete_many(EmergencyContact, {"employee_id": subject})
             rows = [
                 EmergencyContact(
@@ -865,6 +924,7 @@ class PeopleService:
             employee = await session.get(Employee, subject, for_update=True)
             if employee is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            refuse_erased(employee)
             today = self._authz.today()
             birth = values.get("date_of_birth")
             if birth is not None and birth >= today:

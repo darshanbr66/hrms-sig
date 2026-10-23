@@ -19,9 +19,15 @@ from collections import defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Final
 
-from app.modules.people.models import Employee, EmployeeJob, EmployeeStatusChange, display_name_of
+from app.modules.people.models import (
+    Employee,
+    EmployeeJob,
+    EmployeeStatus,
+    EmployeeStatusChange,
+    display_name_of,
+)
 from app.platform.authz.engine import Placement
 from app.platform.db import Session
 
@@ -198,6 +204,73 @@ class EmployeeFilters:
     sort: str = "name"
 
 
+@dataclass(frozen=True, slots=True)
+class FormerFilters:
+    """The former employees list: people offboarded (status `exited`), never an erased record."""
+
+    text: str | None = None
+    # Units of the person's last job (people who have left have no job that applies today).
+    department_id: uuid.UUID | None = None
+    designation_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    # name | left_newest
+    sort: str = "left_newest"
+
+
+# Offboarded and not erased: the former employees list. Erased records are only placeholders,
+# shown to super admins on the data erasure page (docs/database-design.md §9.1).
+FORMER: Final[dict[str, Any]] = {"status": EmployeeStatus.EXITED.value, "erased_at": None}
+
+
+async def offboarded_ids(session: Session, scope: Mapping[str, Any] | None = None) -> list[uuid.UUID]:
+    """Employees whose exit is recorded (status `exited`; an exit is never in the future),
+    erased ones included unless `scope` narrows them, in ID order."""
+    query = _all(scope or {}, {"status": EmployeeStatus.EXITED.value})
+    return sorted(employee.id for employee in await session.find(Employee, query))
+
+
+async def list_former(
+    session: Session,
+    scope: Mapping[str, Any],
+    filters: FormerFilters,
+    *,
+    only: Collection[uuid.UUID] | None,
+    after: tuple[str, uuid.UUID] | None,
+    limit: int,
+) -> list[tuple[Employee, str]]:
+    """Former employees in scope with their sort key; `only` narrows them to the given IDs (for
+    filters decided by another module, such as the account's state)."""
+    field, descending = _sort_field(filters.sort)
+    conditions: list[Mapping[str, Any]] = [scope, FORMER]
+    if filters.text:
+        conditions.append(_search(filters.text))
+    if only is not None:
+        conditions.append({"id": {"$in": sorted(only)}})
+    if filters.department_id or filters.designation_id or filters.location_id:
+        candidates = [employee.id for employee in await session.find(Employee, _all(scope, FORMER))]
+        last = await latest_jobs(session, candidates)
+        conditions.append(
+            {
+                "id": {
+                    "$in": [
+                        employee_id
+                        for employee_id, job in last.items()
+                        if (filters.department_id is None or job.department_id == filters.department_id)
+                        and (filters.designation_id is None or job.designation_id == filters.designation_id)
+                        and (filters.location_id is None or job.location_id == filters.location_id)
+                    ]
+                }
+            }
+        )
+    if after is not None:
+        conditions.append(_keyset(field, descending, after))
+    direction = -1 if descending else 1
+    employees = await session.find(
+        Employee, _all(*conditions), sort=[(field, direction), ("id", direction)], limit=limit + 1
+    )
+    return [(employee, _sort_value(employee, field)) for employee in employees]
+
+
 def employment_on(employment: str, on: date) -> dict[str, Any]:
     """The employment definitions every list and count uses (docs/product-requirements.md
     EMP-7), all on one calendar date (the UTC date, like authorization):
@@ -223,7 +296,16 @@ def _sort_field(sort: str) -> tuple[str, bool]:
         return "code_key", False
     if sort in ("joined_newest", "joined_oldest"):
         return "date_of_joining", sort == "joined_newest"
+    if sort == "left_newest":
+        return "date_of_exit", True
     return "sort_name", False
+
+
+def _keyset(field: str, descending: bool, after: tuple[str, uuid.UUID]) -> dict[str, Any]:
+    """Rows after `after` in the order (field, ID)."""
+    key: Any = date.fromisoformat(after[0]) if field in ("date_of_joining", "date_of_exit") else after[0]
+    beyond = "$lt" if descending else "$gt"
+    return {"$or": [{field: {beyond: key}}, {field: key, "id": {beyond: after[1]}}]}
 
 
 def _sort_value(employee: Employee, field: str) -> str:
@@ -262,9 +344,7 @@ async def list_employees(
         placed = await session.distinct(EmployeeJob, "employee_id", _all(job_applies_on(on), unit))
         conditions.append({"id": {"$in": placed}})
     if after is not None:
-        key: Any = date.fromisoformat(after[0]) if field == "date_of_joining" else after[0]
-        beyond = "$lt" if descending else "$gt"
-        conditions.append({"$or": [{field: {beyond: key}}, {field: key, "id": {beyond: after[1]}}]})
+        conditions.append(_keyset(field, descending, after))
     direction = -1 if descending else 1
     employees = await session.find(
         Employee, _all(*conditions), sort=[(field, direction), ("id", direction)], limit=limit + 1

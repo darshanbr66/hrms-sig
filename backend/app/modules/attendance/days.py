@@ -17,7 +17,7 @@ from typing import Final
 from zoneinfo import ZoneInfo
 
 from app.modules.attendance import timeline
-from app.modules.attendance.derive import DayContext, DaySummary, derive_day
+from app.modules.attendance.derive import DayContext, DayStatus, DaySummary, derive_day
 from app.modules.attendance.models import (
     AttendanceCorrection,
     AttendanceEvent,
@@ -47,7 +47,9 @@ class JudgedDay:
     work_date: date
     time_zone: str
     events: list[DayEvent]
-    # Clocked-in and break time to the second, an open session counted up to now.
+    # Clocked-in and break time to the second: an open session counted up to now while its day
+    # is open, and only up to its last event once the day closed with it open (`incomplete`, a
+    # forgotten clock-out), so an unknown departure never reads as hours worked.
     totals: timeline.Totals
     summary: DaySummary
     shift_name: str | None
@@ -135,14 +137,20 @@ async def judge(
                 pending_correction=(employee_id, day) in pending,
                 employed=employment is not None and employment.employed_on(day),
             )
+            summary = derive_day(counted, context, now)
+            measured_until = (
+                max(event.occurred_at for event in counted)
+                if summary.status is DayStatus.INCOMPLETE and counted
+                else now
+            )
             days.append(
                 JudgedDay(
                     employee_id=employee_id,
                     work_date=day,
                     time_zone=zone_name,
                     events=events,
-                    totals=timeline.totals(counted, now),
-                    summary=derive_day(counted, context, now),
+                    totals=timeline.totals(counted, measured_until),
+                    summary=summary,
                     shift_name=applied.shift.name if applied else None,
                     holiday=holiday,
                     leave_portion=portion,

@@ -66,14 +66,29 @@ def test_every_export_requires_step_up_and_is_audited() -> None:
             assert permission.audit_reads, permission.key
 
 
+ERASURE = frozenset({"employee.erasure.read", "employee.erasure.request", "employee.erasure.approve"})
 DATA_PREFIXES = ("employee.", "attendance.", "leave.", "document.", "compensation.", "payroll.", "payslip.")
 
 
 @pytest.mark.parametrize("role", [RoleKey.SYSTEM_ADMIN, RoleKey.SUPER_ADMIN])
 def test_admin_roles_hold_no_employee_data(role: RoleKey) -> None:
-    """Least privilege, fixed architecture (§4.1, §4.2): no data access for admins."""
-    held = ROLE_DEFINITIONS[role].permissions
+    """Least privilege, fixed architecture (§4.1, §4.2): no data access for admins. The one
+    exception is destructive, not a read: super admins request and approve the permanent
+    erasure of a person's data (owner decision 2026-10-23), which shows nothing but the
+    person's name and code."""
+    held = ROLE_DEFINITIONS[role].permissions - ERASURE
     assert not [key for key in held if key.startswith(DATA_PREFIXES)]
+
+
+def test_only_super_admins_erase_and_erasure_reads_nothing() -> None:
+    holders = {role.key for role in ROLE_DEFINITIONS.values() if role.permissions & ERASURE}
+    assert holders == {RoleKey.SUPER_ADMIN}
+    assert ROLE_DEFINITIONS[RoleKey.SUPER_ADMIN].permissions >= ERASURE
+    # Requesting and approving need step-up and are audited; reading shows a name and code only.
+    assert all(
+        PERMISSIONS[key].step_up and PERMISSIONS[key].audit_reads
+        for key in ERASURE - {"employee.erasure.read"}
+    )
 
 
 def test_super_admin_manages_access_without_using_it() -> None:

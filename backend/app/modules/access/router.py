@@ -169,6 +169,37 @@ async def assign_role(
     return _assignment_view(result)
 
 
+@router.post(
+    "/users/{user_id}/roles/batch", response_model=s.AssignmentList, status_code=status.HTTP_201_CREATED
+)
+async def assign_roles(
+    user_id: uuid.UUID,
+    body: s.AssignmentBatchCreate,
+    request: Request,
+    access: Service,
+    actor: Annotated[Actor, requires("role.assign")],
+) -> s.AssignmentList:
+    """Assign several roles in one transaction with one step-up; all or none. Roles already
+    held are kept. `super_admin` is refused here (`409 role.super_admin_alone`): it is
+    assigned on its own, as a request a second super admin approves."""
+    assigned = await access.assign_many(
+        actor,
+        RequestContext.from_request(request),
+        user_id,
+        [
+            AssignmentRequest(
+                role_key=choice.role_key,
+                reason=body.reason,
+                department_id=choice.department_id,
+                location_id=choice.location_id,
+                valid_until=choice.valid_until,
+            )
+            for choice in body.roles
+        ],
+    )
+    return s.AssignmentList(items=[_assignment_view(item) for item in assigned])
+
+
 @router.delete("/users/{user_id}/roles/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_role(
     user_id: uuid.UUID,

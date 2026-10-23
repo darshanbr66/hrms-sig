@@ -71,6 +71,7 @@ describe("navigation by role", () => {
       "Leave approvals",
       "Leave calendar",
       "Employees",
+      "Former employees",
       "Organization",
       "Leave overview",
       "Leave balances",
@@ -91,6 +92,7 @@ describe("navigation by role", () => {
       "Leave approvals",
       "Leave calendar",
       "Employees",
+      "Former employees",
       "Organization",
       "Leave overview",
       "Leave balances",
@@ -118,17 +120,26 @@ describe("navigation by role", () => {
     ]);
   });
 
-  it("keeps a super admin to access governance and the audit log, with no HR data", () => {
+  it("keeps a super admin to access governance, data erasure and the audit log, with no HR data", () => {
     expect(labels(holding("super_admin"))).toEqual([
       "Dashboard",
       "Account security",
       "Users",
       "Roles",
       "Access requests",
+      "Data erasure",
       "Security events",
       "Audit log",
       "Settings",
     ]);
+  });
+
+  it("gives a super admin linked to their own record self-service, and no team pages", () => {
+    // The API never derives the manager role for a super admin (owner decision 2026-10-23).
+    const shown = labels(holding("employee", "super_admin"));
+    for (const label of EMPLOYEE) expect(shown).toContain(label);
+    expect(shown).not.toContain("Team attendance");
+    expect(shown).not.toContain("Employees");
   });
 
   it("gives an HR person linked to an employee record their own self-service too", () => {

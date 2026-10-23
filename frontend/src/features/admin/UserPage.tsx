@@ -19,18 +19,17 @@ import { Button } from "../../design-system/Button";
 import { DataTable, type Column } from "../../design-system/DataTable";
 import { ConfirmDialog, Dialog, DialogActions } from "../../design-system/Dialog";
 import { EmptyState } from "../../design-system/EmptyState";
-import { DescriptionList, TextArea } from "../../design-system/Fields";
+import { Checkbox, DescriptionList, TextArea } from "../../design-system/Fields";
 import { PageHeader } from "../../design-system/PageHeader";
 import { Panel } from "../../design-system/Panel";
 import { ProblemMessage } from "../../design-system/ProblemMessage";
-import { Select } from "../../design-system/Select";
 import { Skeleton } from "../../design-system/Skeleton";
 import { useToast } from "../../design-system/Toast";
 import { client, unwrap } from "../../lib/api";
 import type { components } from "../../lib/api-schema";
 import { formatDateTime } from "../../lib/format";
 import { fieldMessages, problemText } from "../../lib/problem";
-import { ACCOUNT_STATUS, USERS_KEY, type User } from "./users";
+import { ACCOUNT_STATUS, ENABLE_BLOCKED, USERS_KEY, type User } from "./users";
 
 type Assignment = components["schemas"]["AssignmentView"];
 type AdminSession = components["schemas"]["AdminSessionView"];
@@ -73,7 +72,9 @@ export function UserPage() {
   if (account.status === "active" && can("user.disable")) {
     actions.push({ id: "disable", label: "Disable account", variant: "danger" });
   }
-  if (account.status === "disabled" && can("user.disable")) {
+  // Only an ordinarily disabled account can be enabled again; a leaver's or an erased
+  // account shows why instead (the API refuses both whoever asks).
+  if (account.status === "disabled" && !account.enable_blocked && can("user.disable")) {
     actions.push({ id: "enable", label: "Enable account", variant: "secondary" });
   }
   return (
@@ -81,7 +82,7 @@ export function UserPage() {
       <BackLink />
       <PageHeader
         title={account.email}
-        description="Accounts are disabled rather than deleted, so their history stays."
+        description="Accounts are disabled rather than deleted, so their history stays. A disabled account can be enabled again unless the person has left or their data was erased."
         action={
           actions.length > 0 ? (
             <div className="flex flex-wrap gap-2">
@@ -100,6 +101,9 @@ export function UserPage() {
           ) : undefined
         }
       />
+      {account.enable_blocked ? (
+        <Banner tone="info">{ENABLE_BLOCKED[account.enable_blocked].explanation}</Banner>
+      ) : null}
       {own ? (
         <Banner tone="info">
           This is your own account. Change your own password, authenticators and sessions in{" "}
@@ -119,6 +123,9 @@ export function UserPage() {
                   <Badge tone={ACCOUNT_STATUS[account.status].tone}>
                     {ACCOUNT_STATUS[account.status].label}
                   </Badge>
+                  {account.enable_blocked ? (
+                    <Badge tone="neutral">{ENABLE_BLOCKED[account.enable_blocked].badge}</Badge>
+                  ) : null}
                   {account.locked ? <Badge tone="danger">Locked after failed sign-ins</Badge> : null}
                   {account.mfa_reenrolment_required ? (
                     <Badge tone="warning">Waiting to set up a new authenticator</Badge>
@@ -447,11 +454,19 @@ function RolesPanel({ user, own }: { user: User; own: boolean }) {
             }}
           >
             <Plus aria-hidden className="size-4" />
-            Assign role
+            Add roles
           </Button>
         ) : undefined
       }
     >
+      {canAssign && items.some((item) => item.role_key === "super_admin") ? (
+        <Banner tone="info">
+          To hand over this super admin role, add super admin for the successor and have another super admin
+          approve it, then remove the role here. At least two active super admins must remain, and nobody
+          removes their own role. A super admin who needs HR, payroll or system access asks for it on the
+          access requests page, and another super admin approves it for a limited time.
+        </Banner>
+      ) : null}
       {assignments.isPending ? <Skeleton label="Loading roles" lines={2} /> : null}
       {assignments.isError ? (
         <ProblemMessage
@@ -470,8 +485,9 @@ function RolesPanel({ user, own }: { user: User; own: boolean }) {
         <DataTable label="Assigned roles" columns={columns} rows={items} rowKey={(row) => row.id} />
       ) : null}
       {assigning ? (
-        <AssignRoleDialog
+        <AssignRolesDialog
           user={user}
+          held={items}
           queryKey={key}
           onClose={() => {
             setAssigning(false);
@@ -505,12 +521,24 @@ function RolesPanel({ user, own }: { user: User; own: boolean }) {
   );
 }
 
-function AssignRoleDialog({
+// SOD-10 (docs/authorization-model.md §6): a super admin holds none of these as a standing role.
+const DATA_ROLES = new Set(["hr", "hr_admin", "payroll_admin", "system_admin", "auditor"]);
+
+/**
+ * Add roles to an account (C4). Roles already held are shown ticked and locked: this dialog
+ * only adds, so it never replaces a role. The API decides compatibility; the reasons shown
+ * here explain its rules before a request is made. Several roles go in one request, one
+ * transaction and one step-up; super admin is assigned on its own, as a request another
+ * super admin approves.
+ */
+function AssignRolesDialog({
   user,
+  held,
   queryKey,
   onClose,
 }: {
   user: User;
+  held: readonly Assignment[];
   queryKey: readonly unknown[];
   onClose: () => void;
 }) {
@@ -521,51 +549,109 @@ function AssignRoleDialog({
     queryKey: ["access", "roles"],
     queryFn: () => unwrap(client.GET("/api/v1/roles")),
   });
-  const [role, setRole] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<string[]>([]);
   const [reason, setReason] = useState("");
+  const heldKeys = new Set(held.map((item) => item.role_key));
+  const superAdminChosen = chosen.includes("super_admin");
   const assign = useMutation({
     mutationFn: () =>
-      withStepUp(() =>
-        unwrap(
-          client.POST("/api/v1/users/{user_id}/roles", {
-            params: { path: { user_id: user.id } },
-            body: { role_key: role ?? "", reason: reason.trim() },
+      withStepUp(async () => {
+        const path = { params: { path: { user_id: user.id } } };
+        if (superAdminChosen) {
+          const result = await unwrap(
+            client.POST("/api/v1/users/{user_id}/roles", {
+              ...path,
+              body: { role_key: "super_admin", reason: reason.trim() },
+            }),
+          );
+          return "kind" in result ? "requested" : "assigned";
+        }
+        await unwrap(
+          client.POST("/api/v1/users/{user_id}/roles/batch", {
+            ...path,
+            body: { roles: chosen.map((role_key) => ({ role_key })), reason: reason.trim() },
           }),
-        ),
-      ),
-    onSuccess: async (result) => {
+        );
+        return "assigned";
+      }),
+    onSuccess: async (outcome) => {
       await queryClient.invalidateQueries({ queryKey });
       await queryClient.invalidateQueries({ queryKey: ["access", "grant-requests"] });
-      toast("kind" in result ? "Request created; another super admin must approve it" : "Role assigned");
+      toast(
+        outcome === "requested"
+          ? "Request created; another super admin must approve it"
+          : chosen.length === 1
+            ? "Role assigned"
+            : `${String(chosen.length)} roles assigned`,
+      );
       onClose();
     },
   });
-  const options = (roles.data?.items ?? [])
-    .filter((item) => !item.is_derived)
-    .map((item) => ({ id: item.key, label: item.name }));
+  const options = (roles.data?.items ?? []).filter((item) => !item.is_derived);
+  const unavailable = (key: string): string | null => {
+    if (heldKeys.has(key)) return "Already assigned. It stays as it is.";
+    if (key === "super_admin") {
+      if ([...heldKeys].some((role) => DATA_ROLES.has(role)))
+        return "Remove their HR, payroll, system admin and auditor roles first: a super admin holds none of them permanently.";
+      if (chosen.some((role) => role !== "super_admin"))
+        return "Assigned on its own, because another super admin must approve it. Clear the other roles to choose it.";
+      return null;
+    }
+    if (heldKeys.has("super_admin") && DATA_ROLES.has(key))
+      return "Not with super admin. A super admin gets this role only for a limited time, through an access request another super admin approves.";
+    if (superAdminChosen) return "Clear super admin to choose other roles.";
+    return null;
+  };
   const errors = fieldMessages(assign.error);
   return (
-    <Dialog title={`Assign a role to ${user.email}`} isOpen onOpenChange={onClose}>
+    <Dialog title={`Add roles for ${user.email}`} isOpen onOpenChange={onClose}>
       <Form
         className="flex flex-col gap-4"
         onSubmit={(event) => {
           event.preventDefault();
-          assign.mutate();
+          if (!assign.isPending) assign.mutate();
         }}
       >
         {assign.isError && Object.keys(errors).length === 0 ? (
-          <ProblemMessage error={assign.error} fallback="We couldn't assign the role." />
+          <ProblemMessage
+            error={assign.error}
+            fallback="We couldn't assign the roles. Nothing was changed."
+          />
         ) : null}
-        <Select
-          label="Role"
-          name="role"
-          options={options}
-          value={role}
-          onChange={setRole}
-          placeholder="Choose a role"
-          error={errors.role_key}
-        />
-        {role === "super_admin" ? (
+        {roles.isPending ? <Skeleton label="Loading roles" lines={4} /> : null}
+        {roles.isError ? (
+          <ProblemMessage
+            error={roles.error}
+            fallback="We couldn't load the roles."
+            onRetry={() => void roles.refetch()}
+          />
+        ) : null}
+        {options.length > 0 ? (
+          <fieldset className="flex flex-col gap-3">
+            <legend className="mb-1 text-sm font-semibold text-neutral-800">Roles to add</legend>
+            {options.map((item) => {
+              const why = unavailable(item.key);
+              return (
+                <div key={item.key}>
+                  <Checkbox
+                    isSelected={heldKeys.has(item.key) || chosen.includes(item.key)}
+                    isDisabled={why !== null}
+                    onChange={(selected) => {
+                      setChosen((current) =>
+                        selected ? [...current, item.key] : current.filter((key) => key !== item.key),
+                      );
+                    }}
+                  >
+                    <span className="font-semibold">{item.name}</span>
+                    <span className="block text-neutral-600">{item.description}</span>
+                  </Checkbox>
+                  {why ? <p className="mt-1 ml-6 text-xs text-neutral-700">{why}</p> : null}
+                </div>
+              );
+            })}
+          </fieldset>
+        ) : null}
+        {superAdminChosen ? (
           <Banner tone="warning">
             Assigning super admin creates a request. Another super admin, who is neither you nor this person,
             must approve it.
@@ -577,15 +663,19 @@ function AssignRoleDialog({
           value={reason}
           onChange={setReason}
           maxLength={500}
-          description="Kept with the assignment and in the audit log."
+          description="Kept with each assignment and in the audit log."
           error={errors.reason}
         />
         <DialogActions>
           <Button variant="secondary" onPress={onClose}>
             Cancel
           </Button>
-          <Button type="submit" isPending={assign.isPending} isDisabled={!role || reason.trim() === ""}>
-            Assign role
+          <Button
+            type="submit"
+            isPending={assign.isPending}
+            isDisabled={chosen.length === 0 || reason.trim() === ""}
+          >
+            {superAdminChosen ? "Request super admin" : chosen.length > 1 ? "Add roles" : "Add role"}
           </Button>
         </DialogActions>
       </Form>

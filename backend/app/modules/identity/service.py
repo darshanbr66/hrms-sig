@@ -31,7 +31,7 @@ import math
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Final, Protocol
 
 from app.modules.identity import accounts, defaults, devices, notifications
@@ -1260,11 +1260,36 @@ class IdentityService:
         limit: int,
         email_contains: str | None = None,
         employee_id: uuid.UUID | None = None,
+        include_offboarded: bool = False,
     ) -> repo.UserPage:
+        """The account list. Accounts linked to someone who has been offboarded are left to the
+        former employees list unless asked for, or unless the account of one employee record is
+        looked up (`employee_id`); the filter is applied in the query, before paging."""
         async with self._db.unit_of_work() as session:
-            return await repo.list_users(
-                session, after=after, limit=limit, email_contains=email_contains, employee_id=employee_id
+            excluded = (
+                await people.offboarded_ids(session) if not include_offboarded and employee_id is None else []
             )
+            return await repo.list_users(
+                session,
+                after=after,
+                limit=limit,
+                email_contains=email_contains,
+                employee_id=employee_id,
+                excluded_employee_ids=excluded,
+            )
+
+    async def enable_blocks(self, users: Sequence[User]) -> dict[uuid.UUID, str]:
+        """For each disabled account that can never be enabled through `Enable account`, why;
+        so the administration pages show a status instead of an action that would be refused."""
+        today = self._clock.now().date()
+        blocks: dict[uuid.UUID, str] = {}
+        async with self._db.unit_of_work() as session:
+            for user in users:
+                if user.status == UserStatus.DISABLED:
+                    blocked = await enable_block(session, user, today)
+                    if blocked is not None:
+                        blocks[user.id] = blocked
+        return blocks
 
     async def set_disabled(
         self, admin: Actor, context: RequestContext, user_id: uuid.UUID, *, disabled: bool
@@ -1306,15 +1331,9 @@ class IdentityService:
                 revoked = await accounts.disable(session, user, now)
                 event_type = SecurityEventType.ACCOUNT_DISABLED
             elif not disabled and user.status == UserStatus.DISABLED:
-                # Someone who has left stays signed out: exited is final until rehire exists.
-                if user.employee_id is not None:
-                    _, left_on = await people.exit_date(session, user.employee_id)
-                    if left_on is not None and left_on <= now.date():
-                        raise conflict(
-                            "user.employee_exited",
-                            "This person has left, so their account cannot be enabled. "
-                            "Their records stay as they are.",
-                        )
+                blocked = await enable_block(session, user, now.date())
+                if blocked is not None:
+                    raise conflict(f"user.{blocked}", ENABLE_BLOCKED[blocked])
                 # An account that was never activated goes back to waiting for its invite.
                 user.status = (UserStatus.ACTIVE if user.email_verified_at else UserStatus.INVITED).value
                 require_mfa(session, user.id)
@@ -1357,9 +1376,10 @@ class IdentityService:
         employee's self-service access: `user.invite`, `employee.lifecycle.manage` covering
         the employee (existence is not confirmed without it), and the account's email must be
         the employee's work email. On top of that: step-up, a recorded reason, never one's own
-        account (SOD-4), never an administrator account (`system_admin`, `super_admin`), whose
-        holders keep a separate account for their own employee self-service, and never a
-        disabled account. One account per employee and one employee per account: an account
+        account (SOD-4) and never a disabled account. An administrator account (`system_admin`,
+        `super_admin`) may be linked to its holder's own record (decided by the project owner on
+        2026-10-23): it gets employee self-service only, never the derived manager role, and
+        linking assigns no role. One account per employee and one employee per account: an account
         already linked elsewhere, or an employee who already has an account, is refused (409).
         Repeating a link that already exists changes nothing. The account row is locked and the
         database's unique constraint on the employee decides a race between two accounts."""
@@ -1378,6 +1398,9 @@ class IdentityService:
             user = await repo.lock_user(session, user_id)
             if user is None:
                 raise ProblemError(ProblemType.NOT_FOUND)
+            if user.erased_at is not None:
+                # An erased account is never linked again, to anyone: not restored, not reused.
+                raise conflict("user.erased", ENABLE_BLOCKED["erased"])
             if user.employee_id == employee_id:
                 return user
             if user.employee_id is not None:
@@ -1388,12 +1411,6 @@ class IdentityService:
                 )
             if user.status == UserStatus.DISABLED:
                 raise conflict("user.not_active", "This account is disabled. Enable it before linking it.")
-            if await self._roles.role_keys(session, user_id, now) & ADMIN_ACCOUNT_ROLES:
-                raise conflict(
-                    "user.admin_account",
-                    "Administrator accounts are not linked to employee records. The person signs in "
-                    "with a separate employee account for their own records.",
-                )
             exists, work_email = await people.work_email(session, employee_id)
             if not exists:
                 raise ProblemError(ProblemType.NOT_FOUND)
@@ -1606,6 +1623,30 @@ class IdentityService:
                 ),
             )
             return len(revoked)
+
+
+# Why `Enable account` can never apply to a disabled account. Disabling alone is reversible;
+# these two are not, through that action: the person has left (offboarding is final until a
+# rehire workflow exists), or their data was permanently erased (never, by any workflow).
+ENABLE_BLOCKED: Final = {
+    "erased": "This person's data was permanently erased, so the account can never be enabled again.",
+    "employee_exited": (
+        "This person has left, so their account stays disabled. Their records stay as they are."
+    ),
+}
+
+
+async def enable_block(session: Session, user: User, today: date) -> str | None:
+    """`erased` or `employee_exited` when the account can never be enabled again through the
+    ordinary action, whoever asks; None otherwise (permissions and the administrator-account
+    rule are checked separately)."""
+    if user.erased_at is not None:
+        return "erased"
+    if user.employee_id is not None:
+        _, left_on = await people.exit_date(session, user.employee_id)
+        if left_on is not None and left_on <= today:
+            return "employee_exited"
+    return None
 
 
 def _required[T](value: T | None) -> T:

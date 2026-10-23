@@ -103,6 +103,10 @@ class Employee(Record):
     version: int = 1
     created_at: datetime = dataclasses.field(default_factory=utcnow)
     updated_at: datetime = dataclasses.field(default_factory=utcnow)
+    # When the person's data was permanently erased (docs/database-design.md §9.1): the names,
+    # code and contact details are then placeholders, and the record stays for the history
+    # that refers to it.
+    erased_at: datetime | None = None
     # Derived (before_write).
     sort_name: str = ""
     code_key: str = ""
@@ -131,6 +135,7 @@ class EmployeeJob(Record):
     # Job history is preserved: only the end of a row (and its update time) ever changes.
     __deletable__ = False
     __mutable__ = frozenset({"effective_to", "updated_at"})
+    __erasable__ = frozenset({"notes"})
     __indexes__ = (
         Index(asc("organization_id", "employee_id", "effective_from"), name="ix_employee_jobs_employee"),
         Index(asc("organization_id", "manager_employee_id"), name="ix_employee_jobs_manager"),

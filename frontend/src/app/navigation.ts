@@ -19,6 +19,7 @@ import {
   ClipboardList,
   Clock,
   ContactRound,
+  Eraser,
   FileClock,
   FileText,
   FolderCog,
@@ -31,6 +32,7 @@ import {
   ShieldCheck,
   UserRound,
   UserRoundCog,
+  UserMinus,
   Users,
   UsersRound,
 } from "lucide-react";
@@ -110,6 +112,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: Users,
         anyOf: ["employee.profile.read.team", "employee.profile.read.all"],
       },
+      {
+        to: "/former-employees",
+        label: "Former employees",
+        icon: UserMinus,
+        anyOf: ["employee.profile.read.all"],
+      },
       { to: "/directory", label: "Directory", icon: ContactRound, anyOf: ["employee.directory.read"] },
       { to: "/organization", label: "Organization", icon: Building2, anyOf: ["org.read"] },
       { to: "/leave/overview", label: "Leave overview", icon: ClipboardList, anyOf: ["leave.read.all"] },
@@ -159,6 +167,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { to: "/admin/users", label: "Users", icon: UserRoundCog, anyOf: ["user.read.all"] },
       { to: "/admin/roles", label: "Roles", icon: KeyRound, anyOf: ["role.read"] },
       { to: "/admin/access-requests", label: "Access requests", icon: ShieldAlert, anyOf: ["role.read"] },
+      { to: "/admin/erasures", label: "Data erasure", icon: Eraser, anyOf: ["employee.erasure.read"] },
       {
         to: "/admin/security-events",
         label: "Security events",

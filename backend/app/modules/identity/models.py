@@ -105,6 +105,9 @@ class User(Record):
     version: int = 1
     created_at: datetime = dataclasses.field(default_factory=utcnow)
     updated_at: datetime = dataclasses.field(default_factory=utcnow)
+    # When the person's data was permanently erased: the account is disabled for good, its
+    # email is a placeholder, and nothing to sign in with remains.
+    erased_at: datetime | None = None
 
 
 @dataclasses.dataclass(kw_only=True, eq=False)

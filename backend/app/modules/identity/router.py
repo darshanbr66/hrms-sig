@@ -481,7 +481,7 @@ async def revoke_my_device(
 # --- administration -----------------------------------------------------------------------
 
 
-def _user_view(user: User, now: datetime) -> s.UserView:
+def _user_view(user: User, now: datetime, blocks: dict[uuid.UUID, str] | None = None) -> s.UserView:
     return s.UserView(
         id=user.id,
         email=user.email,
@@ -491,7 +491,12 @@ def _user_view(user: User, now: datetime) -> s.UserView:
         mfa_reenrolment_required=user.mfa_reenrolment_required,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
+        enable_blocked=(blocks or {}).get(user.id),
     )
+
+
+async def _account_view(identity: IdentityService, user: User, now: datetime) -> s.UserView:
+    return _user_view(user, now, await identity.enable_blocks([user]))
 
 
 @router.get("/users", response_model=s.UserPage)
@@ -504,10 +509,23 @@ async def list_users(
     cursor: Annotated[uuid.UUID | None, Query()] = None,
     q: Annotated[str | None, Query(min_length=1, max_length=254)] = None,
     employee_id: uuid.UUID | None = None,
+    include_offboarded: bool = False,
 ) -> s.UserPage:
-    page = await identity.list_users(after=cursor, limit=limit, email_contains=q, employee_id=employee_id)
+    """Accounts, oldest first. Accounts of people who have been offboarded are listed on the
+    former employees page instead, unless `include_offboarded` is set or `employee_id` asks
+    for the account of one record."""
+    page = await identity.list_users(
+        after=cursor,
+        limit=limit,
+        email_contains=q,
+        employee_id=employee_id,
+        include_offboarded=include_offboarded,
+    )
     now = clock(request).now()
-    return s.UserPage(items=[_user_view(user, now) for user in page.users], next_cursor=page.next_cursor)
+    blocks = await identity.enable_blocks(page.users)
+    return s.UserPage(
+        items=[_user_view(user, now, blocks) for user in page.users], next_cursor=page.next_cursor
+    )
 
 
 @router.get("/users/{user_id}", response_model=s.UserView)
@@ -517,7 +535,7 @@ async def get_user(
     identity: Service,
     _actor: Annotated[Actor, requires("user.read.all")],
 ) -> s.UserView:
-    return _user_view(await identity.user(user_id), clock(request).now())
+    return await _account_view(identity, await identity.user(user_id), clock(request).now())
 
 
 @router.post("/users/{user_id}/disable", response_model=s.UserView)
@@ -525,7 +543,7 @@ async def disable_user(
     user_id: uuid.UUID, request: Request, identity: Service, actor: Annotated[Actor, requires("user.disable")]
 ) -> s.UserView:
     user = await identity.set_disabled(actor, RequestContext.from_request(request), user_id, disabled=True)
-    return _user_view(user, clock(request).now())
+    return await _account_view(identity, user, clock(request).now())
 
 
 @router.post("/users/{user_id}/employee-link", response_model=s.UserView)
@@ -541,7 +559,7 @@ async def link_user_employee(
     user = await identity.link_employee(
         actor, RequestContext.from_request(request), user_id, body.employee_id, body.reason
     )
-    return _user_view(user, clock(request).now())
+    return await _account_view(identity, user, clock(request).now())
 
 
 @router.post("/users/{user_id}/enable", response_model=s.UserView)
@@ -549,7 +567,7 @@ async def enable_user(
     user_id: uuid.UUID, request: Request, identity: Service, actor: Annotated[Actor, requires("user.disable")]
 ) -> s.UserView:
     user = await identity.set_disabled(actor, RequestContext.from_request(request), user_id, disabled=False)
-    return _user_view(user, clock(request).now())
+    return await _account_view(identity, user, clock(request).now())
 
 
 @router.post("/users/{user_id}/mfa-reset", status_code=status.HTTP_202_ACCEPTED)

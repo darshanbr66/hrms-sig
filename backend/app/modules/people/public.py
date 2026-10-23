@@ -23,6 +23,10 @@ Reporting lines and placement for the authorization engine (docs/authorization-m
   is requested); `employee_rows` and `EMPLOYEES_HEADER` give the employee export.
 - `job_periods` gives each employee's employment dates and the job rows overlapping a date
   range, for modules that judge many days at once (attendance).
+- `offboarded_ids` names the employees whose exit is recorded, so the account list can leave
+  their accounts to the former employees list.
+- `erasure_subject`, `erasure_subject_by_code` and `erase_employee` are the people part of the
+  permanent erasure of one person's data (the erasure module, docs/database-design.md §9.1).
 
 Every function takes the calendar date to resolve on. "Now" is the current date where the
 caller decides it; a historical record passes the record's own date, which gives the "team
@@ -37,6 +41,12 @@ from typing import Any, Final
 
 from app.modules.org import public as org
 from app.modules.people import repository
+from app.modules.people.erasure import (
+    ErasureSubject,
+    erase_employee,
+    erasure_subject,
+    erasure_subject_by_code,
+)
 from app.modules.people.exports import EMPLOYEES_HEADER, employee_rows
 from app.modules.people.models import Employee, EmployeeJob
 from app.modules.people.repository import (
@@ -47,6 +57,7 @@ from app.modules.people.repository import (
     has_direct_reports,
     is_employed,
     is_team_member,
+    offboarded_ids,
     placed_employee_ids,
     placed_in_unit_count,
     placement,
@@ -78,12 +89,16 @@ __all__ = [
     "EMPLOYEE_ID_FIELD",
     "MAX_COLLEAGUES",
     "Colleague",
+    "ErasureSubject",
     "PeopleRelationships",
     "employed_colleagues",
     "employee_exists",
     "employee_ids_by_code",
     "employee_names",
     "employee_rows",
+    "erase_employee",
+    "erasure_subject",
+    "erasure_subject_by_code",
     "exit_date",
     "first_name",
     "has_direct_reports",
@@ -92,6 +107,7 @@ __all__ = [
     "is_team_member",
     "job_facts",
     "job_periods",
+    "offboarded_ids",
     "placed_employee_ids",
     "placed_in_unit_count",
     "placement",
