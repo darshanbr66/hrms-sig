@@ -23,6 +23,8 @@ Reporting lines and placement for the authorization engine (docs/authorization-m
   is requested); `employee_rows` and `EMPLOYEES_HEADER` give the employee export.
 - `job_periods` gives each employee's employment dates and the job rows overlapping a date
   range, for modules that judge many days at once (attendance).
+- `employee_refs` gives names and codes, and `ids_matching` finds people by name, code or work
+  email, for lists of other modules' records (location reviews).
 - `offboarded_ids` names the employees whose exit is recorded, so the account list can leave
   their accounts to the former employees list.
 - `erasure_subject`, `erasure_subject_by_code` and `erase_employee` are the people part of the
@@ -52,9 +54,11 @@ from app.modules.people.models import Employee, EmployeeJob
 from app.modules.people.repository import (
     employee_exists,
     employee_names,
+    employee_refs,
     exit_date,
     first_name,
     has_direct_reports,
+    ids_matching,
     is_employed,
     is_team_member,
     offboarded_ids,
@@ -95,6 +99,7 @@ __all__ = [
     "employee_exists",
     "employee_ids_by_code",
     "employee_names",
+    "employee_refs",
     "employee_rows",
     "erase_employee",
     "erasure_subject",
@@ -103,6 +108,7 @@ __all__ = [
     "first_name",
     "has_direct_reports",
     "ids_in_scope",
+    "ids_matching",
     "is_employed",
     "is_team_member",
     "job_facts",

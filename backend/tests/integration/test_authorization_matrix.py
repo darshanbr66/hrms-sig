@@ -205,6 +205,59 @@ ROUTES = (
     Route("GET", "/api/v1/directory", "employee.directory.read"),
     Route("GET", "/api/v1/employees", "employee.profile.read"),
     Route("GET", "/api/v1/former-employees", "employee.profile.read"),
+    # Office location verification (ADR-031); {approval} and {evidence} do not exist.
+    Route("GET", "/api/v1/attendance/location-checks", "shift.read"),
+    Route(
+        "POST",
+        "/api/v1/attendance/location-checks",
+        "attendance.policy.manage",
+        {
+            "location_id": str(uuid.UUID(int=0)),
+            "effective_from": "2099-01-01",
+            "mode": "verify",
+            "latitude": 12.0,
+            "longitude": 77.0,
+            "radius_m": 150,
+            "max_accuracy_m": 100,
+            "max_position_age_seconds": 120,
+            "review_unverified": True,
+        },
+        # The installation switch is off by default (test_location_switch.py): a holder is told so.
+        allowed_statuses=frozenset({503}),
+    ),
+    Route("GET", "/api/v1/attendance/office-approvals", "attendance.location.assign"),
+    Route(
+        "POST",
+        "/api/v1/attendance/office-approvals",
+        "attendance.location.assign",
+        {
+            "employee_id": str(uuid.UUID(int=0)),
+            "location_id": str(uuid.UUID(int=0)),
+            "effective_from": "2099-01-01",
+        },
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/attendance/office-approvals/{approval}/end",
+        "attendance.location.assign",
+        {"effective_to": "2099-01-02"},
+        allowed_statuses=frozenset({404}),
+    ),
+    Route("GET", "/api/v1/attendance/location-reviews", "attendance.location.review"),
+    Route(
+        "GET",
+        "/api/v1/attendance/location-reviews/{evidence}",
+        "attendance.location.review",
+        allowed_statuses=frozenset({404}),
+    ),
+    Route(
+        "POST",
+        "/api/v1/attendance/location-reviews/{evidence}/decisions",
+        "attendance.location.review",
+        {"decision": "accepted", "reason_code": "on_site_confirmed", "supersedes": None},
+        allowed_statuses=frozenset({404}),
+    ),
     Route("GET", "/api/v1/employees/statistics", "employee.profile.read"),
     Route(
         "POST",
@@ -881,6 +934,8 @@ async def call(api: Api, client: httpx.AsyncClient, route: Route) -> httpx.Respo
         document=uuid.uuid4(),
         version=uuid.uuid4(),
         erasure=uuid.uuid4(),
+        approval=uuid.uuid4(),
+        evidence=uuid.uuid4(),
     )
     if route.path.endswith("documents") and route.method == "POST":
         # Uploads send the file itself as the body.

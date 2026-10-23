@@ -84,7 +84,7 @@ def _changes(values: Mapping[str, Any], before: Any = None) -> dict[str, FieldCh
     }
 
 
-async def _supersede(
+async def supersede(
     session: Session, model: Any, series: dict[str, Any], effective_from: date, what: str
 ) -> uuid.UUID | None:
     """Close the open row of one series at `effective_from`. Refuses when a row of the series
@@ -325,7 +325,7 @@ class ConfigService:
                 raise ProblemError(ProblemType.NOT_FOUND)
             if shift.status != ShiftStatus.ACTIVE:
                 raise conflict("shift.archived", "This shift is archived. Make it active first.")
-            replaced = await _supersede(
+            replaced = await supersede(
                 session, ShiftVersion, {"shift_id": shift.id}, values.effective_from, "shift"
             )
             latest = await session.find_one(ShiftVersion, {"shift_id": shift.id}, sort=[("version_no", -1)])
@@ -394,7 +394,7 @@ class ConfigService:
                 )
             await self._active_shift(session, shift_id)
             await session.lock(f"attendance_default:{location_id}")
-            replaced = await _supersede(
+            replaced = await supersede(
                 session,
                 LocationDefaultShift,
                 {"location_id": location_id},
@@ -468,7 +468,7 @@ class ConfigService:
                     skipped += 1
                     continue
                 await session.lock(f"attendance_assignment:{employee_id}")
-                replaced = await _supersede(
+                replaced = await supersede(
                     session,
                     ShiftAssignment,
                     {"employee_id": employee_id},
@@ -548,7 +548,7 @@ class ConfigService:
                 await self._active_shift(session, scope_id)
             await session.lock(f"attendance_policy:{scope_type}:{scope_id}")
             same_scope = {"scope_type": scope_type, "scope_id": scope_id}
-            replaced = await _supersede(
+            replaced = await supersede(
                 session, AttendancePolicy, same_scope, values["effective_from"], "policy"
             )
             policy = AttendancePolicy(**values, created_by=actor.user_id)

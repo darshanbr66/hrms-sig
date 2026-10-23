@@ -148,6 +148,15 @@ Built in revision 0024 (2026-10-15): **emergency_contacts** (`employee_id`, `pri
 
 ### 4.5 attendance
 
+**Location verification (2026-10-23, ADR-031).** Four collections, no change to existing ones (so no backfill migration; `migrate` creates them, their validators and indexes):
+
+- **attendance_location_checks**: per office (`location_id`), effective-dated versions never edited once started (`effective_to` set once, `supersede`): `mode` (`off`, `verify`), the office's `latitude`/`longitude` (organization data), `radius_m` 10–5000, `max_accuracy_m` 1–5000, `max_position_age_seconds` 10–600, `review_unverified`. No value is seeded or assumed (ADR-026).
+- **attendance_office_approvals**: offices a person may clock at besides their job's location; effective-dated, ended by `effective_to`, never deleted.
+- **attendance_location_evidence**: append-only (insert and read only for the API's database user), unique per event: `outcome` (`verified`, `outside_radius`, `inconclusive`, `unverified`), `reason_codes`, the office and check version used, `radius_m` and `max_accuracy_m` then, `distance_m` rounded to 10 m (at most 10 000, with `distance_over_cap`), `accuracy_m` rounded up to 5 m, `position_age_seconds` (on the device's clock), `offices_considered`, `review_required`, `received_at` (server). **No coordinates.** The validator refuses a measured outcome without distance, accuracy and age, an unverified one with them or without a reason, and a verified one needing review.
+- **attendance_location_reviews**: append-only HR decisions (`decision`, fixed `reason_code`, optional `note` ≤ 500, `reviewed_by`, `supersedes`); unique `(evidence_id, supersedes)`, so two decisions can never replace the same state.
+
+Evidence never feeds day judging, overtime, corrections, reports or exports.
+
 Attendance is event-sourced. `attendance_events` is the source of truth; `attendance_days` is a projection. A separate `breaks` table is unnecessary: breaks are `BREAK_START`/`BREAK_END` event pairs and their durations are part of the day projection.
 
 **Architecture versus policy.** The tables below hold *mechanism* (what can be configured) and *values* (what Sigvitas configures). No production row is seeded. `product-requirements.md` §6.12 lists every parameter and its owner.
@@ -408,6 +417,7 @@ Business rules that depend on time zones, policies or permissions live in the se
 | Export files | 24 hours |
 | Idempotency keys | 24 hours |
 | Chat messages (Future) | Configurable; default to be decided |
+| Location evidence and reviews (ADR-031) | **Not decided.** Blocker for production activation (`module-acceptance.md` §15.1). Nothing is purged until it is decided and implemented with attendance retention; no TTL. No coordinates are stored at all. |
 
 ### 9.1 Permanent erasure of one person's data (2026-10-23)
 
@@ -430,6 +440,7 @@ What happens to each kind of record, with the reason. Retention periods are stil
 | Leave request reasons; correction reasons and decision notes | Overwritten with `[erased]` (`__erasable__`) | Free text that may hold personal details |
 | Leave requests, decisions (with notes), ledger (with adjustment reasons) | Kept | Balances and payroll depend on them; decisions and ledger are append-only (rule 5) |
 | Attendance events (with the IP and browser they were recorded from), voids, correction items, shift assignments | Kept | Append-only attendance history (rule 5) |
+| Location evidence and reviews (with any review note), office approvals | Kept | Append-only history with no coordinates; approvals hold no personal data. Retention period still to be decided (ADR-031) |
 | Document files | Deleted by the worker | Stored files; never downloadable or scanned after approval (`409 document.erased`) |
 | Document titles and file names | Overwritten with `[erased]` | |
 | Document and version records (category, dates, size, checksum, scan result) | Kept | The record of what was held, with no content |

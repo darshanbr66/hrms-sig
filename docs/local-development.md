@@ -79,6 +79,7 @@ documents, tickets or chat.
    | Audit witness | `AUDIT_WITNESS_EMAILS` | empty, or a fake address; locally the witness goes to Mailpit |
    | Audit retention | `AUDIT_LOG_RETENTION_MONTHS`, `SECURITY_EVENTS_RETENTION_MONTHS` | empty (nothing is removed locally) |
    | Document uploads | `DOCUMENT_UPLOADS_ENABLED` | `false` (uploads refused); `true` needs ClamAV |
+   | Office location checks | `LOCATION_CHECKS_ENABLED` | `false` (no check can be added, none applies); `true` to try them locally (`module-acceptance.md` §15.4) |
    | Virus scanning (ClamAV) | `CLAMAV_HOST` / `CLAMAV_PORT` | empty / `3310`; `127.0.0.1` with the `scan` profile |
 
    Documents and exports are stored in GridFS in the local database, so there is no bucket to

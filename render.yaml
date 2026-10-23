@@ -88,3 +88,7 @@ services:
       # No ClamAV in this deployment: uploads are refused rather than accepted unscanned (DOC-5).
       - key: DOCUMENT_UPLOADS_ENABLED
         value: "false"
+      # Office location verification (ADR-031) stays off until its retention purge, privacy
+      # notice approval and one-office pilot are in place (docs/module-acceptance.md 15.1).
+      - key: LOCATION_CHECKS_ENABLED
+        value: "false"

@@ -35,6 +35,7 @@ Format: context → decision → alternatives considered → consequences.
 | 025 | Super admin least privilege and controlled elevation | Accepted (new in review) |
 | 026 | HR policy values are configuration, never code | Accepted (new in review) |
 | 030 | MongoDB Atlas as the only data platform; Render, Vercel and Resend | Accepted (project owner, 2026-10-20) |
+| 031 | Office location verification at clock-in and clock-out | Accepted for local implementation (project owner, 2026-10-23); production activation blocked (retention period, privacy notice approval) |
 
 Numbers 027–029 are unused: ADR-030 was referenced in the code under that number before it was written down.
 
@@ -256,6 +257,20 @@ Not included: global state libraries, CSS-in-JS, chart libraries (added only whe
   - **Jobs inside the API process** sleep with a sleeping web service, and put the worker's secrets (audit signing key, Resend key, worker database user) into the internet-facing process; the audit retention user is kept out of it, so retention is off until a separate worker exists. Acceptable only with the trade-offs in `deployment.md` §3.
   - **Retrieval for the AI layer (ADR-022)** no longer has pgvector; Atlas Vector Search is the candidate, decided when that work starts.
 - **Consequences.** CLAUDE.md rules 5, 13, 17, 19 and 20 are reworded for MongoDB. `docs/database-design.md`, `architecture.md` §3 and `security-architecture.md` §8 still describe the PostgreSQL design in detail; where they disagree with this ADR, this ADR and the code win, until those sections are rewritten.
+
+## ADR-031 Office location verification at clock-in and clock-out
+
+- **Status.** Approved for implementation by the project owner on 2026-10-23. **Production activation is blocked** until the retention period of location evidence and reviews is decided and implemented, and the privacy notice is approved by the designated privacy/compliance owner (`docs/module-acceptance.md` §15).
+- **Context.** HR wants to know whether people clock in and out at an office. Browser geolocation is coarse on desktops and laptops and can be spoofed; it cannot prove who pressed the button or where they were. People may work at more than one office, but an employee has exactly one job, and so one placed location, at a time (`people/models.py`).
+- **Decision.**
+  - A position is requested only when the person presses clock-in or clock-out, only when the server says a check applies, and never in the background. The browser sends the position or an explicit failure with the same clock request; the server computes the distance and the outcome (`verified`, `outside_radius`, `inconclusive`, `unverified`) with pure rules (`attendance/location_rules.py`) and stores one evidence record per event in the event's transaction.
+  - **Attendance is never refused because of location.** A mismatch or a failure flags the event for HR review; nothing else changes. Evidence is never read by day judging, overtime, corrections, reports or exports.
+  - **No precise coordinates are stored.** The position is used in memory and discarded; evidence keeps the outcome, reason codes, the distance rounded to 10 m (capped at 10 km), the accuracy rounded up to 5 m, the position's age and the configuration it was judged against.
+  - **Offices a person may clock at** are the location of their job on the work date plus offices approved for them (`attendance_office_approvals`, effective-dated). The approval is a separate record so the employment model (one job, one placed location) is unchanged.
+  - **Checks are configuration**, versioned per office (`attendance_location_checks`), set by HR admins; nothing is seeded and no value is assumed in code (ADR-026). Checks start nowhere: each office is turned on explicitly, and the first release is a one-office pilot.
+  - **HR review** is append-only and audited, within the reviewer's existing scope, never of one's own evidence; it never changes attendance. Attendance changes use the existing correction workflow.
+- **Installation switch.** `LOCATION_CHECKS_ENABLED` (environment, default `false` everywhere) gates the module: while off, no office check can be created or versioned and none applies to clock events. It is not a permission, so no HR admin or other role can override it. Turning it on in production is prohibited until the blockers above are resolved.
+- **Consequences.** Four new collections and two permissions (`attendance.location.review.all`, `attendance.location.assign.all`). Keeping precise coordinates later needs a new ADR, encryption, a separate deletable collection, an explicit retention job, a step-up permission with audited reads and an updated privacy notice.
 
 ---
 

@@ -1,3 +1,4 @@
+import { withSendTime, type LocationReport } from "../../lib/geolocation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { BadgeTone } from "../../design-system/Badge";
@@ -27,14 +28,24 @@ export function useToday(enabled = true) {
 
 /** Records one event. Each press gets its own idempotency key, so a retried request (a slow
  * network, a double tap) is recorded once (docs/api-architecture.md §3). */
+export interface ClockPress {
+  eventType: EventType;
+  /** What the browser reported, when the press is checked against an office (ADR-031). */
+  location?: LocationReport;
+}
+
 export function useClock() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (eventType: EventType) =>
+    mutationFn: ({ eventType, location }: ClockPress) =>
       unwrap(
         client.POST("/api/v1/me/attendance/events", {
           params: { header: { "Idempotency-Key": crypto.randomUUID() } },
-          body: { event_type: eventType, client_reported_at: new Date().toISOString() },
+          body: {
+            event_type: eventType,
+            client_reported_at: new Date().toISOString(),
+            ...(location ? { location: withSendTime(location) } : {}),
+          },
         }),
       ),
     onSuccess: async (today) => {

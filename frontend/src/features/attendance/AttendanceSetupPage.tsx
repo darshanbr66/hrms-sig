@@ -34,6 +34,7 @@ import { formatDate, localIsoDate, plural } from "../../lib/format";
 import { fieldMessages, ifMatch } from "../../lib/problem";
 import { useEmployeeSearch } from "../employees/queries";
 import { options, useLocations } from "../organization/queries";
+import { OfficeLocationsTab } from "./OfficeLocationsTab";
 import { ATTENDANCE_KEY, WEEKDAYS, describeWeeklyOffs, useShifts, type Policy, type Shift } from "./queries";
 
 type WeeklyOff = components["schemas"]["WeeklyOffValue"];
@@ -81,6 +82,7 @@ export function AttendanceSetupPage() {
           { id: "policies", label: "Policies", content: <PoliciesTab canManage={canPolicies} /> },
           ...(canAssign ? [{ id: "assign", label: "Assign shifts", content: <AssignTab /> }] : []),
           { id: "locks", label: "Locks", content: <LocksTab canManage={canPolicies} /> },
+          { id: "offices", label: "Office locations", content: <OfficeLocationsTab /> },
         ]}
       />
     </div>

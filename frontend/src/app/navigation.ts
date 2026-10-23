@@ -24,6 +24,7 @@ import {
   FileText,
   FolderCog,
   KeyRound,
+  MapPinned,
   LayoutDashboard,
   type LucideIcon,
   Scale,
@@ -88,6 +89,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         icon: ClipboardCheck,
         anyOf: ["attendance.correction.approve.team", "attendance.correction.approve.all"],
         end: true,
+      },
+      {
+        to: "/attendance/location-reviews",
+        label: "Location reviews",
+        icon: MapPinned,
+        anyOf: ["attendance.location.review.all"],
       },
       {
         to: "/leave/approvals",

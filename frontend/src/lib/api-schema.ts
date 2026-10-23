@@ -1750,6 +1750,137 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/attendance/location-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Location Checks
+         * @description Every version of every office's location check, newest first per office.
+         */
+        get: operations["list_location_checks_api_v1_attendance_location_checks_get"];
+        put?: never;
+        /**
+         * Create Location Check
+         * @description A new version of an office's check from a date (today or later); it closes the open one.
+         *     `mode: off` turns the check off from that date. Audited.
+         */
+        post: operations["create_location_check_api_v1_attendance_location_checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/office-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Office Approvals
+         * @description Offices people may clock at besides their job's location, within the reader's scope.
+         */
+        get: operations["list_office_approvals_api_v1_attendance_office_approvals_get"];
+        put?: never;
+        /**
+         * Create Office Approval
+         * @description Approve an office for a person from a date (today or later). Audited.
+         */
+        post: operations["create_office_approval_api_v1_attendance_office_approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/office-approvals/{approval_id}/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End Office Approval
+         * @description End an approval from a date (today or later). Audited.
+         */
+        post: operations["end_office_approval_api_v1_attendance_office_approvals__approval_id__end_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/location-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Location Reviews
+         * @description Clock events flagged for location review, newest first, within the reader's scope and
+         *     never the reader's own.
+         */
+        get: operations["list_location_reviews_api_v1_attendance_location_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/location-reviews/{evidence_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Location Review
+         * @description One flagged clock event with the day's events and the review history. Audited.
+         */
+        get: operations["get_location_review_api_v1_attendance_location_reviews__evidence_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/attendance/location-reviews/{evidence_id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Location Review
+         * @description Record a decision on a flagged clock event. It never changes the event; a change to the
+         *     attendance itself is a correction. A stale `supersedes` is refused (409). Audited.
+         */
+        post: operations["decide_location_review_api_v1_attendance_location_reviews__evidence_id__decisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/holiday-calendars": {
         parameters: {
             query?: never;
@@ -3167,6 +3298,34 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * CapturedLocation
+         * @description A position the browser reported for this press (ADR-031). Used to judge the event and
+         *     then discarded: it is never stored, logged or returned.
+         */
+        CapturedLocation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "captured";
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
+            /** Accuracy M */
+            accuracy_m: number;
+            /**
+             * Captured At
+             * Format: date-time
+             */
+            captured_at: string;
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
+        };
         /** @enum {string} */
         CarryModeValue: "none" | "capped" | "unlimited";
         /** CategoryCreate */
@@ -4045,6 +4204,21 @@ export interface components {
             event_type: components["schemas"]["EventTypeValue"];
             /** Client Reported At */
             client_reported_at?: string | null;
+            /** Location */
+            location?: (components["schemas"]["CapturedLocation"] | components["schemas"]["FailedLocation"]) | null;
+        };
+        /**
+         * EventLocationView
+         * @description The location check of one clock event: the outcome only, never a distance.
+         */
+        EventLocationView: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "verified" | "outside_radius" | "inconclusive" | "unverified";
+            /** Reason Codes */
+            reason_codes: string[];
         };
         /** @enum {string} */
         EventTypeValue: "CLOCK_IN" | "BREAK_START" | "BREAK_END" | "CLOCK_OUT";
@@ -4070,6 +4244,7 @@ export interface components {
             voided: boolean;
             /** Correction Id */
             correction_id: string | null;
+            location?: components["schemas"]["EventLocationView"] | null;
         };
         /** @enum {string} */
         ExcessValue: "lapse" | "keep";
@@ -4169,6 +4344,17 @@ export interface components {
         FactorList: {
             /** Items */
             items: components["schemas"]["Factor"][];
+        };
+        /**
+         * FailedLocation
+         * @description Why no position was reported for this press.
+         */
+        FailedLocation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "permission_denied" | "skipped" | "timeout" | "unavailable" | "unsupported";
         };
         /** FormerAccount */
         FormerAccount: {
@@ -4813,6 +4999,89 @@ export interface components {
             /** Items */
             items: components["schemas"]["LedgerEntryView"][];
         };
+        /** LocationCheckCreate */
+        LocationCheckCreate: {
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "off" | "verify";
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
+            /** Radius M */
+            radius_m: number;
+            /** Max Accuracy M */
+            max_accuracy_m: number;
+            /** Max Position Age Seconds */
+            max_position_age_seconds: number;
+            /** Review Unverified */
+            review_unverified: boolean;
+        };
+        /** LocationCheckList */
+        LocationCheckList: {
+            /** Items */
+            items: components["schemas"]["LocationCheckView"][];
+            /** Checks Enabled */
+            checks_enabled: boolean;
+        };
+        /** LocationCheckView */
+        LocationCheckView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /** Location Code */
+            location_code: string;
+            /** Location Name */
+            location_name: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "off" | "verify";
+            /** Latitude */
+            latitude: number;
+            /** Longitude */
+            longitude: number;
+            /** Radius M */
+            radius_m: number;
+            /** Max Accuracy M */
+            max_accuracy_m: number;
+            /** Max Position Age Seconds */
+            max_position_age_seconds: number;
+            /** Review Unverified */
+            review_unverified: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** LocationCreate */
         LocationCreate: {
             code: components["schemas"]["app__modules__org__schemas__Code"];
@@ -4823,6 +5092,81 @@ export interface components {
             country_code: string;
             /** Address */
             address?: string | null;
+        };
+        /** LocationEvidenceDetail */
+        LocationEvidenceDetail: {
+            evidence: components["schemas"]["LocationEvidenceView"];
+            /** Day Events */
+            day_events: components["schemas"]["EventView"][];
+            /** Reviews */
+            reviews: components["schemas"]["LocationReviewView"][];
+            /** Can Review */
+            can_review: boolean;
+        };
+        /** LocationEvidencePage */
+        LocationEvidencePage: {
+            /** Items */
+            items: components["schemas"]["LocationEvidenceView"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** LocationEvidenceView */
+        LocationEvidenceView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            employee: components["schemas"]["TeamMemberRef"];
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            event_type: components["schemas"]["EventTypeValue"];
+            /** Event Occurred At */
+            event_occurred_at: string | null;
+            /** Event Voided */
+            event_voided: boolean;
+            /**
+             * Work Date
+             * Format: date
+             */
+            work_date: string;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /** Location Name */
+            location_name: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "verified" | "outside_radius" | "inconclusive" | "unverified";
+            /** Reason Codes */
+            reason_codes: string[];
+            /** Distance M */
+            distance_m: number | null;
+            /** Distance Over Cap */
+            distance_over_cap: boolean;
+            /** Accuracy M */
+            accuracy_m: number | null;
+            /** Position Age Seconds */
+            position_age_seconds: number | null;
+            /** Radius M */
+            radius_m: number;
+            /** Max Accuracy M */
+            max_accuracy_m: number;
+            /** Offices Considered */
+            offices_considered: number;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            current_review: components["schemas"]["LocationReviewView"] | null;
         };
         /** LocationList */
         LocationList: {
@@ -4838,6 +5182,52 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+        };
+        /** LocationReviewCreate */
+        LocationReviewCreate: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accepted" | "not_accepted";
+            /**
+             * Reason Code
+             * @enum {string}
+             */
+            reason_code: "on_site_confirmed" | "device_or_signal_issue" | "approved_offsite_work" | "not_on_site_correction_needed" | "not_on_site_no_action" | "other";
+            /** Note */
+            note?: string | null;
+            /** Supersedes */
+            supersedes: string | null;
+        };
+        /** LocationReviewView */
+        LocationReviewView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accepted" | "not_accepted";
+            /**
+             * Reason Code
+             * @enum {string}
+             */
+            reason_code: "on_site_confirmed" | "device_or_signal_issue" | "approved_offsite_work" | "not_on_site_correction_needed" | "not_on_site_no_action" | "other";
+            /** Note */
+            note: string | null;
+            /** Reviewed By */
+            reviewed_by: string | null;
+            /**
+             * Reviewed At
+             * Format: date-time
+             */
+            reviewed_at: string;
+            /** Supersedes */
+            supersedes: string | null;
         };
         /** LocationUpdate */
         LocationUpdate: {
@@ -5049,6 +5439,73 @@ export interface components {
             link: string | null;
             /** Read */
             read: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** OfficeApprovalCreate */
+        OfficeApprovalCreate: {
+            /**
+             * Employee Id
+             * Format: uuid
+             */
+            employee_id: string;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+        };
+        /** OfficeApprovalEnd */
+        OfficeApprovalEnd: {
+            /**
+             * Effective To
+             * Format: date
+             */
+            effective_to: string;
+        };
+        /** OfficeApprovalList */
+        OfficeApprovalList: {
+            /** Items */
+            items: components["schemas"]["OfficeApprovalView"][];
+        };
+        /** OfficeApprovalView */
+        OfficeApprovalView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Employee Id
+             * Format: uuid
+             */
+            employee_id: string;
+            /** Employee Name */
+            employee_name: string;
+            /** Employee Code */
+            employee_code: string;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /** Location Name */
+            location_name: string;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /** Effective To */
+            effective_to: string | null;
             /**
              * Created At
              * Format: date-time
@@ -5981,6 +6438,11 @@ export interface components {
             allowed_events: components["schemas"]["EventTypeValue"][];
             /** Open Since */
             open_since: string | null;
+            /**
+             * Location Check
+             * @enum {string}
+             */
+            location_check: "off" | "requested";
             day: components["schemas"]["DayView"];
         };
         TokenInput: string;
@@ -9920,6 +10382,263 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SetupView"];
+                };
+            };
+        };
+    };
+    list_location_checks_api_v1_attendance_location_checks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationCheckList"];
+                };
+            };
+        };
+    };
+    create_location_check_api_v1_attendance_location_checks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationCheckCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationCheckView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_office_approvals_api_v1_attendance_office_approvals_get: {
+        parameters: {
+            query?: {
+                location_id?: string | null;
+                employee_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OfficeApprovalList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_office_approval_api_v1_attendance_office_approvals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OfficeApprovalCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OfficeApprovalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    end_office_approval_api_v1_attendance_office_approvals__approval_id__end_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OfficeApprovalEnd"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OfficeApprovalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_location_reviews_api_v1_attendance_location_reviews_get: {
+        parameters: {
+            query?: {
+                status?: "open" | "reviewed" | "all";
+                outcome?: ("outside_radius" | "inconclusive" | "unverified") | null;
+                location_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+                q?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationEvidencePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_location_review_api_v1_attendance_location_reviews__evidence_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evidence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationEvidenceDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_location_review_api_v1_attendance_location_reviews__evidence_id__decisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evidence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationReviewCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationReviewView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

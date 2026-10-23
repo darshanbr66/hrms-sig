@@ -33,12 +33,49 @@ class _Response(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CapturedLocation(BaseModel):
+    """A position the browser reported for this press (ADR-031). Used to judge the event and
+    then discarded: it is never stored, logged or returned."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["captured"]
+    latitude: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)]
+    longitude: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)]
+    # The browser's reported accuracy radius, in metres.
+    accuracy_m: Annotated[float, Field(gt=0, le=100_000, allow_inf_nan=False)]
+    # Both on the device's clock: when the position was taken and when it was sent.
+    captured_at: AwareDatetime
+    sent_at: AwareDatetime
+
+
+class FailedLocation(BaseModel):
+    """Why no position was reported for this press."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["permission_denied", "unavailable", "timeout", "unsupported", "skipped"]
+
+
 class EventCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_type: EventTypeValue
     # The device's clock, kept as metadata only; the server's time is the event time.
     client_reported_at: AwareDatetime | None = None
+    # Sent only when Today says the press is checked (`location_check`); optional for older
+    # clients. Never stops the event from being recorded.
+    location: Annotated[CapturedLocation | FailedLocation, Field(discriminator="status")] | None = None
+
+
+LocationOutcomeValue = Literal["verified", "outside_radius", "inconclusive", "unverified"]
+
+
+class EventLocationView(_Response):
+    """The location check of one clock event: the outcome only, never a distance."""
+
+    outcome: LocationOutcomeValue
+    reason_codes: list[str]
 
 
 class EventView(_Response):
@@ -49,6 +86,9 @@ class EventView(_Response):
     # Removed by an approved correction: shown, but no longer counted.
     voided: bool
     correction_id: uuid.UUID | None
+    # Shown to the person themselves and to location reviewers covering them; null otherwise,
+    # and for events no office check applied to.
+    location: EventLocationView | None = None
 
 
 class DayView(_Response):
@@ -89,6 +129,9 @@ class TodayView(_Response):
     allowed_events: list[EventTypeValue]
     # The work date of a session left open from an earlier day (a forgotten clock-out).
     open_since: date | None
+    # `requested` when the next press is checked against an office: the client then asks the
+    # browser for one position, at the press only (ADR-031).
+    location_check: Literal["off", "requested"]
     day: DayView
 
 
@@ -428,3 +471,136 @@ class SetupView(_Response):
     employees_in_scope: int
     without_shift: list[TeamMemberRef]
     without_policy: list[TeamMemberRef]
+
+
+# --- office location verification (ADR-031) ------------------------------------------------------
+
+
+class LocationCheckCreate(_Request):
+    location_id: uuid.UUID
+    # Today or later; past events keep the settings they were judged with.
+    effective_from: date
+    mode: Literal["off", "verify"]
+    latitude: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)]
+    longitude: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)]
+    radius_m: Annotated[int, Field(ge=10, le=5000)]
+    max_accuracy_m: Annotated[int, Field(ge=1, le=5000)]
+    max_position_age_seconds: Annotated[int, Field(ge=10, le=600)]
+    review_unverified: bool
+
+
+class LocationCheckView(_Response):
+    id: uuid.UUID
+    location_id: uuid.UUID
+    location_code: str
+    location_name: str
+    effective_from: date
+    effective_to: date | None
+    mode: Literal["off", "verify"]
+    # The office's position (organization data).
+    latitude: float
+    longitude: float
+    radius_m: int
+    max_accuracy_m: int
+    max_position_age_seconds: int
+    review_unverified: bool
+    created_at: datetime
+
+
+class LocationCheckList(_Response):
+    items: list[LocationCheckView]
+    # `LOCATION_CHECKS_ENABLED`: while false, checks cannot be added and none applies.
+    checks_enabled: bool
+
+
+class OfficeApprovalCreate(_Request):
+    employee_id: uuid.UUID
+    location_id: uuid.UUID
+    effective_from: date
+
+
+class OfficeApprovalEnd(_Request):
+    effective_to: date
+
+
+class OfficeApprovalView(_Response):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str
+    employee_code: str
+    location_id: uuid.UUID
+    location_name: str
+    effective_from: date
+    effective_to: date | None
+    created_at: datetime
+
+
+class OfficeApprovalList(_Response):
+    items: list[OfficeApprovalView]
+
+
+ReviewDecisionValue = Literal["accepted", "not_accepted"]
+ReviewReasonValue = Literal[
+    "on_site_confirmed",
+    "device_or_signal_issue",
+    "approved_offsite_work",
+    "not_on_site_correction_needed",
+    "not_on_site_no_action",
+    "other",
+]
+
+
+class LocationReviewView(_Response):
+    id: uuid.UUID
+    decision: ReviewDecisionValue
+    reason_code: ReviewReasonValue
+    note: str | None
+    reviewed_by: str | None
+    reviewed_at: datetime
+    supersedes: uuid.UUID | None
+
+
+class LocationEvidenceView(_Response):
+    id: uuid.UUID
+    employee: TeamMemberRef
+    event_id: uuid.UUID
+    event_type: EventTypeValue
+    event_occurred_at: datetime | None
+    # Removed by a correction since: the evidence stays, the event no longer counts.
+    event_voided: bool
+    work_date: date
+    location_id: uuid.UUID
+    location_name: str
+    outcome: LocationOutcomeValue
+    reason_codes: list[str]
+    # Rounded to 10 m; `distance_over_cap` means more than 10 km. No coordinates exist.
+    distance_m: int | None
+    distance_over_cap: bool
+    accuracy_m: int | None
+    position_age_seconds: int | None
+    radius_m: int
+    max_accuracy_m: int
+    offices_considered: int
+    received_at: datetime
+    current_review: LocationReviewView | None
+
+
+class LocationEvidencePage(_Response):
+    items: list[LocationEvidenceView]
+    next_cursor: str | None
+
+
+class LocationEvidenceDetail(_Response):
+    evidence: LocationEvidenceView
+    day_events: list[EventView]
+    reviews: list[LocationReviewView]
+    can_review: bool
+
+
+class LocationReviewCreate(_Request):
+    decision: ReviewDecisionValue
+    reason_code: ReviewReasonValue
+    # Optional; no unnecessary personal details.
+    note: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] | None = None
+    # The current review this one replaces, or null for the first; a stale value is refused (409).
+    supersedes: uuid.UUID | None

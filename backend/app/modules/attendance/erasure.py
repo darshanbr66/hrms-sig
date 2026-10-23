@@ -4,7 +4,9 @@
 Reasons and decision notes on corrections can hold personal details, so they are overwritten
 with the erasure marker. Clock events, voids and correction items are append-only attendance
 history (rule 5): they stay, under the erased record's ID, including the address and browser a
-clock event was recorded from. Shift assignments name no personal data and stay.
+clock event was recorded from. Location evidence and its reviews (ADR-031) are append-only too
+and stay; they never held coordinates. Shift assignments and office approvals name no personal
+data and stay.
 """
 
 import uuid
@@ -14,6 +16,9 @@ from app.modules.attendance.models import (
     AttendanceCorrectionItem,
     AttendanceEvent,
     AttendanceEventVoid,
+    LocationEvidence,
+    LocationReview,
+    OfficeApproval,
     ShiftAssignment,
 )
 from app.platform.db import ERASED, Session
@@ -55,6 +60,29 @@ async def erase_employee(session: Session, employee_id: uuid.UUID) -> Erased:
         len(events) + voids,
         "Clock-in, break and clock-out events and their voids, with the address and browser each was "
         "recorded from: append-only attendance history (CLAUDE.md rule 5).",
+    )
+    evidence = await session.count(LocationEvidence, {"employee_id": employee_id})
+    result.add(
+        "attendance.location_evidence",
+        Outcome.RETAINED,
+        evidence,
+        "Location checks of clock events: the outcome, reason codes, the distance to an office rounded "
+        "to 10 m and the reported accuracy. No coordinates were ever stored. Append-only attendance "
+        "history; the retention period is not decided yet (ADR-031).",
+    )
+    reviews = await session.count(LocationReview, {"employee_id": employee_id})
+    result.add(
+        "attendance.location_reviews",
+        Outcome.RETAINED,
+        reviews,
+        "HR decisions on those checks with their reason codes and any note: append-only review history.",
+    )
+    approvals = await session.count(OfficeApproval, {"employee_id": employee_id})
+    result.add(
+        "attendance.office_approvals",
+        Outcome.RETAINED,
+        approvals,
+        "Which offices the person could clock at, and when; no personal data.",
     )
     shifts = await session.count(ShiftAssignment, {"employee_id": employee_id})
     result.add(

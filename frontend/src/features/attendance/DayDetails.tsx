@@ -10,6 +10,7 @@ import { Badge } from "../../design-system/Badge";
 import { Button } from "../../design-system/Button";
 import { formatDate, formatDuration, formatTime } from "../../lib/format";
 import { eventLabel, DayStatusBadge, type Day } from "./DaysTable";
+import { OUTCOME_LABELS } from "./locationText";
 import { ANOMALY_LABELS, formatMinutes } from "./queries";
 
 type DayEvent = Day["events"][number];
@@ -110,6 +111,11 @@ export function DayDetails({
                     {event.voided ? <Badge tone="neutral">Removed by a correction</Badge> : null}
                     {!event.voided && event.correction_id ? (
                       <Badge tone="info">Added by a correction</Badge>
+                    ) : null}
+                    {event.location ? (
+                      <Badge tone={OUTCOME_LABELS[event.location.outcome].tone}>
+                        {OUTCOME_LABELS[event.location.outcome].label}
+                      </Badge>
                     ) : null}
                     <span className="text-xs text-neutral-600">{SOURCE_LABELS[event.source]}</span>
                   </div>

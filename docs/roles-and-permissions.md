@@ -69,7 +69,7 @@ Scopes: **self** is the account's own employee record; **team** is the reporting
 ### 3.3 HR (`hr`)
 
 - **Purpose:** day-to-day HR operations across the organization (or a department or location when the assignment says so).
-- **May:** read and edit employee records and personal details (personal reads audited); create employees; job changes, status changes and the one-step exit; emergency contacts; invite accounts, link accounts to employees and disable non-administrator accounts (`user.disable` with step-up); read all attendance, decide any correction and record corrections for others (SOD-7: never for themselves), including **Correct clock-out** for a session someone forgot to close, at the verified departure time with a reason; assign shifts; read all leave, decide any request, adjust balances, allocate, import opening balances and run the year end (SOD-6: never on their own balance); read and manage documents in `internal` and `personal` categories; publish company documents; attendance and leave exports (step-up).
+- **May:** read and edit employee records and personal details (personal reads audited); create employees; job changes, status changes and the one-step exit; emergency contacts; invite accounts, link accounts to employees and disable non-administrator accounts (`user.disable` with step-up); read all attendance, decide any correction and record corrections for others (SOD-7: never for themselves), including **Correct clock-out** for a session someone forgot to close, at the verified departure time with a reason; approve offices people may clock at and review flagged location checks (Location reviews, never their own; ADR-031); assign shifts; read all leave, decide any request, adjust balances, allocate, import opening balances and run the year end (SOD-6: never on their own balance); read and manage documents in `internal` and `personal` categories; publish company documents; attendance and leave exports (step-up).
 - **Pages:** Employees, Former employees (offboarded people with their account state; their accounts are not on Users), Organization (read), Leave overview, Leave balances, Reports, Attendance set-up (assignments), Users, plus the team pages at organization scope.
 - **Forbidden:** organization, shift, policy, leave-type, holiday and document-category configuration; `sensitive` document categories; employee export; role assignment; administrator accounts; security settings; compensation and payroll.
 
@@ -215,6 +215,8 @@ What a super admin can do toward these workflows: invite nobody directly (no `us
 | `shift.manage` |  | R |  |  |  |  | ● |  |  |  |  |
 | `attendance.policy.manage` |  | R |  |  |  |  | ● |  |  |  |  |
 | `shift.assign.all` |  | R |  |  |  | ● | ● |  |  |  |  |
+| `attendance.location.assign.all` |  | R |  |  |  | ● | ● |  |  |  |  |
+| `attendance.location.review.all` |  | R |  |  |  | ● | ● |  |  |  |  |
 | `leave.request.self` |  |  |  | ● |  |  |  |  |  |  |  |
 | `leave.read.self` |  |  |  | ● |  |  |  |  |  |  |  |
 | `leave.read.team` |  |  |  |  | ● |  |  |  |  |  |  |

@@ -148,6 +148,7 @@ export function today(overrides: Partial<Schemas["TodayView"]> = {}): Schemas["T
     server_time: "2026-10-05T03:30:00Z",
     allowed_events: ["CLOCK_IN"],
     open_since: null,
+    location_check: "off",
     day: attendanceDay(),
     ...overrides,
   };

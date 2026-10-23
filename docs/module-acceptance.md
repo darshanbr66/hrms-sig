@@ -38,7 +38,8 @@ Legend: **Yes** = evidence exists (automated tests, recorded in `m1-implementati
 | Employee records, job history, status, exit | Yes | Yes | Yes | Yes | Yes | Yes | No | Script §3.2. Identifiers and bank accounts not built (Sigvitas input). |
 | Personal tier, emergency contacts, self-service, directory | Yes | Yes | Yes | Yes | Yes | Yes | No | |
 | Account linking | Yes | Yes | Yes | Yes | Yes | Yes | No | |
-| Attendance events, team today | Yes | Yes | Yes | Yes | Yes | Yes | No | Location controls not built, see §6. |
+| Attendance events, team today | Yes | Yes | Yes | Yes | Yes | Yes | No | |
+| Office location verification | Yes | Yes | Yes | Yes | Yes | Yes | No | Local only; production activation blocked, §15. |
 | Shifts, attendance policies, day status | Yes | Yes | Yes | Yes | Yes | Yes | No | Policy preview and overtime approval not built. Workweek and working Saturdays: §7.1, script §3.4. |
 | Attendance corrections and locks | Yes | Yes | Yes | Yes | Yes | Yes | No | |
 | Holiday calendars, declared working days | Yes | Yes | Yes (0027 not yet applied to `hrms_local_test`) | Yes | Yes | Yes | No | Scripts §3.4 and §3.5. Entries editable (name, optional); calendars renamed, archived only when no location uses them, restored (2026-10-16, no migration). |
@@ -133,22 +134,7 @@ Built (revisions 0015 and 0020):
 - Signing in and clocking in are separate. Sign-ins are sessions and login history (`/me/login-history`); attendance is the `CLOCK_IN`, `BREAK_START`, `BREAK_END`, `CLOCK_OUT` events, recorded only when the person presses the button. Signing in never records an event.
 - Each event stores server time (never the client's), the work date in the location's time zone, the source (`web`, `mobile`, `correction`, `import`), who recorded it, the client-reported time as metadata only, the IP address and the user agent. Events are append-only; corrections add events or voids.
 
-Not built (roadmap Phase 2 item 12, ADR on attendance: "Geo/IP policies Phase 2"):
-
-- No geolocation is requested, stored or evaluated. There is no geofence, no IP allow-list per location and no office, outside or remote status. Because nothing asks for location, there is no permission-denied path either. The `Permissions-Policy` header already limits geolocation to the HRMS origin.
-- No work-from-home or on-duty request type.
-
-Proposed design, for approval before any work starts:
-
-1. Policy, not code: per location, an effective-dated attendance location policy with a mode (`off`, `record_only`, `warn`, `enforce`), office IP ranges and an optional geofence (centre and radius in metres), configured by HR admins under a new permission. No Sigvitas value is assumed; the default is `off`.
-2. Capture once, at the moment of the event only: the browser asks for one position when the person presses Clock in or Clock out, never in the background and never on sign-in. No continuous tracking, no tracking outside these presses.
-3. Store the result, not the trail: the computed classification (`office_network`, `inside_geofence`, `outside_geofence`, `location_unavailable`, `permission_denied`) and the reported accuracy, on the event. Raw coordinates are kept only if Sigvitas decides they are needed, encrypted, as restricted data with a retention period.
-4. Wording: the product says "reported location", never "present". A browser position can be wrong or spoofed; it is evidence for review, not proof of presence. An IP address in an office range shows the network used, not the person.
-5. Permission refused or unavailable: under `record_only` and `warn` the event is still recorded with that classification; under `enforce` the employee is told why it was refused and how to request a correction. Nobody is blocked from clocking in by a browser setting without HR having chosen `enforce`.
-6. Audit and access: classifications are visible to the employee, their manager (team scope) and HR; a new `attendance.location.read` permission covers any stored coordinates, and each read of them is audited.
-7. Privacy: a notice shown before the first request, covered by the DPDP obligations still to be confirmed (roadmap §6).
-
-Inputs needed from Sigvitas: whether location controls are wanted at all; which locations; mode per location; office IP ranges; geofence radius; whether raw coordinates may be kept and for how long; whether remote work is allowed and how it is requested.
+Office location verification is built for local use (2026-10-23, ADR-031) and **blocked for production** (§15). The earlier proposal in this section (modes up to `enforce`, IP ranges, stored coordinates) was replaced by the approved design: no enforcement, no IP ranges, no coordinates stored. Work-from-home and on-duty request types remain not built.
 
 ## 7. Workweek and leave policy configuration
 
@@ -345,4 +331,46 @@ un-backend.cmd` (it runs the migration, which creates `employee_erasures` and up
 3. As super admin B: open the request → type the code again, tick, Approve and delete data, step up. The status says records are erased and files are being removed; within a minute (jobs inside the API) it becomes complete. The result lists each kind of record as deleted, anonymized or kept, with counts.
 4. Check: the employee record shows "Erased employee"; the old account cannot sign in or be enabled; document downloads are refused; Mailpit receives nothing more for the old address. Audit log: `people.erasure.requested`, `people.employee.erased`, `people.erasure.completed`, with no name or email in them.
 5. Refusals: an employee who has not left, or whose account still holds super admin or system admin, cannot be requested; HR admin and system admin cannot open the page.
+
+## 15. Office location verification (ADR-031)
+
+Built 2026-10-23 for local use. Rules: ADR-031; `database-design.md` §4.5 (location verification); `authorization-model.md` §3.3; `security-architecture.md` §11. Tests: `backend/tests/unit/test_location_rules.py`, `backend/tests/integration/test_location_verification.py`, the authorization matrix; `frontend/src/features/LocationVerification.test.tsx`.
+
+### 15.1 Production activation blockers
+
+**The installation switch.** `LOCATION_CHECKS_ENABLED` (API environment, `false` by default in every environment, and pinned to `false` in `render.yaml`) gates the whole module. While it is `false`, creating or versioning an office check through any API path is refused (`503 location.checks_disabled`), even for HR admins, and no stored check applies to clock events: nothing is asked of browsers, no evidence is written, and clocking works exactly as without the module. It is an environment setting, not a permission or a registry setting, so no role can turn it on (tested in `test_location_switch.py`). **Setting it to `true` in production is prohibited until all of the following are resolved and recorded**, and then only for the one-office pilot:
+
+1. **Retention period** of location evidence (`attendance_location_evidence`) and reviews (`attendance_location_reviews`) is decided by Sigvitas, and the purge that enforces it is implemented and tested together with attendance retention (`database-design.md` §9). No period is assumed; nothing is purged today. A TTL index is not enough: records must leave together with the events they describe, with a count recorded.
+2. **Privacy notice** (§15.3, the text in `frontend/src/features/attendance/locationText.ts`, `PRIVACY_NOTICE`) is approved by the designated privacy/compliance owner, with the approved retention period written into it.
+3. **One-office pilot** first: one office, a known group of people, a review of the outcomes (how many inconclusive on laptops, how many outside) before a second office.
+4. The deployment blockers that apply to every module (`deployment.md` §2).
+
+### 15.2 Offices a person may clock at
+
+On each work date: the location of their job that day, plus every office approved for them that day (Attendance set-up → Office locations → an office → Approved people). Only active locations with a check whose mode is on count. Approvals start today or later and end from a chosen date; nothing is deleted, and every change is audited. To move someone permanently, change their job's location (the usual job change); to let someone also clock at another office, approve that office; to stop it, end the approval.
+
+When several offices apply, the best result wins (verified, then inconclusive, then outside, then not checked); among equals the office nearest relative to its radius, then the job's office, then the office code. One office is named in the evidence, with the check version used.
+
+### 15.3 Privacy notice (draft, needs the privacy/compliance owner's approval)
+
+Shown to employees from the clock card ("About location checks") before any location is requested:
+
+- What is collected: when you press Clock in, Start break, End break or Clock out, your browser is asked once for its reported position and how accurate it is. Nothing is collected at any other time, and never in the background.
+- Why: to check whether the press was made at one of the offices you are approved to work at. A mismatch is never a reason to refuse your attendance; it is flagged for HR to review.
+- What is kept: only the result of the check, the distance to the office rounded to 10 metres, the reported accuracy and when it was received. Your exact position is used for the check and then discarded; it is never stored.
+- Who can see it: you can see the result for your own clock events. HR and HR admins can review results within the people their role covers. Managers cannot see them. Nobody can review their own.
+- How long it is kept: **to be decided** (blocker 1). It will be stated here before location checks are turned on.
+- Your choice: you can block location access in your browser or continue without location. Your attendance is still recorded and the event is marked as not checked.
+- Limits: a browser position can be wrong, especially on laptops, and can be changed by someone who tries. It is evidence for review, not proof of where anyone was.
+
+### 15.4 Local acceptance and a one-office pilot (local only)
+
+Use the local test organization (`.\run-backend-local-test.cmd` or `.\run-backend.cmd`), never the live database, with `LOCATION_CHECKS_ENABLED=true` in your local `.env` (the default `false` hides the module: Office locations then says checks are turned off). Geolocation needs a secure context: `http://localhost:5173` works; another host needs HTTPS.
+
+1. As an HR admin: Time setup → Attendance set-up → Office locations → Add an office check. Choose **one** office, today's date, checks on, the office's latitude and longitude (typed, or "Use my current position" while at the office), radius 150 m, accepted accuracy 100 m, maximum position age 120 s, unchecked presses sent to review. Save. The audit log shows `attendance.location_check.created`.
+2. As HR: open the same office → Approved people → approve one person whose job is at another office. The audit log shows `attendance.office_approval.created`.
+3. As an employee of that office: the clock card says the reported location is checked; "About location checks" shows the notice. Press Clock in and allow location: the card says the result. Try again with location blocked in the browser, and with "Continue without location": the press is recorded each time and the result explains why it was not checked.
+4. As HR: Attendance → Location reviews lists the flagged presses (not your own). Open one: the outcome, rounded distance and accuracy, the day's events, no coordinates. Record a decision with a reason; change it (the history keeps both); "Record a correction" opens the usual HR correction. The audit log shows `attendance.location.evidence_read` and `attendance.location.reviewed`; the clock event is unchanged.
+5. As a manager: the team's days show no location outcome and Location reviews is not offered.
+6. To stop the pilot: Office locations → New version → from tomorrow, checks off.
 

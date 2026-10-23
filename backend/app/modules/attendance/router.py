@@ -2,6 +2,7 @@
 register and report, corrections, and shift and policy configuration."""
 
 import uuid
+from collections.abc import Mapping
 from datetime import date
 from typing import Annotated, Any, Final, Literal
 
@@ -26,6 +27,15 @@ from app.modules.attendance.corrections import (
     field_error,
 )
 from app.modules.attendance.days import JudgedDay
+from app.modules.attendance.location_rules import Position, Reason
+from app.modules.attendance.locations import (
+    ApprovalRecord,
+    CheckRecord,
+    EventLocation,
+    LocationService,
+    QueueItem,
+    ReviewRecord,
+)
 from app.modules.attendance.models import AttendanceLock
 from app.modules.attendance.service import AttendanceService, PeriodTotals, TeamMember, Today
 from app.modules.attendance.timeline import EventType
@@ -84,7 +94,7 @@ def _sent(body: BaseModel) -> dict[str, Any]:
     return {name: getattr(body, name) for name in body.model_fields_set}
 
 
-def _day(day: JudgedDay) -> s.DayView:
+def _day(day: JudgedDay, outcomes: Mapping[uuid.UUID, EventLocation] | None = None) -> s.DayView:
     totals, summary = day.totals, day.summary
     return s.DayView(
         work_date=day.work_date,
@@ -115,6 +125,7 @@ def _day(day: JudgedDay) -> s.DayView:
                 source=item.event.source,
                 voided=item.voided,
                 correction_id=item.event.correction_id,
+                location=_location((outcomes or {}).get(item.event.id)),
             )
             for item in day.events
         ],
@@ -130,7 +141,29 @@ def _today(today: Today) -> s.TodayView:
         server_time=today.server_time,
         allowed_events=[event.value for event in sorted(today.allowed, key=order.index)],
         open_since=today.open_since,
-        day=_day(today.day),
+        location_check="requested" if today.location_check else "off",
+        day=_day(today.day, today.event_locations),
+    )
+
+
+def _location(found: EventLocation | None) -> s.EventLocationView | None:
+    if found is None:
+        return None
+    return s.EventLocationView(outcome=found.outcome, reason_codes=list(found.reason_codes))
+
+
+def _report(body: s.CapturedLocation | s.FailedLocation | None) -> Position | Reason | None:
+    """What the browser reported, in the rules' terms; the coordinates stay in memory."""
+    if body is None:
+        return None
+    if isinstance(body, s.FailedLocation):
+        return Reason(body.status)
+    return Position(
+        latitude=body.latitude,
+        longitude=body.longitude,
+        accuracy_m=body.accuracy_m,
+        captured_at=body.captured_at,
+        sent_at=body.sent_at,
     )
 
 
@@ -198,6 +231,7 @@ async def record_attendance_event(
         event_type=EventType(body.event_type),
         idempotency_key=idempotency_key,
         client_reported_at=body.client_reported_at,
+        location=_report(body.location),
     )
     return _today(today)
 
@@ -209,8 +243,8 @@ async def my_attendance_days(
     start: From,
     end: To,
 ) -> s.DayList:
-    days, zone = await attendance.days(actor, None, start, end)
-    return s.DayList(time_zone=zone, items=[_day(day) for day in days])
+    days, zone, outcomes = await attendance.days(actor, None, start, end)
+    return s.DayList(time_zone=zone, items=[_day(day, outcomes) for day in days])
 
 
 @router.get("/employees/{employee_id}/attendance/days", response_model=s.DayList)
@@ -221,8 +255,8 @@ async def employee_attendance_days(
     start: From,
     end: To,
 ) -> s.DayList:
-    days, zone = await attendance.days(actor, employee_id, start, end)
-    return s.DayList(time_zone=zone, items=[_day(day) for day in days])
+    days, zone, outcomes = await attendance.days(actor, employee_id, start, end)
+    return s.DayList(time_zone=zone, items=[_day(day, outcomes) for day in days])
 
 
 # --- team, register, report -------------------------------------------------------------------
@@ -820,3 +854,255 @@ async def attendance_setup(
         without_shift=[_ref(c) for c in gaps.without_shift],
         without_policy=[_ref(c) for c in gaps.without_policy],
     )
+
+
+# --- office location verification (ADR-031) --------------------------------------------------
+
+
+def location_service(request: Request) -> LocationService:
+    value: LocationService = request.app.state.location_service
+    return value
+
+
+Locations = Annotated[LocationService, Depends(location_service)]
+
+
+def _check_view(record: CheckRecord) -> s.LocationCheckView:
+    check = record.check
+    return s.LocationCheckView(
+        id=check.id,
+        location_id=check.location_id,
+        location_code=record.location_code,
+        location_name=record.location_name,
+        effective_from=check.effective_from,
+        effective_to=check.effective_to,
+        mode=check.mode,
+        latitude=check.latitude,
+        longitude=check.longitude,
+        radius_m=check.radius_m,
+        max_accuracy_m=check.max_accuracy_m,
+        max_position_age_seconds=check.max_position_age_seconds,
+        review_unverified=check.review_unverified,
+        created_at=check.created_at,
+    )
+
+
+def _approval_view(record: ApprovalRecord) -> s.OfficeApprovalView:
+    approval = record.approval
+    return s.OfficeApprovalView(
+        id=approval.id,
+        employee_id=approval.employee_id,
+        employee_name=record.employee_name,
+        employee_code=record.employee_code,
+        location_id=approval.location_id,
+        location_name=record.location_name,
+        effective_from=approval.effective_from,
+        effective_to=approval.effective_to,
+        created_at=approval.created_at,
+    )
+
+
+def _review_view(record: ReviewRecord) -> s.LocationReviewView:
+    review = record.review
+    return s.LocationReviewView(
+        id=review.id,
+        decision=review.decision,
+        reason_code=review.reason_code,
+        note=review.note,
+        reviewed_by=record.reviewer,
+        reviewed_at=review.reviewed_at,
+        supersedes=review.supersedes,
+    )
+
+
+def _evidence_view(item: QueueItem, reviewer: str | None = None) -> s.LocationEvidenceView:
+    evidence = item.evidence
+    return s.LocationEvidenceView(
+        id=evidence.id,
+        employee=s.TeamMemberRef(
+            id=evidence.employee_id,
+            name=item.employee_name,
+            employee_code=item.employee_code,
+            department=None,
+            designation=None,
+            location=None,
+        ),
+        event_id=evidence.event_id,
+        event_type=evidence.event_type,
+        event_occurred_at=item.event_occurred_at,
+        event_voided=item.event_voided,
+        work_date=evidence.work_date,
+        location_id=evidence.location_id,
+        location_name=item.location_name,
+        outcome=evidence.outcome,
+        reason_codes=list(evidence.reason_codes),
+        distance_m=evidence.distance_m,
+        distance_over_cap=evidence.distance_over_cap,
+        accuracy_m=evidence.accuracy_m,
+        position_age_seconds=evidence.position_age_seconds,
+        radius_m=evidence.radius_m,
+        max_accuracy_m=evidence.max_accuracy_m,
+        offices_considered=evidence.offices_considered,
+        received_at=evidence.received_at,
+        current_review=_review_view(ReviewRecord(item.current, reviewer)) if item.current else None,
+    )
+
+
+@router.get("/attendance/location-checks", response_model=s.LocationCheckList)
+async def list_location_checks(
+    locations: Locations, actor: Annotated[Actor, requires("shift.read")]
+) -> s.LocationCheckList:
+    """Every version of every office's location check, newest first per office."""
+    return s.LocationCheckList(
+        items=[_check_view(record) for record in await locations.checks(actor)],
+        checks_enabled=locations.checks_enabled,
+    )
+
+
+@router.post(
+    "/attendance/location-checks", response_model=s.LocationCheckView, status_code=status.HTTP_201_CREATED
+)
+async def create_location_check(
+    body: s.LocationCheckCreate,
+    request: Request,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.policy.manage")],
+) -> s.LocationCheckView:
+    """A new version of an office's check from a date (today or later); it closes the open one.
+    `mode: off` turns the check off from that date. Audited."""
+    record = await locations.create_check(actor, RequestContext.from_request(request), body.model_dump())
+    return _check_view(record)
+
+
+@router.get("/attendance/office-approvals", response_model=s.OfficeApprovalList)
+async def list_office_approvals(
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.assign")],
+    location_id: uuid.UUID | None = None,
+    employee_id: uuid.UUID | None = None,
+) -> s.OfficeApprovalList:
+    """Offices people may clock at besides their job's location, within the reader's scope."""
+    found = await locations.approvals(actor, location_id=location_id, employee_id=employee_id)
+    return s.OfficeApprovalList(items=[_approval_view(record) for record in found])
+
+
+@router.post(
+    "/attendance/office-approvals", response_model=s.OfficeApprovalView, status_code=status.HTTP_201_CREATED
+)
+async def create_office_approval(
+    body: s.OfficeApprovalCreate,
+    request: Request,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.assign")],
+) -> s.OfficeApprovalView:
+    """Approve an office for a person from a date (today or later). Audited."""
+    record = await locations.approve(
+        actor,
+        RequestContext.from_request(request),
+        employee_id=body.employee_id,
+        location_id=body.location_id,
+        effective_from=body.effective_from,
+    )
+    return _approval_view(record)
+
+
+@router.post("/attendance/office-approvals/{approval_id}/end", response_model=s.OfficeApprovalView)
+async def end_office_approval(
+    approval_id: uuid.UUID,
+    body: s.OfficeApprovalEnd,
+    request: Request,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.assign")],
+) -> s.OfficeApprovalView:
+    """End an approval from a date (today or later). Audited."""
+    record = await locations.end_approval(
+        actor, RequestContext.from_request(request), approval_id, body.effective_to
+    )
+    return _approval_view(record)
+
+
+@router.get("/attendance/location-reviews", response_model=s.LocationEvidencePage)
+async def list_location_reviews(
+    *,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.review")],
+    review_status: Annotated[Literal["open", "reviewed", "all"], Query(alias="status")] = "open",
+    outcome: Literal["outside_radius", "inconclusive", "unverified"] | None = None,
+    location_id: uuid.UUID | None = None,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
+    q: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=400)] = None,
+) -> s.LocationEvidencePage:
+    """Clock events flagged for location review, newest first, within the reader's scope and
+    never the reader's own."""
+    queue = await locations.queue(
+        actor,
+        status=review_status,
+        outcome=outcome,
+        location_id=location_id,
+        start=start,
+        end=end,
+        text=q,
+        after=decode_key_cursor(cursor),
+        limit=limit,
+    )
+    return s.LocationEvidencePage(
+        items=[_evidence_view(item) for item in queue.items], next_cursor=encode_key_cursor(queue.next_after)
+    )
+
+
+@router.get("/attendance/location-reviews/{evidence_id}", response_model=s.LocationEvidenceDetail)
+async def get_location_review(
+    evidence_id: uuid.UUID,
+    request: Request,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.review")],
+) -> s.LocationEvidenceDetail:
+    """One flagged clock event with the day's events and the review history. Audited."""
+    detail = await locations.detail(actor, RequestContext.from_request(request), evidence_id)
+    reviews = [_review_view(record) for record in detail.reviews]
+    current = detail.reviews[-1].reviewer if detail.reviews else None
+    return s.LocationEvidenceDetail(
+        evidence=_evidence_view(detail.item, current),
+        day_events=[
+            s.EventView(
+                id=record.event.id,
+                event_type=record.event.event_type,
+                occurred_at=record.event.occurred_at,
+                source=record.event.source,
+                voided=record.voided,
+                correction_id=record.event.correction_id,
+            )
+            for record in detail.day_events
+        ],
+        reviews=reviews,
+        can_review=detail.can_review,
+    )
+
+
+@router.post(
+    "/attendance/location-reviews/{evidence_id}/decisions",
+    response_model=s.LocationReviewView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def decide_location_review(
+    evidence_id: uuid.UUID,
+    body: s.LocationReviewCreate,
+    request: Request,
+    locations: Locations,
+    actor: Annotated[Actor, requires("attendance.location.review")],
+) -> s.LocationReviewView:
+    """Record a decision on a flagged clock event. It never changes the event; a change to the
+    attendance itself is a correction. A stale `supersedes` is refused (409). Audited."""
+    review = await locations.decide(
+        actor,
+        RequestContext.from_request(request),
+        evidence_id,
+        decision=body.decision,
+        reason_code=body.reason_code,
+        note=body.note,
+        supersedes=body.supersedes,
+    )
+    return _review_view(ReviewRecord(review, None))

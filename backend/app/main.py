@@ -24,6 +24,7 @@ from app.modules.access.service import AccessService
 from app.modules.attendance import router as attendance_router
 from app.modules.attendance.config import ConfigService as AttendanceConfigService
 from app.modules.attendance.corrections import CorrectionService
+from app.modules.attendance.locations import LocationService
 from app.modules.attendance.service import AttendanceService
 from app.modules.audit import router as audit_router
 from app.modules.documents import router as documents_router
@@ -181,10 +182,21 @@ def create_app(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer
         )
         app.state.attendance_service = AttendanceService(
-            database=database, clock=app_clock, authorizer=authorizer, rate_limiter=limiter
+            database=database,
+            clock=app_clock,
+            authorizer=authorizer,
+            rate_limiter=limiter,
+            location_checks_enabled=settings.location_checks_enabled,
         )
         app.state.correction_service = CorrectionService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer, rate_limiter=limiter
+        )
+        app.state.location_service = LocationService(
+            database=database,
+            clock=app_clock,
+            audit=audit,
+            authorizer=authorizer,
+            checks_enabled=settings.location_checks_enabled,
         )
         app.state.attendance_config_service = AttendanceConfigService(
             database=database, clock=app_clock, audit=audit, authorizer=authorizer

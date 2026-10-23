@@ -114,6 +114,9 @@ _HR: Final = frozenset(
         "attendance.correction.create.all",
         "attendance.export",
         "shift.assign.all",
+        # ADR-031: within the role's scope; never one's own evidence.
+        "attendance.location.assign.all",
+        "attendance.location.review.all",
         "leave.read.all",
         "leave.request.approve.all",
         "leave.balance.adjust",

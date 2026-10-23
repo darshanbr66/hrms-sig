@@ -1,5 +1,5 @@
 """Attendance (docs/database-design.md §4.5): events; shifts, policies, corrections, voids and
-locks.
+locks; office location checks, office approvals, location evidence and its reviews (ADR-031).
 
 Events, voids and correction items are append-only. Versioned documents (shift versions,
 location default shifts, shift assignments, policies) change only to close an open range, and
@@ -451,3 +451,223 @@ class AttendanceLock(Record):
     released_by: uuid.UUID | None = None
     released_at: datetime | None = None
     release_reason: str | None = None
+
+
+# --- office location verification (ADR-031) ----------------------------------------------------
+
+
+class CheckMode(StrEnum):
+    # A version that turns the office's check off from its date (history is kept).
+    OFF = "off"
+    VERIFY = "verify"
+
+
+class ReviewDecision(StrEnum):
+    ACCEPTED = "accepted"
+    NOT_ACCEPTED = "not_accepted"
+
+
+# A fixed list, so the review history is consistent and holds as little free text as possible.
+REVIEW_REASONS: Final[dict[str, frozenset[str]]] = {
+    "on_site_confirmed": frozenset({ReviewDecision.ACCEPTED}),
+    "device_or_signal_issue": frozenset({ReviewDecision.ACCEPTED}),
+    "approved_offsite_work": frozenset({ReviewDecision.ACCEPTED}),
+    "not_on_site_correction_needed": frozenset({ReviewDecision.NOT_ACCEPTED}),
+    "not_on_site_no_action": frozenset({ReviewDecision.NOT_ACCEPTED}),
+    "other": frozenset({ReviewDecision.ACCEPTED, ReviewDecision.NOT_ACCEPTED}),
+}
+LOCATION_OUTCOMES: Final = ("verified", "outside_radius", "inconclusive", "unverified")
+LOCATION_REASONS: Final = (
+    "low_accuracy",
+    "boundary",
+    "permission_denied",
+    "unavailable",
+    "timeout",
+    "unsupported",
+    "skipped",
+    "not_provided",
+    "stale_position",
+    "invalid_timestamp",
+)
+_MEASURED: Final = ("verified", "outside_radius", "inconclusive")
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class LocationCheck(Record):
+    """One version of an office's location check: where the office is and how a reported
+    position is judged against it. Every value is Sigvitas's (ADR-026). The office's position is
+    organization data, not personal data. A version that already started is never edited; a new
+    one starts on a date and closes the open one (`mode = off` turns the check off)."""
+
+    __collection__ = "attendance_location_checks"
+    __deletable__ = False
+    __mutable__ = _VERSIONED
+    __set_once__ = _VERSIONED
+    __indexes__ = (
+        Index(
+            asc("organization_id", "location_id", "effective_from"),
+            name="ix_attendance_location_checks_location",
+        ),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {"mode": allowed(CheckMode)}
+    __expr_rules__ = (
+        _OPEN_RANGE,
+        {"$and": [{"$gte": ["$latitude", -90]}, {"$lte": ["$latitude", 90]}]},
+        {"$and": [{"$gte": ["$longitude", -180]}, {"$lte": ["$longitude", 180]}]},
+        _between("radius_m", 10, 5000),
+        _between("max_accuracy_m", 1, 5000),
+        _between("max_position_age_seconds", 10, 600),
+    )
+
+    location_id: uuid.UUID
+    effective_from: date
+    effective_to: date | None = None
+    mode: str
+    latitude: float
+    longitude: float
+    radius_m: int
+    max_accuracy_m: int
+    max_position_age_seconds: int
+    # Whether events whose position could not be checked (denied, unavailable, stale...) are
+    # sent to HR review.
+    review_unverified: bool
+    created_by: uuid.UUID
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class OfficeApproval(Record):
+    """An office a person may clock at besides the location of their job. Effective-dated; it
+    ends by closing its range, never by deletion. One open approval per person and office."""
+
+    __collection__ = "attendance_office_approvals"
+    __deletable__ = False
+    __mutable__ = _VERSIONED
+    __set_once__ = _VERSIONED
+    __indexes__ = (
+        Index(
+            asc("organization_id", "employee_id", "location_id", "effective_from"),
+            name="ix_attendance_office_approvals_employee",
+        ),
+        Index(
+            asc("organization_id", "location_id", "effective_from"),
+            name="ix_attendance_office_approvals_location",
+        ),
+    )
+    __expr_rules__ = (_OPEN_RANGE,)
+
+    employee_id: uuid.UUID
+    location_id: uuid.UUID
+    effective_from: date
+    effective_to: date | None = None
+    created_by: uuid.UUID
+    created_at: datetime = dataclasses.field(default_factory=utcnow)
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class LocationEvidence(Record):
+    """What a clock event's reported position was judged as (append-only, one per event). No
+    coordinates: the distance to the chosen office rounded to 10 m (at most 10 km), the reported
+    accuracy rounded up to 5 m, the position's age on the device, and the configuration used."""
+
+    __collection__ = "attendance_location_evidence"
+    __append_only__ = True
+    __indexes__ = (
+        Index(asc("organization_id", "event_id"), name="uq_attendance_location_evidence_event", unique=True),
+        Index(
+            asc("organization_id", "review_required", "received_at", "_id"),
+            name="ix_attendance_location_evidence_queue",
+        ),
+        Index(
+            asc("organization_id", "employee_id", "work_date"),
+            name="ix_attendance_location_evidence_employee",
+        ),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "event_type": allowed(EVENT_TYPES),
+        "outcome": allowed(LOCATION_OUTCOMES),
+        "reason_codes": {"maxItems": 3, "items": {"enum": list(LOCATION_REASONS)}},
+    }
+    __expr_rules__ = (
+        # Measured outcomes carry a distance, an accuracy and an age; unverified ones no distance
+        # and no accuracy, and always a reason.
+        {
+            "$or": [
+                {
+                    "$and": [
+                        {"$in": ["$outcome", list(_MEASURED)]},
+                        {"$ne": ["$distance_m", None]},
+                        {"$ne": ["$accuracy_m", None]},
+                        {"$ne": ["$position_age_seconds", None]},
+                    ]
+                },
+                {
+                    "$and": [
+                        {"$eq": ["$outcome", "unverified"]},
+                        {"$eq": ["$distance_m", None]},
+                        {"$eq": ["$accuracy_m", None]},
+                        {"$gt": [{"$size": "$reason_codes"}, 0]},
+                    ]
+                },
+            ]
+        },
+        {"$or": [{"$ne": ["$outcome", "verified"]}, {"$not": ["$review_required"]}]},
+        {"$or": [{"$ne": ["$outcome", "verified"]}, {"$eq": [{"$size": "$reason_codes"}, 0]}]},
+        {"$or": [{"$eq": ["$distance_m", None]}, _between("distance_m", 0, 10000)]},
+        {"$or": [{"$eq": ["$accuracy_m", None]}, _between("accuracy_m", 0, 10000)]},
+        {"$or": [{"$not": ["$distance_over_cap"]}, {"$eq": ["$distance_m", 10000]}]},
+    )
+
+    event_id: uuid.UUID
+    employee_id: uuid.UUID
+    work_date: date
+    event_type: str
+    # The office and the check version the position was judged against.
+    location_id: uuid.UUID
+    check_id: uuid.UUID
+    radius_m: int
+    max_accuracy_m: int
+    # How many offices the person could clock at with a check that day.
+    offices_considered: int
+    outcome: str
+    reason_codes: list[str] = dataclasses.field(default_factory=list)
+    distance_m: int | None = None
+    distance_over_cap: bool = False
+    accuracy_m: int | None = None
+    position_age_seconds: int | None = None
+    review_required: bool
+    # Server time; the device's times are never trusted.
+    received_at: datetime
+
+
+@dataclasses.dataclass(kw_only=True, eq=False)
+class LocationReview(Record):
+    """An HR decision on one piece of evidence (append-only). The newest is the current one;
+    each names the one it replaces, and only one review may replace a given one (unique index),
+    so two reviewers can never both decide on the same state."""
+
+    __collection__ = "attendance_location_reviews"
+    __append_only__ = True
+    __indexes__ = (
+        Index(
+            asc("organization_id", "evidence_id", "supersedes"),
+            name="uq_attendance_location_reviews_chain",
+            unique=True,
+        ),
+        Index(asc("organization_id", "employee_id"), name="ix_attendance_location_reviews_employee"),
+    )
+    __field_rules__: ClassVar[dict[str, dict[str, Any]]] = {
+        "decision": allowed(ReviewDecision),
+        "reason_code": allowed(tuple(REVIEW_REASONS)),
+        "note": {"minLength": 1, "maxLength": 500},
+    }
+
+    evidence_id: uuid.UUID
+    employee_id: uuid.UUID
+    decision: str
+    reason_code: str
+    # Optional; the form asks for no unnecessary personal details.
+    note: str | None = None
+    supersedes: uuid.UUID | None = None
+    reviewed_by: uuid.UUID
+    reviewed_at: datetime = dataclasses.field(default_factory=utcnow)

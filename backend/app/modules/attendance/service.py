@@ -28,7 +28,7 @@ from datetime import date, datetime, timedelta, tzinfo
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.modules.attendance import timeline
+from app.modules.attendance import location_rules, locations, timeline
 from app.modules.attendance.days import MAX_RANGE_DAYS, UTC, JudgedDay, judge, voided_ids
 from app.modules.attendance.models import AttendanceEvent, AttendanceEventVoid, EventSource
 from app.modules.attendance.schedule import Schedule
@@ -92,6 +92,10 @@ class Today:
     # Set when an open session started on an earlier day (a forgotten clock-out).
     open_since: date | None
     day: JudgedDay
+    # Whether the next clock press is checked against an office (ADR-031), and the outcome of
+    # each of the day's events that was (the person's own; never distances).
+    location_check: bool = False
+    event_locations: dict[uuid.UUID, locations.EventLocation] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,12 +183,20 @@ def totals_for(days: Sequence[JudgedDay], colleague: people.Colleague) -> Period
 
 class AttendanceService:
     def __init__(
-        self, *, database: Database, clock: Clock, authorizer: Authorizer, rate_limiter: RateLimiter
+        self,
+        *,
+        database: Database,
+        clock: Clock,
+        authorizer: Authorizer,
+        rate_limiter: RateLimiter,
+        location_checks_enabled: bool = False,
     ) -> None:
         self._db = database
         self._clock = clock
         self._authz = authorizer
         self._limiter = rate_limiter
+        # `LOCATION_CHECKS_ENABLED` (ADR-031): while off, no office check applies to any event.
+        self._location_checks = location_checks_enabled
 
     # --- own day -------------------------------------------------------------------------------
 
@@ -214,6 +226,7 @@ class AttendanceService:
             )
             open_since = None if overnight else work_date
         judged = await judge(session, [employee_id], work_date, work_date, now)
+        day = judged[employee_id][0]
         return Today(
             state=state,
             work_date=work_date,
@@ -221,7 +234,10 @@ class AttendanceService:
             server_time=now,
             allowed=timeline.ALLOWED[state],
             open_since=open_since,
-            day=judged[employee_id][0],
+            day=day,
+            location_check=self._location_checks
+            and bool(await locations.eligible_offices(session, employee_id, work_date)),
+            event_locations=await locations.outcomes_of(session, [item.event.id for item in day.events]),
         )
 
     async def _within_previous_shift(
@@ -274,7 +290,10 @@ class AttendanceService:
         event_type: EventType,
         idempotency_key: str,
         client_reported_at: datetime | None,
+        location: location_rules.Position | location_rules.Reason | None = None,
     ) -> Today:
+        """`location` is what the browser reported for this press (ADR-031); it is judged in
+        this transaction, never stored as coordinates, and never stops the event."""
         employee_id = _own_employee(actor)
         await self._limiter.enforce(CLOCK_EVENTS_PER_USER, str(actor.user_id))
         now = self._clock.now()
@@ -308,21 +327,25 @@ class AttendanceService:
             else:
                 work_date = await self._new_work_date(session, employee_id, now, zone)
                 await self._check_single_session(session, employee_id, work_date)
-            session.add(
-                AttendanceEvent(
-                    employee_id=employee_id,
-                    event_type=event_type.value,
-                    occurred_at=now,
-                    work_date=work_date,
-                    source=EventSource.WEB.value,
-                    recorded_by=actor.user_id,
-                    client_reported_at=client_reported_at,
-                    ip=str(context.ip) if context.ip is not None else None,
-                    user_agent=context.user_agent,
-                    idempotency_key=idempotency_key,
-                )
+            event = AttendanceEvent(
+                employee_id=employee_id,
+                event_type=event_type.value,
+                occurred_at=now,
+                work_date=work_date,
+                source=EventSource.WEB.value,
+                recorded_by=actor.user_id,
+                client_reported_at=client_reported_at,
+                ip=str(context.ip) if context.ip is not None else None,
+                user_agent=context.user_agent,
+                idempotency_key=idempotency_key,
             )
+            session.add(event)
             await session.flush()
+            # After every attendance rule passed: the evidence never decides whether the event
+            # is recorded.
+            if self._location_checks:
+                await locations.record_evidence(session, event, location, now)
+                await session.flush()
             return await self._today(session, employee_id)
 
     async def _check_single_session(self, session: Session, employee_id: uuid.UUID, work_date: date) -> None:
@@ -346,9 +369,11 @@ class AttendanceService:
 
     async def days(
         self, actor: Actor, employee_id: uuid.UUID | None, start: date, end: date
-    ) -> tuple[list[JudgedDay], str]:
+    ) -> tuple[list[JudgedDay], str, dict[uuid.UUID, locations.EventLocation]]:
         """Days in the range (inclusive) with events, a status, leave or a holiday, newest
-        first, and the employee's time zone. Days after today are left out."""
+        first, the employee's time zone, and the location outcome of their events when the
+        reader may see them (the person, or a location reviewer covering them). Days after
+        today are left out."""
         _check_range(start, end, MAX_RANGE_DAYS)
         subject = employee_id or _own_employee(actor)
         now = self._clock.now()
@@ -359,10 +384,15 @@ class AttendanceService:
             zone_name, zone = await self._time_zone(session, subject, required=False)
             last = min(end, timeline.local_date(now, zone))
             if last < start:
-                return [], zone_name
+                return [], zone_name, {}
             judged = await judge(session, [subject], start, last, now)
-        days = [day for day in judged.get(subject, []) if day.notable]
-        return sorted(days, key=lambda day: day.work_date, reverse=True), zone_name
+            days = [day for day in judged.get(subject, []) if day.notable]
+            outcomes = (
+                await locations.outcomes_of(session, [item.event.id for day in days for item in day.events])
+                if await locations.may_see_outcomes(session, self._authz, actor, subject)
+                else {}
+            )
+        return sorted(days, key=lambda day: day.work_date, reverse=True), zone_name, outcomes
 
     # --- team ----------------------------------------------------------------------------------
 

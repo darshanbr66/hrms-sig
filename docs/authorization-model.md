@@ -94,8 +94,10 @@ A higher scope does not imply a lower one automatically in the catalog; the engi
 | `attendance.export` | Export attendance | SU, R |
 | `shift.read` | View shift definitions | |
 | `shift.manage` | Define shifts | R |
-| `attendance.policy.manage` | Define effective-dated attendance policies (grace, thresholds, overtime, breaks) | R |
+| `attendance.policy.manage` | Define effective-dated attendance policies (grace, thresholds, overtime, breaks) and office location checks (ADR-031) | R |
 | `shift.assign.all` | Assign shifts to employees | R |
+| `attendance.location.assign.all` | Approve offices an employee may clock in and out at (HR, HR admin; within the role's scope) | R |
+| `attendance.location.review.all` | Review location verification outcomes of clock events (HR, HR admin; within the role's scope; never one's own evidence, `403 sod.own_request`) | R |
 
 ### 3.4 Leave and holidays
 

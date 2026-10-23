@@ -7,6 +7,8 @@
 - `location_time_zones` gives the IANA time zone of each location, for work dates.
 - `missing_units` names the department or location references that point at nothing, for
   records that refer to them (there are no foreign keys in MongoDB).
+- `active_locations` names the active locations among some IDs (code and name), for the
+  offices a person may clock at (ADR-031).
 - `clear_department_head` removes a person as head of any department, for the permanent erasure
   of their data.
 """
@@ -86,6 +88,19 @@ async def missing_units(
     if location_id is not None and await session.get(Location, location_id) is None:
         missing.append("location_id")
     return missing
+
+
+async def active_locations(
+    session: Session, location_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    """Code and name of each active location among `location_ids`; archived or unknown ones
+    are left out."""
+    if not location_ids:
+        return {}
+    found = await session.find(
+        Location, {"id": {"$in": sorted(location_ids)}, "status": OrgUnitStatus.ACTIVE.value}
+    )
+    return {location.id: (location.code, location.name) for location in found}
 
 
 async def clear_department_head(session: Session, employee_id: uuid.UUID) -> Erased:

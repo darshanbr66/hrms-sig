@@ -188,6 +188,13 @@ class ApiSettings(_WithMongo, _WithAppBaseUrl, _Uploads):
     # Runs the worker's scheduled jobs inside the API process (ADR-030), for a deployment with
     # one web service and no separate worker. The jobs then read `JobsInApiSettings`.
     run_jobs_in_api: bool = False
+    # Office location verification (ADR-031). Off unless turned on, in every environment: no
+    # office check can be created or versioned, and none is applied to clock events, so nothing
+    # is asked of browsers and no evidence is written; clocking works as without the module. An
+    # environment setting, so no role or permission can turn it on. Turning it on in production
+    # is prohibited until the evidence retention purge, the privacy notice approval and the
+    # one-office pilot are in place (docs/module-acceptance.md §15.1).
+    location_checks_enabled: bool = False
 
     @field_validator("trusted_proxy_cidrs", mode="before")
     @classmethod

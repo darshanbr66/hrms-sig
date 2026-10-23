@@ -45,6 +45,8 @@ TLS, without a separate worker user, or with uploads on and no scanner.
 | B7 | **Region and data residency** | Render has no India region (Singapore is closest); the Atlas cluster's region is whatever `Cluster0` was created in. | Confirm both regions and keep them the same or adjacent. |
 | B8 | **Committed database dump** | `hrms_local_test-pre-0027.dump` (fake local accounts, password hashes, encrypted MFA secrets) was committed in `b6c5f1c` and stays in the history. | Treat it as exposed: never reuse local keys or passwords; confirm the GitHub repository is private. |
 
+Module-specific: office location verification (ADR-031) is off unless `LOCATION_CHECKS_ENABLED=true` (default `false`, pinned to `false` in `render.yaml`). Setting it in production is prohibited until the evidence and review retention period is decided and its purge implemented, the privacy notice is approved by the designated privacy/compliance owner, and the one-office pilot is ready (`module-acceptance.md` §15.1). While it is `false`, no office check can be created and none applies; no application role can change it.
+
 Smaller items: workspace plans and costs (§16); a staging environment (a separate Atlas database
 such as `hrms_staging`, never `hrms`); log retention of 30 days.
 

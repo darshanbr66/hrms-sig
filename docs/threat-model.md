@@ -96,6 +96,7 @@ Each scenario lists the attack, impact, and the controls that must exist. "Test"
 - Attack: clocking in from home, clock-in by a colleague (buddy punching), manipulating device clock, replaying clock-in requests, editing past attendance.
 - Controls: server timestamps only; idempotency keys; state machine rejects invalid sequences; corrections require approval and preserve originals; optional IP allow-list or geofence per location (Phase 2 policy); clock events record IP and device metadata for review; locked periods.
 - Residual risk: buddy punching with shared credentials; mitigated by MFA and new-device alerts, not eliminated. Biometric integration is Future.
+- Office location verification (ADR-031) adds evidence, not prevention: a spoofed or borrowed position (developer tools sensor override, mock-location apps, someone else's phone) passes as verified. The server computes distance itself and never trusts a client outcome, office or person; outcomes are flagged for HR review, never enforced. Tests: `test_location_verification.py`.
 
 ### T9. Insider bulk exfiltration
 - Attack: HR user exports all employee data before leaving; payroll admin downloads all payslips.

@@ -114,6 +114,9 @@ CATALOG: Final[tuple[Permission, ...]] = (
     _p("shift.manage", "Define shifts", r=True),
     _p("attendance.policy.manage", "Define effective-dated attendance policies", r=True),
     _p("shift.assign.all", "Assign shifts to employees", r=True),
+    # Office location verification (ADR-031).
+    _p("attendance.location.assign.all", "Approve offices an employee may clock in and out at", r=True),
+    _p("attendance.location.review.all", "Review location verification outcomes of clock events", r=True),
     # 3.4 Leave and holidays
     _p("leave.request.self", "Apply for and cancel own leave"),
     _p("leave.read.self", "Own leave requests and balances"),

@@ -382,6 +382,22 @@ async def job_history(session: Session, employee_id: uuid.UUID) -> list[Employee
     return await session.find(EmployeeJob, {"employee_id": employee_id}, sort=[("effective_from", -1)])
 
 
+async def employee_refs(
+    session: Session, employee_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    """Name and employee code of each record (directory fields)."""
+    if not employee_ids:
+        return {}
+    employees = await session.find(Employee, {"id": {"$in": sorted(set(employee_ids))}})
+    return {employee.id: (name_of(employee), employee.employee_code) for employee in employees}
+
+
+async def ids_matching(session: Session, text: str, *, limit: int = 1000) -> list[uuid.UUID]:
+    """Employees whose name, code or work email contains `text`, for lists searched by person."""
+    found = await session.find(Employee, _search(text), sort=[("id", 1)], limit=limit)
+    return [employee.id for employee in found]
+
+
 async def employee_names(session: Session, employee_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, str]:
     if not employee_ids:
         return {}

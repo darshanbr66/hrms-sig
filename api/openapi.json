@@ -6046,6 +6046,496 @@
         }
       }
     },
+    "/api/v1/attendance/location-checks": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Location Checks",
+        "description": "Every version of every office's location check, newest first per office.",
+        "operationId": "list_location_checks_api_v1_attendance_location_checks_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationCheckList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Create Location Check",
+        "description": "A new version of an office's check from a date (today or later); it closes the open one.\n`mode: off` turns the check off from that date. Audited.",
+        "operationId": "create_location_check_api_v1_attendance_location_checks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationCheckCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationCheckView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/office-approvals": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Office Approvals",
+        "description": "Offices people may clock at besides their job's location, within the reader's scope.",
+        "operationId": "list_office_approvals_api_v1_attendance_office_approvals_get",
+        "parameters": [
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "employee_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeApprovalList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Create Office Approval",
+        "description": "Approve an office for a person from a date (today or later). Audited.",
+        "operationId": "create_office_approval_api_v1_attendance_office_approvals_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeApprovalCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeApprovalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/office-approvals/{approval_id}/end": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "End Office Approval",
+        "description": "End an approval from a date (today or later). Audited.",
+        "operationId": "end_office_approval_api_v1_attendance_office_approvals__approval_id__end_post",
+        "parameters": [
+          {
+            "name": "approval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Approval Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeApprovalEnd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeApprovalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/location-reviews": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "List Location Reviews",
+        "description": "Clock events flagged for location review, newest first, within the reader's scope and\nnever the reader's own.",
+        "operationId": "list_location_reviews_api_v1_attendance_location_reviews_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "open",
+                "reviewed",
+                "all"
+              ],
+              "type": "string",
+              "default": "open",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "outside_radius",
+                    "inconclusive",
+                    "unverified"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outcome"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 400
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationEvidencePage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/location-reviews/{evidence_id}": {
+      "get": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Get Location Review",
+        "description": "One flagged clock event with the day's events and the review history. Audited.",
+        "operationId": "get_location_review_api_v1_attendance_location_reviews__evidence_id__get",
+        "parameters": [
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Evidence Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationEvidenceDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/attendance/location-reviews/{evidence_id}/decisions": {
+      "post": {
+        "tags": [
+          "attendance"
+        ],
+        "summary": "Decide Location Review",
+        "description": "Record a decision on a flagged clock event. It never changes the event; a change to the\nattendance itself is a correction. A stale `supersedes` is refused (409). Audited.",
+        "operationId": "decide_location_review_api_v1_attendance_location_reviews__evidence_id__decisions_post",
+        "parameters": [
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Evidence Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationReviewCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationReviewView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/holiday-calendars": {
       "get": {
         "tags": [
@@ -10805,6 +11295,55 @@
         ],
         "title": "CalendarView"
       },
+      "CapturedLocation": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "captured",
+            "title": "Status"
+          },
+          "latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude"
+          },
+          "accuracy_m": {
+            "type": "number",
+            "maximum": 100000.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Accuracy M"
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Captured At"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Sent At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "latitude",
+          "longitude",
+          "accuracy_m",
+          "captured_at",
+          "sent_at"
+        ],
+        "title": "CapturedLocation",
+        "description": "A position the browser reported for this press (ADR-031). Used to judge the event and\nthen discarded: it is never stored, logged or returned."
+      },
       "CarryModeValue": {
         "type": "string",
         "enum": [
@@ -13622,6 +14161,35 @@
               }
             ],
             "title": "Client Reported At"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CapturedLocation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FailedLocation"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "status",
+                  "mapping": {
+                    "captured": "#/components/schemas/CapturedLocation",
+                    "permission_denied": "#/components/schemas/FailedLocation",
+                    "skipped": "#/components/schemas/FailedLocation",
+                    "timeout": "#/components/schemas/FailedLocation",
+                    "unavailable": "#/components/schemas/FailedLocation",
+                    "unsupported": "#/components/schemas/FailedLocation"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
           }
         },
         "additionalProperties": false,
@@ -13630,6 +14198,35 @@
           "event_type"
         ],
         "title": "EventCreate"
+      },
+      "EventLocationView": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "outside_radius",
+              "inconclusive",
+              "unverified"
+            ],
+            "title": "Outcome"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "reason_codes"
+        ],
+        "title": "EventLocationView",
+        "description": "The location check of one clock event: the outcome only, never a distance."
       },
       "EventTypeValue": {
         "type": "string",
@@ -13680,6 +14277,16 @@
               }
             ],
             "title": "Correction Id"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventLocationView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -13991,6 +14598,28 @@
           "items"
         ],
         "title": "FactorList"
+      },
+      "FailedLocation": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "permission_denied",
+              "unavailable",
+              "timeout",
+              "unsupported",
+              "skipped"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "FailedLocation",
+        "description": "Why no position was reported for this press."
       },
       "FormerAccount": {
         "properties": {
@@ -15985,6 +16614,193 @@
         ],
         "title": "LedgerList"
       },
+      "LocationCheckCreate": {
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "verify"
+            ],
+            "title": "Mode"
+          },
+          "latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude"
+          },
+          "radius_m": {
+            "type": "integer",
+            "maximum": 5000.0,
+            "minimum": 10.0,
+            "title": "Radius M"
+          },
+          "max_accuracy_m": {
+            "type": "integer",
+            "maximum": 5000.0,
+            "minimum": 1.0,
+            "title": "Max Accuracy M"
+          },
+          "max_position_age_seconds": {
+            "type": "integer",
+            "maximum": 600.0,
+            "minimum": 10.0,
+            "title": "Max Position Age Seconds"
+          },
+          "review_unverified": {
+            "type": "boolean",
+            "title": "Review Unverified"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "location_id",
+          "effective_from",
+          "mode",
+          "latitude",
+          "longitude",
+          "radius_m",
+          "max_accuracy_m",
+          "max_position_age_seconds",
+          "review_unverified"
+        ],
+        "title": "LocationCheckCreate"
+      },
+      "LocationCheckList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LocationCheckView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "checks_enabled": {
+            "type": "boolean",
+            "title": "Checks Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "checks_enabled"
+        ],
+        "title": "LocationCheckList"
+      },
+      "LocationCheckView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "location_code": {
+            "type": "string",
+            "title": "Location Code"
+          },
+          "location_name": {
+            "type": "string",
+            "title": "Location Name"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "verify"
+            ],
+            "title": "Mode"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "radius_m": {
+            "type": "integer",
+            "title": "Radius M"
+          },
+          "max_accuracy_m": {
+            "type": "integer",
+            "title": "Max Accuracy M"
+          },
+          "max_position_age_seconds": {
+            "type": "integer",
+            "title": "Max Position Age Seconds"
+          },
+          "review_unverified": {
+            "type": "boolean",
+            "title": "Review Unverified"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "location_id",
+          "location_code",
+          "location_name",
+          "effective_from",
+          "effective_to",
+          "mode",
+          "latitude",
+          "longitude",
+          "radius_m",
+          "max_accuracy_m",
+          "max_position_age_seconds",
+          "review_unverified",
+          "created_at"
+        ],
+        "title": "LocationCheckView"
+      },
       "LocationCreate": {
         "properties": {
           "code": {
@@ -16028,6 +16844,225 @@
         ],
         "title": "LocationCreate"
       },
+      "LocationEvidenceDetail": {
+        "properties": {
+          "evidence": {
+            "$ref": "#/components/schemas/LocationEvidenceView"
+          },
+          "day_events": {
+            "items": {
+              "$ref": "#/components/schemas/EventView"
+            },
+            "type": "array",
+            "title": "Day Events"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/LocationReviewView"
+            },
+            "type": "array",
+            "title": "Reviews"
+          },
+          "can_review": {
+            "type": "boolean",
+            "title": "Can Review"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "evidence",
+          "day_events",
+          "reviews",
+          "can_review"
+        ],
+        "title": "LocationEvidenceDetail"
+      },
+      "LocationEvidencePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LocationEvidenceView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "LocationEvidencePage"
+      },
+      "LocationEvidenceView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee": {
+            "$ref": "#/components/schemas/TeamMemberRef"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "event_type": {
+            "$ref": "#/components/schemas/EventTypeValue"
+          },
+          "event_occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Occurred At"
+          },
+          "event_voided": {
+            "type": "boolean",
+            "title": "Event Voided"
+          },
+          "work_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Work Date"
+          },
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "location_name": {
+            "type": "string",
+            "title": "Location Name"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "outside_radius",
+              "inconclusive",
+              "unverified"
+            ],
+            "title": "Outcome"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes"
+          },
+          "distance_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance M"
+          },
+          "distance_over_cap": {
+            "type": "boolean",
+            "title": "Distance Over Cap"
+          },
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "position_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Age Seconds"
+          },
+          "radius_m": {
+            "type": "integer",
+            "title": "Radius M"
+          },
+          "max_accuracy_m": {
+            "type": "integer",
+            "title": "Max Accuracy M"
+          },
+          "offices_considered": {
+            "type": "integer",
+            "title": "Offices Considered"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          },
+          "current_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationReviewView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee",
+          "event_id",
+          "event_type",
+          "event_occurred_at",
+          "event_voided",
+          "work_date",
+          "location_id",
+          "location_name",
+          "outcome",
+          "reason_codes",
+          "distance_m",
+          "distance_over_cap",
+          "accuracy_m",
+          "position_age_seconds",
+          "radius_m",
+          "max_accuracy_m",
+          "offices_considered",
+          "received_at",
+          "current_review"
+        ],
+        "title": "LocationEvidenceView"
+      },
       "LocationList": {
         "properties": {
           "items": {
@@ -16064,6 +17099,143 @@
           "name"
         ],
         "title": "LocationRef"
+      },
+      "LocationReviewCreate": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "not_accepted"
+            ],
+            "title": "Decision"
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "on_site_confirmed",
+              "device_or_signal_issue",
+              "approved_offsite_work",
+              "not_on_site_correction_needed",
+              "not_on_site_no_action",
+              "other"
+            ],
+            "title": "Reason Code"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "supersedes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision",
+          "reason_code",
+          "supersedes"
+        ],
+        "title": "LocationReviewCreate"
+      },
+      "LocationReviewView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "not_accepted"
+            ],
+            "title": "Decision"
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "on_site_confirmed",
+              "device_or_signal_issue",
+              "approved_offsite_work",
+              "not_on_site_correction_needed",
+              "not_on_site_no_action",
+              "other"
+            ],
+            "title": "Reason Code"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reviewed At"
+          },
+          "supersedes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "decision",
+          "reason_code",
+          "note",
+          "reviewed_by",
+          "reviewed_at",
+          "supersedes"
+        ],
+        "title": "LocationReviewView"
       },
       "LocationUpdate": {
         "properties": {
@@ -16672,6 +17844,132 @@
           "created_at"
         ],
         "title": "NotificationView"
+      },
+      "OfficeApprovalCreate": {
+        "properties": {
+          "employee_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Employee Id"
+          },
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "employee_id",
+          "location_id",
+          "effective_from"
+        ],
+        "title": "OfficeApprovalCreate"
+      },
+      "OfficeApprovalEnd": {
+        "properties": {
+          "effective_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "effective_to"
+        ],
+        "title": "OfficeApprovalEnd"
+      },
+      "OfficeApprovalList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OfficeApprovalView"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "OfficeApprovalList"
+      },
+      "OfficeApprovalView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "employee_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Employee Id"
+          },
+          "employee_name": {
+            "type": "string",
+            "title": "Employee Name"
+          },
+          "employee_code": {
+            "type": "string",
+            "title": "Employee Code"
+          },
+          "location_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Location Id"
+          },
+          "location_name": {
+            "type": "string",
+            "title": "Location Name"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "employee_id",
+          "employee_name",
+          "employee_code",
+          "location_id",
+          "location_name",
+          "effective_from",
+          "effective_to",
+          "created_at"
+        ],
+        "title": "OfficeApprovalView"
       },
       "OpeningBalanceImport": {
         "properties": {
@@ -19304,6 +20602,14 @@
             ],
             "title": "Open Since"
           },
+          "location_check": {
+            "type": "string",
+            "enum": [
+              "off",
+              "requested"
+            ],
+            "title": "Location Check"
+          },
           "day": {
             "$ref": "#/components/schemas/DayView"
           }
@@ -19317,6 +20623,7 @@
           "server_time",
           "allowed_events",
           "open_since",
+          "location_check",
           "day"
         ],
         "title": "TodayView"

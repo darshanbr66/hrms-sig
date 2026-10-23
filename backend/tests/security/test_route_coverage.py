@@ -125,6 +125,8 @@ def test_the_authorization_matrix_covers_every_permission_route() -> None:
         "{device}": "{device_id}",
         "{grant_request}": "{request_id}",
         "{erasure}": "{erasure_id}",
+        "{approval}": "{approval_id}",
+        "{evidence}": "{evidence_id}",
         "{location}": "{location_id}",
         "{department}": "{department_id}",
         "{designation}": "{designation_id}",

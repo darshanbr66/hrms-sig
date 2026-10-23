@@ -121,6 +121,9 @@ const SecurityEventsPage = lazy(() =>
 const NotificationsPage = lazy(() =>
   import("../features/notifications/NotificationsPage").then((m) => ({ default: m.NotificationsPage })),
 );
+const LocationReviewsPage = lazy(() =>
+  import("../features/attendance/LocationReviewsPage").then((m) => ({ default: m.LocationReviewsPage })),
+);
 const CorrectionsPage = lazy(() =>
   import("../features/attendance/CorrectionsPage").then((m) => ({ default: m.CorrectionsPage })),
 );
@@ -266,6 +269,14 @@ export const routes: RouteObject[] = [
             element: (
               <Protected anyOf={["attendance.clock.self"]}>
                 <MyAttendancePage />
+              </Protected>
+            ),
+          },
+          {
+            path: "/attendance/location-reviews",
+            element: (
+              <Protected anyOf={["attendance.location.review.all"]}>
+                <LocationReviewsPage />
               </Protected>
             ),
           },
